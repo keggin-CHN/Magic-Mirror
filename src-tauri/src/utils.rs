@@ -54,7 +54,7 @@ pub async fn download_file(
         }
         downloaded += chunk.len() as u64;
         if total_size > 0 {
-            let progress = downloaded as f64 / total_size as f64 * 100.0;
+            let progress = (downloaded as f64 / total_size as f64 * 100.0).min(100.0);
             app.emit("download-progress", progress).unwrap_or_default();
         }
     }
@@ -131,6 +131,7 @@ pub async fn unzip_file(
         }
 
         let progress = i as f64 / total_files as f64 * 100.0;
+        let progress = progress.min(100.0);
         app.emit("unzip-progress", progress).unwrap_or_default();
     }
 
