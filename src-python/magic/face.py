@@ -55,35 +55,35 @@ def _init_gpu_models():
             return _tf_gpu is not None
         
         try:
-        print("[INFO] 正在初始化 GPU 加速模型...")
-        import onnxruntime as ort
-        
-        # 检查可用的 ExecutionProvider
-        available_providers = ort.get_available_providers()
-        print(f"[INFO] 可用的 ExecutionProvider: {available_providers}")
-        
-        # 优先使用 DirectML（Windows 通用），其次 CUDA
-        if 'DmlExecutionProvider' in available_providers:
-            providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
-            print("[INFO] 使用 DirectML 加速")
-        elif 'CUDAExecutionProvider' in available_providers:
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            print("[INFO] 使用 CUDA 加速")
-        else:
-            print("[WARN] 未找到 GPU ExecutionProvider，回退到 CPU")
-            _gpu_initialized = True
-            return False
-        
-        # 创建 GPU 版本的 TinyFace 实例
-        _tf_gpu = TinyFace()
-        _tf_gpu.config.face_detector_model = _get_model_path("scrfd_2.5g.onnx")
-        _tf_gpu.config.face_embedder_model = _get_model_path("arcface_w600k_r50.onnx")
-        _tf_gpu.config.face_swapper_model = _get_model_path("inswapper_128_fp16.onnx")
-        _tf_gpu.config.face_enhancer_model = _get_model_path("gfpgan_1.4.onnx")
-        
-        # 设置 ExecutionProvider
-        _tf_gpu.config.execution_providers = providers
-        
+            print("[INFO] 正在初始化 GPU 加速模型...")
+            import onnxruntime as ort
+            
+            # 检查可用的 ExecutionProvider
+            available_providers = ort.get_available_providers()
+            print(f"[INFO] 可用的 ExecutionProvider: {available_providers}")
+            
+            # 优先使用 DirectML（Windows 通用），其次 CUDA
+            if 'DmlExecutionProvider' in available_providers:
+                providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+                print("[INFO] 使用 DirectML 加速")
+            elif 'CUDAExecutionProvider' in available_providers:
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                print("[INFO] 使用 CUDA 加速")
+            else:
+                print("[WARN] 未找到 GPU ExecutionProvider，回退到 CPU")
+                _gpu_initialized = True
+                return False
+            
+            # 创建 GPU 版本的 TinyFace 实例
+            _tf_gpu = TinyFace()
+            _tf_gpu.config.face_detector_model = _get_model_path("scrfd_2.5g.onnx")
+            _tf_gpu.config.face_embedder_model = _get_model_path("arcface_w600k_r50.onnx")
+            _tf_gpu.config.face_swapper_model = _get_model_path("inswapper_128_fp16.onnx")
+            _tf_gpu.config.face_enhancer_model = _get_model_path("gfpgan_1.4.onnx")
+            
+            # 设置 ExecutionProvider
+            _tf_gpu.config.execution_providers = providers
+            
             _tf_gpu.prepare()
             _gpu_initialized = True
             print("[SUCCESS] GPU 模型初始化成功")
