@@ -1,0 +1,11 @@
+tinyface >= 1.0.1
+bottle >= 0.13.2
+nuitka >= 2.5.9
+async-tasks-python >= 1.0.0
+# tinyface 1.0.1 requires numpy>=2.1.2; opencv-python 4.12+ also requires numpy>=2 on Python>=3.9
+opencv-python >= 4.12.0.88, < 5.0.0
+numpy >= 2.1.2, < 3.0.0
+# GPU acceleration support (DirectML for Windows, compatible with NVIDIA/AMD/Intel GPUs)
+onnxruntime-directml >= 1.16.0 ; sys_platform == "win32"
+# Fallback to CPU-only ONNX Runtime for non-Windows platforms
+onnxruntime >= 1.16.0 ; sys_platform != "win32"

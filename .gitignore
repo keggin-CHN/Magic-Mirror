@@ -1,0 +1,13 @@
+.DS_Store
+node_modules
+.mypy_cache
+__pycache__
+*.egg-info
+.venv
+*.env
+data
+models
+dist
+out
+temp
+test.*

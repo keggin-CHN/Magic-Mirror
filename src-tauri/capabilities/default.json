@@ -1,0 +1,44 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-close",
+    "core:window:allow-show",
+    "core:app:allow-default-window-icon",
+    "core:menu:allow-set-as-window-menu",
+    "process:default",
+    "process:allow-exit",
+    "shell:allow-open",
+    "shell:allow-spawn",
+    "shell:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "chmod",
+          "cmd": "chmod",
+          "args": true
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "server-macos",
+          "cmd": "$HOME/MagicMirror/server.bin",
+          "args": true
+        },
+        {
+          "name": "server-windows",
+          "cmd": "$HOME/MagicMirror/server.exe",
+          "args": true
+        }
+      ]
+    }
+  ]
+}

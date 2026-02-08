@@ -1,0 +1,126 @@
+name: Build APP
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "scripts/**"
+      - "index.html"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "vite.config.ts"
+      - "tsconfig.json"
+      - "tsconfig.node.json"
+      - "uno.config.ts"
+      - ".github/workflows/build-app.yaml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "scripts/**"
+      - "index.html"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "vite.config.ts"
+      - "tsconfig.json"
+      - "tsconfig.node.json"
+      - "uno.config.ts"
+      - ".github/workflows/build-app.yaml"
+
+jobs:
+  build-for-windows:
+    name: Windows
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            build: windows
+            os: windows-latest
+            arch: x86_64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8.5.1
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+          cache-dependency-path: "pnpm-lock.yaml"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Setup Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+      - name: Build APP
+        shell: pwsh
+        run: |
+          pnpm install --no-frozen-lockfile
+          $VERSION = node -p "require('./package.json').version"
+          Write-Host "Version: $VERSION"
+          $CONFIG = "{""version"":""$VERSION""}"
+          Write-Host "Config JSON: $CONFIG"
+          & node_modules/.bin/tauri build -c $CONFIG -t ${{ matrix.target }} --bundles nsis --verbose
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Tauri build failed with exit code: $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          $APP_NAME = "MagicMirror_${VERSION}_${{ matrix.build }}_${{ matrix.arch }}"
+          node scripts/dist.js ${{ matrix.target }} $APP_NAME
+      - name: Upload App
+        uses: actions/upload-artifact@v4
+        with:
+          name: app_${{ matrix.build }}_${{ matrix.arch }}
+          path: dist/MagicMirror_*
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: github.event_name == 'workflow_dispatch'
+    needs: [build-for-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: app_*
+          path: dist
+          merge-multiple: true
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check Version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Release MagicMirror v${{ steps.version.outputs.version }}
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: app-v${{ steps.version.outputs.version }}
+          name: MagicMirror v${{ steps.version.outputs.version }}
+          body: MagicMirror APP v${{ steps.version.outputs.version }}
+          draft: true
+          prerelease: false
+          makeLatest: latest
+          removeArtifacts: true
+          artifacts: dist/*
