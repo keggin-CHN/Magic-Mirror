@@ -1,0 +1,151 @@
+name: Build Server (Debug Only)
+on:
+  workflow_dispatch:
+
+jobs:
+  models:
+    name: Download Model Files
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Model Files
+        id: models
+        run: |
+          VERSION=$(awk -F ' = "' '/version =/ {print $2}' src-python/pyproject.toml | tr -d '"')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          mkdir -p src-python/models && cd src-python/models
+          BASE_URL="https://github.com/idootop/TinyFace/releases/download/models-1.0.0"
+          curl -# -O -L "${BASE_URL}/arcface_w600k_r50.onnx"
+          curl -# -O -L "${BASE_URL}/gfpgan_1.4.onnx"
+          curl -# -O -L "${BASE_URL}/inswapper_128_fp16.onnx"
+          curl -# -O -L "${BASE_URL}/scrfd_2.5g.onnx"
+          cd ${{ github.workspace }}
+      - name: Upload models
+        uses: actions/upload-artifact@v4
+        with:
+          name: models
+          path: src-python/models
+          if-no-files-found: error
+    outputs:
+      version: ${{ steps.models.outputs.version }}
+
+  build-for-windows:
+    name: Windows
+    needs: models
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            build: windows
+            os: windows-2019
+            arch: x86_64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Models
+        uses: actions/download-artifact@v4
+        with:
+          name: models
+          path: src-python/models
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.10.11
+          cache: "pip"
+          cache-dependency-path: "**/requirements.txt"
+      - name: Install Python Dependencies
+        run: |
+          cd src-python
+          pip install -r requirements.txt
+          pip install -e . --no-deps
+          cd ${{ github.workspace }}
+      - name: Build Server
+        shell: pwsh
+        run: |
+          python -m nuitka --standalone --assume-yes-for-downloads `
+            --mingw64 --windows-console-mode=force `
+            --include-package=onnx `
+            --include-package=google.protobuf `
+            --include-package=onnxruntime `
+            --include-package-data=onnxruntime `
+            --include-package=async_tasks `
+            --include-package=cv2 `
+            --include-package=numpy `
+            --include-package=tinyface `
+            --include-package=bottle `
+            --include-package-data=onnx `
+            --nofollow-import-to=onnxruntime.capi.onnxruntime_pybind11_state `
+            --include-data-files="src-python/models/*.onnx=models/" `
+            --output-dir=out src-python/server.py
+
+          # Make the build more "portable": bundle MSVC runtime DLLs to avoid requiring vc_redist on user machines.
+          $dist = Join-Path $PWD "out/server.dist"
+          $sys32 = Join-Path $env:WINDIR "System32"
+          $crtDlls = @(
+            "vcruntime140.dll",
+            "vcruntime140_1.dll",
+            "msvcp140.dll",
+            "msvcp140_1.dll",
+            "msvcp140_2.dll",
+            "msvcp140_atomic_wait.dll",
+            "concrt140.dll",
+            "vcomp140.dll"
+          )
+          foreach ($dll in $crtDlls) {
+            $src = Join-Path $sys32 $dll
+            $dst = Join-Path $dist $dll
+            if ((Test-Path $src) -and !(Test-Path $dst)) {
+              Copy-Item -Force $src $dst
+            }
+          }
+
+          # Ensure onnxruntime provider DLLs are bundled (Nuitka may miss them depending on wheel layout).
+          $dstCapi = Join-Path $dist "onnxruntime/capi"
+          New-Item -ItemType Directory -Force -Path $dstCapi | Out-Null
+          $ortBase = python -c "import onnxruntime, pathlib; print(pathlib.Path(onnxruntime.__file__).resolve().parent)"
+          $providerDlls = @(Get-ChildItem -Path $ortBase -Recurse -Filter "onnxruntime_providers_*.dll" -ErrorAction SilentlyContinue)
+          foreach ($dll in $providerDlls) {
+            Copy-Item -Force $dll.FullName $dstCapi
+          }
+
+          # Fail fast only when expected provider DLLs were not copied. Newer CPU wheels may legitimately contain only shared.dll.
+          $srcProviderNames = @($providerDlls | Select-Object -ExpandProperty Name -Unique)
+          $providers = @(Get-ChildItem -Path $dstCapi -Filter "onnxruntime_providers_*.dll" -ErrorAction SilentlyContinue)
+          $dstProviderNames = @($providers | Select-Object -ExpandProperty Name -Unique)
+          $missingProviders = @($srcProviderNames | Where-Object { $_ -notin $dstProviderNames })
+
+          $sharedProvider = Join-Path $dstCapi "onnxruntime_providers_shared.dll"
+          if (!(Test-Path $sharedProvider)) {
+            Write-Host "Source provider DLLs:" ($srcProviderNames -join ", ")
+            Write-Host "Dist provider DLLs:" ($dstProviderNames -join ", ")
+            throw "onnxruntime_providers_shared.dll missing from dist"
+          }
+
+          if ($srcProviderNames.Count -gt 0 -and $missingProviders.Count -gt 0) {
+            Write-Host "Missing provider DLLs:" ($missingProviders -join ", ")
+            Write-Host "Dist provider DLLs:" ($dstProviderNames -join ", ")
+            throw "onnxruntime provider DLL copy incomplete"
+          }
+
+          Write-Host "Bundled provider DLLs:" ($dstProviderNames -join ", ")
+
+          cd out/server.dist
+          Compress-Archive -Path * -DestinationPath "../server_${{ matrix.build }}_${{ matrix.arch }}_debug.zip"
+          cd ${{ github.workspace }}
+
+          $zipPath = Join-Path $PWD "out/server_${{ matrix.build }}_${{ matrix.arch }}_debug.zip"
+          if (!(Test-Path $zipPath)) {
+            throw "server debug zip not created: $zipPath"
+          }
+      - name: Upload Server
+        uses: actions/upload-artifact@v4
+        with:
+          name: server_${{ matrix.build }}_${{ matrix.arch }}_debug
+          path: out/*.zip
+          if-no-files-found: error
