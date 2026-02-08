@@ -421,34 +421,34 @@ def create_video_task():
             status="running",
             progress=0,
             etaSeconds=None,
+            frameCount=0,
+            totalFrames=0,
             error=None,
             result=None,
-            stage="queued",
         )
 
         # 定义回调函数（必须在 task_callable 之前定义）
         def _on_stage(stage: str):
-            _set_video_task_progress(
-                task_id,
-                status="running",
-                stage=stage,
-                error=None,
-            )
+            # 简化：不再更新stage，只在日志中记录
+            print(f"[INFO] 视频处理阶段: {stage}")
 
         def _on_progress(frame_count: int, total_frames: int, elapsed_seconds: float):
             progress = 0.0
             eta_seconds = None
             if total_frames and total_frames > 0:
                 progress = max(0.0, min(100.0, frame_count / total_frames * 100.0))
-                if frame_count > 0:
-                    eta_seconds = max(
-                        0, int((elapsed_seconds / frame_count) * (total_frames - frame_count))
-                    )
+                if frame_count > 0 and elapsed_seconds > 0:
+                    # 计算剩余时间：(总帧数 - 已处理帧数) / 处理速度
+                    frames_remaining = total_frames - frame_count
+                    processing_speed = frame_count / elapsed_seconds  # 帧/秒
+                    eta_seconds = max(0, int(frames_remaining / processing_speed))
             _set_video_task_progress(
                 task_id,
                 status="running",
                 progress=round(progress, 2),
                 etaSeconds=eta_seconds,
+                frameCount=frame_count,
+                totalFrames=total_frames,
                 error=None,
             )
 
@@ -485,99 +485,9 @@ def create_video_task():
                 stage_callback=_on_stage,
                 use_gpu=use_gpu,
             )
+# 使用异步任务处理，避免阻塞请求线程
+# 前端通过轮询获取进度和最终结果
 
-        # Use run_async instead of run to avoid blocking the request thread
-        # This allows the request to return immediately with a task ID
-        # But wait, the frontend expects the result in the response of createVideoTask?
-        # Let's check frontend code.
-        # src/hooks/useSwapFace.ts:
-        # const { result, error } = await Server.createVideoTask(...)
-        # if (result) { setVideoProgress(100); ... }
-        
-        # So the frontend DOES expect the result in the response.
-        # This means the backend MUST block until the task is done.
-        
-        # If the backend blocks, why is progress not updating?
-        # Maybe the GIL?
-        # Or maybe the browser limits the number of concurrent connections to the same domain?
-        # If createVideoTask takes a long time, the browser might stall other requests (like progress polling)
-        # to the same domain (localhost:8023).
-        
-        # Browsers typically limit to 6 connections per domain.
-        # Here we have 1 long-running connection (createVideoTask) and 1 polling connection.
-        # It should be fine.
-        
-        # However, if the server is single-threaded or has a global lock, it might be an issue.
-        # server.py uses ThreadingMixIn, so it's multi-threaded.
-        # VIDEO_TASK_PROGRESS_LOCK is a RLock.
-        
-        # Let's look at async_tasks again.
-        # AsyncTask.run joins the thread.
-        # This blocks the current thread (the request handler thread).
-        # This is fine as long as there are other threads available to handle other requests.
-        
-        # Is it possible that the task itself holds the GIL for too long?
-        # swap_face_video calls OpenCV and TinyFace (ONNX Runtime).
-        # These should release GIL.
-        
-        # Wait, I see `app.plugins[0].json_dumps` in app.py.
-        # Bottle's default server is single-threaded?
-        # server.py uses wsgiref.simple_server.make_server with _ThreadingWSGIServer.
-        # So it is multi-threaded.
-        
-        # Let's try to force the task to run in a separate thread WITHOUT joining, 
-        # but we need to return the result.
-        # We can't return the result if we don't wait.
-        
-        # If the issue is that the browser is waiting for the response and somehow blocking the polling?
-        # No, that shouldn't happen with fetch.
-        
-        # Maybe the issue is in the frontend polling loop?
-        # const pollProgress = async () => {
-        #   while (polling) {
-        #     const state = await Server.getVideoTaskProgress(taskId);
-        #     ...
-        #     await new Promise((resolve) => setTimeout(resolve, 400));
-        #   }
-        # };
-        # const pollPromise = pollProgress();
-        # const { result, error } = await Server.createVideoTask(...)
-        # polling = false;
-        # await pollPromise;
-        
-        # This looks correct.
-        
-        # What if we change the backend to return immediately with "queued" status,
-        # and let the frontend poll for the result?
-        # The frontend code seems to handle "success" status from polling:
-        # if (state.status === "running" || state.status === "success") { ... }
-        
-        # But useSwapFace.ts lines 119-122:
-        # if (result) {
-        #   setVideoProgress(100);
-        #   setVideoEtaSeconds(0);
-        #   setVideoStage("done");
-        # }
-        
-        # It relies on the result from createVideoTask to mark as done.
-        
-        # If we change createVideoTask to be non-blocking:
-        # 1. Backend: createVideoTask starts the task and returns { task_id: ... } immediately.
-        # 2. Frontend: createVideoTask returns immediately.
-        # 3. Frontend: polling loop continues until status is "success" or "failed".
-        # 4. Frontend: when "success", it needs to get the result (output path).
-        #    The current progress API returns result?
-        #    Let's check _get_video_task_progress in app.py.
-        #    It returns state.copy().
-        #    _set_video_task_progress updates the state.
-        #    When task finishes (line 485), it sets result=res.
-        #    So yes, the progress API returns the result!
-        
-        # So we CAN make createVideoTask non-blocking!
-        # This would solve any potential blocking issues (browser connection limits, server thread pool exhaustion, etc).
-        # And it provides a better UX (immediate feedback that task is accepted).
-        
-        # Let's modify app.py to use run_async and return immediately.
         
         def _on_completion(res, err):
             if res:
@@ -589,7 +499,6 @@ def create_video_task():
                     etaSeconds=0,
                     error=None,
                     result=res,
-                    stage="done",
                 )
             else:
                 final_error = _simplify_task_error(err)
@@ -598,10 +507,21 @@ def create_video_task():
                     status="failed",
                     error=final_error,
                     etaSeconds=None,
-                    stage="failed",
                 )
 
-        AsyncTask.run_async(task_callable, task_id=task_id, on_completion=_on_completion)
+        try:
+            AsyncTask.run_async(task_callable, task_id=task_id, on_completion=_on_completion)
+        except Exception as e:
+            print(f"[ERROR] 启动异步任务失败: {str(e)}")
+            _set_video_task_progress(
+                task_id,
+                status="failed",
+                error=_simplify_task_error(e),
+                etaSeconds=None,
+            )
+            response.status = 500
+            return {"error": _simplify_task_error(e)}
+        
         return {"task_id": task_id, "status": "queued"}
 
     except Exception as e:
@@ -612,7 +532,6 @@ def create_video_task():
                 status="failed",
                 error=_simplify_task_error(e),
                 etaSeconds=None,
-                stage="failed",
             )
         response.status = 500
         return {"error": _simplify_task_error(e)}
@@ -631,6 +550,5 @@ def cancel_task(task_id):
         status="cancelled",
         etaSeconds=None,
         error="cancelled",
-        stage="cancelled",
     )
     return {"success": True}

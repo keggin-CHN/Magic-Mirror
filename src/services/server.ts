@@ -104,9 +104,22 @@ class _Server {
   }
 
   async launch(onStop?: VoidFunction): Promise<boolean> {
+    // 检查进程是否真正运行
     if (this._childProcess) {
-      return true;
+      try {
+        const status = await this.status();
+        if (status === "running") {
+          return true;
+        }
+        // 进程存在但服务不可用，清理并重新启动
+        console.warn("[Server] 进程存在但服务不可用，重新启动");
+        this._childProcess = undefined;
+      } catch {
+        // 检查失败，清理并重新启动
+        this._childProcess = undefined;
+      }
     }
+
     try {
       if (type() === "windows") {
         try {
@@ -125,7 +138,8 @@ class _Server {
       });
       this._childProcess = await command.spawn();
       return true;
-    } catch {
+    } catch (error) {
+      console.error("[Server] 启动失败:", error);
       this._childProcess = undefined;
       return false;
     }

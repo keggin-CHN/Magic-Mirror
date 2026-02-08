@@ -59,11 +59,19 @@ async function main() {
     case "win32":
       extensions = [".exe"];
       break;
+    case "linux":
+      extensions = [".AppImage", ".deb"];
+      break;
     default:
-      console.warn(`Unsupported platform: ${process.platform}`);
+      console.error(`不支持的平台: ${process.platform}`);
+      console.error("支持的平台: darwin (macOS), win32 (Windows), linux (Linux)");
+      process.exit(1);
   }
 
-  if (extensions.length === 0) return;
+  if (extensions.length === 0) {
+    console.error("❌ 无法确定目标平台的文件扩展名");
+    process.exit(1);
+  }
 
   // Find all files with matching extensions in target directory
   // that are also in a 'bundle' directory and 'release' directory

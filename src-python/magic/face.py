@@ -33,6 +33,18 @@ def _log_error(context: str, error: Exception):
     return error_msg
 
 
+def _clear_queue(q):
+    """安全地清空队列"""
+    try:
+        while True:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                break
+    except Exception as e:
+        print(f"[WARN] 清空队列失败: {str(e)}")
+
+
 def load_models():
     try:
         _tf.config.face_detector_model = _get_model_path("scrfd_2.5g.onnx")
@@ -46,11 +58,16 @@ def load_models():
 
 
 def _init_gpu_models():
-    """初始化 GPU 加速的模型（使用 DirectML）"""
+    """初始化 GPU 加速的模型（使用 DirectML）- 双重检查锁定模式"""
     global _tf_gpu, _gpu_initialized
+    
+    # 第一次检查（无锁，快速路径）
+    if _gpu_initialized:
+        return _tf_gpu is not None
     
     # 使用锁保护初始化检查，避免竞态条件
     with _tf_gpu_lock:
+        # 第二次检查（有锁，确保只初始化一次）
         if _gpu_initialized:
             return _tf_gpu is not None
         
@@ -302,7 +319,11 @@ def _swap_face_video(
     # 动态计算队列大小和线程数
     cpu_count = multiprocessing.cpu_count()
     # GPU模式：使用较少线程避免锁竞争；CPU模式：使用更多线程
-    num_workers = 2 if use_gpu else max(2, cpu_count - 1)
+    # 确保至少有1个worker，最多不超过8个
+    if use_gpu:
+        num_workers = 2
+    else:
+        num_workers = max(1, min(cpu_count - 1, 8))
     queue_size = max(5, num_workers * 2)  # 队列大小为线程数的2倍
     
     print(f"[INFO] 使用 {num_workers} 个处理线程，队列大小: {queue_size}")
@@ -381,16 +402,35 @@ def _swap_face_video(
                     ok, frame = cap.read()
                     if not ok:
                         break
-                    read_queue.put((frame_idx, frame), timeout=1)
+                    # 添加超时和重试机制，避免队列满时死锁
+                    retry_count = 0
+                    while not stop_event.is_set() and retry_count < 5:
+                        try:
+                            read_queue.put((frame_idx, frame), timeout=2)
+                            break
+                        except queue.Full:
+                            retry_count += 1
+                            print(f"[WARN] 读取队列已满，等待中... (重试 {retry_count}/5)")
+                            if retry_count >= 5:
+                                print("[ERROR] 读取队列持续满载，可能发生死锁")
+                                stop_event.set()
+                                # 清空队列避免死锁
+                                _clear_queue(read_queue)
+                                return
                     frame_idx += 1
                 # 发送结束信号
                 for _ in range(num_workers):
-                    read_queue.put((None, None))
+                    try:
+                        read_queue.put((None, None), timeout=5)
+                    except queue.Full:
+                        print("[WARN] 无法发送结束信号到读取队列")
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
                 print(f"[ERROR] 读取线程异常: {str(e)}")
                 stop_event.set()
+                # 清空队列避免死锁
+                _clear_queue(read_queue)
 
         # 处理线程（多个）
         def process_frames(worker_id):
@@ -469,11 +509,18 @@ def _swap_face_video(
                 next_frame_idx = 0
                 frame_buffer = {}  # 缓存乱序到达的帧
                 frames_written = 0
+                idle_count = 0  # 空闲计数器
+                max_idle = 30  # 最多等待30秒（30次 * 1秒）
                 
                 while not stop_event.is_set():
                     try:
                         frame_idx, frame = write_queue.get(timeout=1)
+                        idle_count = 0  # 重置空闲计数
                     except queue.Empty:
+                        idle_count += 1
+                        # 如果已经写入了所有帧，或者空闲时间过长，退出
+                        if (total_frames > 0 and frames_written >= total_frames) or idle_count >= max_idle:
+                            break
                         continue
                     
                     # 缓存帧
@@ -485,8 +532,8 @@ def _swap_face_video(
                         frames_written += 1
                         next_frame_idx += 1
                     
-                    # 检查是否完成
-                    if frames_written >= total_frames and total_frames > 0:
+                    # 检查是否完成（但不立即退出，等待缓冲区中的帧）
+                    if total_frames > 0 and frames_written >= total_frames and not frame_buffer:
                         break
                         
             except Exception as e:
@@ -495,13 +542,13 @@ def _swap_face_video(
                 print(f"[ERROR] 写入线程异常: {str(e)}")
                 stop_event.set()
 
-        # 启动线程
-        read_thread = threading.Thread(target=read_frames, name="VideoReader", daemon=True)
+        # 启动线程（移除 daemon=True 以确保线程正确完成）
+        read_thread = threading.Thread(target=read_frames, name="VideoReader")
         process_threads = [
-            threading.Thread(target=process_frames, args=(i,), name=f"VideoProcessor-{i}", daemon=True)
+            threading.Thread(target=process_frames, args=(i,), name=f"VideoProcessor-{i}")
             for i in range(num_workers)
         ]
-        write_thread = threading.Thread(target=write_frames, name="VideoWriter", daemon=True)
+        write_thread = threading.Thread(target=write_frames, name="VideoWriter")
         
         read_thread.start()
         for t in process_threads:
@@ -547,6 +594,10 @@ def _swap_face_video(
     finally:
         # 确保所有线程停止
         stop_event.set()
+        
+        # 清空队列，避免线程阻塞
+        _clear_queue(read_queue)
+        _clear_queue(write_queue)
         
         if cap is not None:
             cap.release()
@@ -775,7 +826,7 @@ def detect_face_boxes_in_image(input_path, regions=None):
             else:
                 search_areas_resized = [(0, 0, new_w, new_h)]
             
-            boxes_resized = _detect_face_boxes_in_frame(vision_resized, search_areas_resized)
+            boxes_resized = _detect_face_boxes_in_frame(vision_resized, search_areas_resized, _tf, _tf_lock)
             
             # 映射回原图坐标
             boxes = []
@@ -792,7 +843,7 @@ def detect_face_boxes_in_image(input_path, regions=None):
                 if regions
                 else [(0, 0, width, height)]
             )
-            boxes = _detect_face_boxes_in_frame(vision, search_areas)
+            boxes = _detect_face_boxes_in_frame(vision, search_areas, _tf, _tf_lock)
 
         return [{"x": x, "y": y, "width": w, "height": h} for x, y, w, h in boxes]
     except Exception as e:
@@ -834,7 +885,7 @@ def detect_face_boxes_in_video(input_path, key_frame_ms=0, regions=None):
             if regions
             else [(0, 0, width, height)]
         )
-        boxes = _detect_face_boxes_in_frame(frame, search_areas)
+        boxes = _detect_face_boxes_in_frame(frame, search_areas, _tf, _tf_lock)
 
         return {
             "regions": [{"x": x, "y": y, "width": w, "height": h} for x, y, w, h in boxes],
@@ -910,7 +961,11 @@ def _swap_face_video_by_sources(
     
     # 动态计算队列大小和线程数
     cpu_count = multiprocessing.cpu_count()
-    num_workers = 2 if use_gpu else max(2, cpu_count - 1)
+    # 确保至少有1个worker，最多不超过8个
+    if use_gpu:
+        num_workers = 2
+    else:
+        num_workers = max(1, min(cpu_count - 1, 8))
     queue_size = max(5, num_workers * 2)
     
     print(f"[INFO] 多人换脸使用 {num_workers} 个处理线程，队列大小: {queue_size}")
@@ -1001,15 +1056,32 @@ def _swap_face_video_by_sources(
                     ok, frame = cap.read()
                     if not ok:
                         break
-                    read_queue.put((frame_idx, frame), timeout=1)
+                    # 添加超时和重试机制，避免队列满时死锁
+                    retry_count = 0
+                    while not stop_event.is_set() and retry_count < 5:
+                        try:
+                            read_queue.put((frame_idx, frame), timeout=2)
+                            break
+                        except queue.Full:
+                            retry_count += 1
+                            print(f"[WARN] 读取队列已满，等待中... (重试 {retry_count}/5)")
+                            if retry_count >= 5:
+                                print("[ERROR] 读取队列持续满载，可能发生死锁")
+                                stop_event.set()
+                                _clear_queue(read_queue)
+                                return
                     frame_idx += 1
                 for _ in range(num_workers):
-                    read_queue.put((None, None))
+                    try:
+                        read_queue.put((None, None), timeout=5)
+                    except queue.Full:
+                        print("[WARN] 无法发送结束信号到读取队列")
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
                 print(f"[ERROR] 读取线程异常: {str(e)}")
                 stop_event.set()
+                _clear_queue(read_queue)
 
         # 处理线程（多个）
         def process_frames(worker_id):
@@ -1117,11 +1189,17 @@ def _swap_face_video_by_sources(
                 next_frame_idx = 0
                 frame_buffer = {}
                 frames_written = 0
+                idle_count = 0
+                max_idle = 30
                 
                 while not stop_event.is_set():
                     try:
                         frame_idx, frame = write_queue.get(timeout=1)
+                        idle_count = 0
                     except queue.Empty:
+                        idle_count += 1
+                        if (total_frames > 0 and frames_written >= total_frames) or idle_count >= max_idle:
+                            break
                         continue
                     
                     frame_buffer[frame_idx] = frame
@@ -1131,7 +1209,7 @@ def _swap_face_video_by_sources(
                         frames_written += 1
                         next_frame_idx += 1
                     
-                    if frames_written >= total_frames and total_frames > 0:
+                    if total_frames > 0 and frames_written >= total_frames and not frame_buffer:
                         break
                         
             except Exception as e:
@@ -1140,13 +1218,13 @@ def _swap_face_video_by_sources(
                 print(f"[ERROR] 写入线程异常: {str(e)}")
                 stop_event.set()
 
-        # 启动线程
-        read_thread = threading.Thread(target=read_frames, name="VideoReader", daemon=True)
+        # 启动线程（移除 daemon=True 以确保线程正确完成）
+        read_thread = threading.Thread(target=read_frames, name="VideoReader")
         process_threads = [
-            threading.Thread(target=process_frames, args=(i,), name=f"VideoProcessor-{i}", daemon=True)
+            threading.Thread(target=process_frames, args=(i,), name=f"VideoProcessor-{i}")
             for i in range(num_workers)
         ]
-        write_thread = threading.Thread(target=write_frames, name="VideoWriter", daemon=True)
+        write_thread = threading.Thread(target=write_frames, name="VideoWriter")
         
         read_thread.start()
         for t in process_threads:
@@ -1187,6 +1265,11 @@ def _swap_face_video_by_sources(
         raise
     finally:
         stop_event.set()
+        
+        # 清空队列，避免线程阻塞
+        _clear_queue(read_queue)
+        _clear_queue(write_queue)
+        
         if cap is not None:
             cap.release()
         if writer is not None:
@@ -1208,13 +1291,13 @@ def _normalize_output_frame(frame, width, height):
     return out
 
 
-def _detect_face_boxes_in_frame(frame, search_areas):
+def _detect_face_boxes_in_frame(frame, search_areas, tf_instance=None, tf_lock=None):
     frame_h, frame_w = frame.shape[:2]
     boxes = []
     for area in search_areas:
         x, y, w, h = area
         crop = frame[y : y + h, x : x + w]
-        detections = _get_faces_with_boxes(crop)
+        detections = _get_faces_with_boxes(crop, tf_instance, tf_lock)
         for det in detections:
             bx, by, bw, bh = det["box"]
             gx = x + bx

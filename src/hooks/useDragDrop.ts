@@ -2,32 +2,59 @@ import { DragDropEvent, getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-function debounce(func: any, delay = 100) {
-  let timeoutId: any;
-  return function (...args: any) {
-    clearTimeout(timeoutId);
+// 类型安全的 debounce 实现
+function debounce<T extends (...args: any[]) => any>(
+  func: T,
+  delay = 100
+): (...args: Parameters<T>) => void {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  const debouncedFn = (...args: Parameters<T>) => {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
     timeoutId = setTimeout(() => {
-      //@ts-ignore
-      func.apply(this, args);
+      func(...args);
+      timeoutId = null;
     }, delay);
   };
+
+  // 添加清理方法
+  (debouncedFn as any).cancel = () => {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+  };
+
+  return debouncedFn;
 }
 
 export function useDragDrop(onDrop: (paths: string[]) => void) {
-  const ref = useRef<any>(null);
+  const ref = useRef<HTMLDivElement | null>(null);
   const onDropRef = useRef(onDrop);
   const [isOverTarget, setIsOverTarget] = useState(false);
+  const debouncedDropRef = useRef<((paths: string[]) => void) & { cancel?: () => void }>();
 
   useEffect(() => {
     onDropRef.current = onDrop;
   }, [onDrop]);
 
-  const onDropped = useCallback(
-    debounce((paths: string[]) => {
+  useEffect(() => {
+    // 创建 debounced 函数
+    debouncedDropRef.current = debounce((paths: string[]) => {
       onDropRef.current(paths);
-    }),
-    []
-  );
+    }, 100);
+
+    // 清理函数
+    return () => {
+      debouncedDropRef.current?.cancel?.();
+    };
+  }, []);
+
+  const onDropped = useCallback((paths: string[]) => {
+    debouncedDropRef.current?.(paths);
+  }, []);
 
   useEffect(() => {
     const checkIsInside = async (event: DragDropEvent) => {
@@ -72,7 +99,7 @@ export function useDragDrop(onDrop: (paths: string[]) => void) {
     return () => {
       cleanup?.();
     };
-  }, []);
+  }, [onDropped]);
 
   return { isOverTarget, ref };
 }

@@ -66,37 +66,44 @@ export function useSwapFace() {
       setError(null);
       setVideoProgress(0);
       setVideoEtaSeconds(null);
-      setVideoStage("queued");
+      setVideoStage(null);
 
       const taskId = (kSwapFaceRefs.id++).toString();
-      let polling = true;
+      // 使用对象引用来控制轮询，确保可以从外部停止
+      const pollingControl = { shouldStop: false };
       let finalResult: string | null = null;
 
       const pollProgress = async () => {
-        while (polling) {
+        // 添加最大轮询次数限制，避免无限轮询
+        const maxPolls = 3600; // 最多轮询1小时（假设每秒一次）
+        let pollCount = 0;
+
+        while (!pollingControl.shouldStop && pollCount < maxPolls) {
+          pollCount++;
+
           try {
             const state = await Server.getVideoTaskProgress(taskId);
 
-            // 处理所有状态，包括 "queued"
-            if (state.status === "queued" || state.status === "running" || state.status === "success") {
+            // 处理所有状态
+            if (state.status === "running" || state.status === "success") {
               setVideoProgress(state.progress ?? 0);
               setVideoEtaSeconds(state.etaSeconds ?? null);
               setVideoStage(state.stage ?? null);
               if (state.status === "success" && state.result) {
                 finalResult = state.result;
-                polling = false;
+                pollingControl.shouldStop = true;
                 break;
               }
             } else if (state.status === "failed") {
               setVideoEtaSeconds(null);
               setVideoStage(state.stage ?? "failed");
               setError(state.error ?? "unknown");
-              polling = false;
+              pollingControl.shouldStop = true;
               break;
             } else if (state.status === "cancelled") {
               setVideoEtaSeconds(null);
               setVideoStage(state.stage ?? "cancelled");
-              polling = false;
+              pollingControl.shouldStop = true;
               break;
             }
 
@@ -109,12 +116,18 @@ export function useSwapFace() {
             await new Promise((resolve) => setTimeout(resolve, 2000));
           }
         }
+
+        if (pollCount >= maxPolls) {
+          console.error("[useSwapFace] 轮询超时");
+          setError("polling-timeout");
+          pollingControl.shouldStop = true;
+        }
       };
 
       const pollPromise = pollProgress();
 
       kSwapFaceRefs.cancel = async () => {
-        polling = false;
+        pollingControl.shouldStop = true;
         const success = await Server.cancelTask(taskId);
         if (success) {
           setIsSwapping(false);
@@ -132,6 +145,7 @@ export function useSwapFace() {
       // We rely on polling to get the result.
       if (result) {
         // If backend returned result immediately (old behavior or fast task)
+        pollingControl.shouldStop = true;
         setVideoProgress(100);
         setVideoEtaSeconds(0);
         setVideoStage("done");
@@ -140,7 +154,7 @@ export function useSwapFace() {
         // Immediate error
         setError(error);
         setVideoStage("failed");
-        polling = false; // Stop polling
+        pollingControl.shouldStop = true; // Stop polling
       }
 
       // Wait for polling to finish (it finishes when status is success/failed/cancelled)

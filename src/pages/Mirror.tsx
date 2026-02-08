@@ -63,7 +63,6 @@ export function MirrorPage() {
     error: swapError,
     videoProgress,
     videoEtaSeconds,
-    videoStage,
   } = useSwapFace();
   const [success, setSuccess] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
@@ -165,7 +164,17 @@ export function MirrorPage() {
       img.onload = () => {
         setInputSize({ width: img.naturalWidth, height: img.naturalHeight });
       };
+      img.onerror = () => {
+        console.error("[Mirror] 图片加载失败:", input.path);
+      };
       img.src = convertFileSrc(input.path);
+
+      // 清理函数：防止内存泄漏
+      return () => {
+        img.onload = null;
+        img.onerror = null;
+        img.src = "";
+      };
     }
   }, [kMirrorStates.input?.path, kMirrorStates.input?.type]);
 
@@ -614,7 +623,7 @@ export function MirrorPage() {
       startPointRef.current = null;
       moveRef.current = null;
     },
-    [draftRegion, regions.length, isMultiFaceMode, faceSources]
+    [draftRegion, regions.length]
   );
 
   const handleSelectRegion = useCallback(
@@ -1268,30 +1277,6 @@ export function MirrorPage() {
     return `${mm}:${ss}`;
   }, []);
 
-  const getVideoStageLabel = useCallback(
-    (stage: string | null | undefined) => {
-      if (!stage) {
-        return t("Initializing...");
-      }
-      const stageMap: Record<string, string> = {
-        queued: t("Queued"),
-        "validating-input": t("Validating input"),
-        "opening-video": t("Opening video"),
-        "reading-video-metadata": t("Reading video metadata"),
-        "extracting-target-face": t("Extracting target face"),
-        "building-face-tracks": t("Building face tracks"),
-        "processing-video-frames": t("Processing video frames"),
-        "muxing-audio": t("Muxing audio"),
-        finalizing: t("Finalizing output"),
-        done: t("Completed"),
-        failed: t("Failed"),
-        cancelled: t("Cancelled"),
-      };
-      return stageMap[stage] || stage;
-    },
-    [t]
-  );
-
   const tips = notice
     ? notice
     : kMirrorStates.isMe
@@ -1300,9 +1285,12 @@ export function MirrorPage() {
         ? t("Then, drag the photo you want to swap faces with into the mirror.")
         : isSwapping
           ? isVideoInput
-            ? t("Video swapping stage", {
-              stage: getVideoStageLabel(videoStage),
-            })
+            ? videoProgress > 0
+              ? t("Video processing progress", { progress: videoProgress.toFixed(1) }) +
+              (videoEtaSeconds !== null && videoEtaSeconds !== undefined
+                ? ` - ${t("Estimated remaining time", { eta: formatEta(videoEtaSeconds) })}`
+                : "")
+              : t("Initializing video processing...")
             : t("Face swapping... This may take a few seconds, please wait.")
           : isDetectingFaces
             ? t("Detecting faces...")
@@ -1692,16 +1680,11 @@ export function MirrorPage() {
                     })}
                   </span>
                   <span>
-                    {videoEtaSeconds !== null
+                    {videoEtaSeconds !== null && videoEtaSeconds !== undefined
                       ? t("Estimated remaining time", {
                         eta: formatEta(videoEtaSeconds),
                       })
-                      : t("Estimating remaining time...")}
-                  </span>
-                  <span>
-                    {t("Current stage", {
-                      stage: getVideoStageLabel(videoStage),
-                    })}
+                      : t("Calculating...")}
                   </span>
                 </div>
               </div>
