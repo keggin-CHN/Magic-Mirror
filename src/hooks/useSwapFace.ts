@@ -1,6 +1,15 @@
 import { useCallback, useEffect } from "react";
 import { useXState } from "xsta";
-import { Server, type Task, type TaskResult, type VideoTask } from "../services/server";
+import {
+  Server,
+  type FaceSource,
+  type Region,
+  type Task,
+  type TaskResult,
+  type VideoTask,
+} from "../services/server";
+import { WebServerClient } from "@/services/webServer";
+import { isTauri } from "@/services/runtime";
 
 const kSwapFaceRefs: {
   id: number;
@@ -10,7 +19,27 @@ const kSwapFaceRefs: {
   cancel: undefined,
 };
 
+type WebImageTask = {
+  inputFileId: string;
+  targetFaceId?: string;
+  regions?: Region[];
+  faceSources?: FaceSource[];
+};
+
+type WebVideoTask = {
+  inputFileId: string;
+  targetFaceId?: string;
+  regions?: Region[];
+  faceSources?: FaceSource[];
+  keyFrameMs?: number;
+  useGpu?: boolean;
+};
+
+type AnyImageTask = Omit<Task, "id"> | WebImageTask;
+type AnyVideoTask = Omit<VideoTask, "id"> | WebVideoTask;
+
 export function useSwapFace() {
+  const client = isTauri() ? Server : WebServerClient;
   const [isSwapping, setIsSwapping] = useXState("isSwapping", false);
   const [output, setOutput] = useXState<string | null>("swapOutput", null);
   const [error, setError] = useXState<string | null>("swapError", null);
@@ -27,7 +56,7 @@ export function useSwapFace() {
       setError(null);
       const taskId = (kSwapFaceRefs.id++).toString();
       kSwapFaceRefs.cancel = async () => {
-        const success = await Server.cancelTask(taskId);
+        const success = await client.cancelTask(taskId);
         if (success) {
           setIsSwapping(false);
         }
@@ -40,26 +69,26 @@ export function useSwapFace() {
       setIsSwapping(false);
       return result;
     },
-    []
+    [client, setError, setIsSwapping, setOutput]
   );
 
   const swapFace = useCallback(
-    async (task: Omit<Task, "id">) => {
+    async (task: AnyImageTask) => {
       setVideoProgress(0);
       setVideoEtaSeconds(null);
       setVideoStage(null);
       return runTask((taskId: string) =>
-        Server.createTask({
+        client.createTask({
           id: taskId,
-          ...task,
+          ...(task as any),
         })
       );
     },
-    [runTask, setVideoEtaSeconds, setVideoProgress, setVideoStage]
+    [client, runTask, setVideoEtaSeconds, setVideoProgress, setVideoStage]
   );
 
   const swapVideo = useCallback(
-    async (task: Omit<VideoTask, "id">) => {
+    async (task: AnyVideoTask) => {
       await kSwapFaceRefs.cancel?.();
 
       setIsSwapping(true);
@@ -82,7 +111,7 @@ export function useSwapFace() {
           pollCount++;
 
           try {
-            const state = await Server.getVideoTaskProgress(taskId);
+            const state = await client.getVideoTaskProgress(taskId);
 
             // 处理所有状态
             if (state.status === "running" || state.status === "success") {
@@ -128,7 +157,7 @@ export function useSwapFace() {
 
       kSwapFaceRefs.cancel = async () => {
         pollingControl.shouldStop = true;
-        const success = await Server.cancelTask(taskId);
+        const success = await client.cancelTask(taskId);
         if (success) {
           setIsSwapping(false);
           setVideoEtaSeconds(null);
@@ -136,9 +165,9 @@ export function useSwapFace() {
         }
       };
 
-      const { result, error } = await Server.createVideoTask({
+      const { result, error } = await client.createVideoTask({
         id: taskId,
-        ...task,
+        ...(task as any),
       });
 
       // If the backend returns immediately (queued), we don't have the result yet.
@@ -175,6 +204,7 @@ export function useSwapFace() {
       return result;
     },
     [
+      client,
       setError,
       setIsSwapping,
       setOutput,

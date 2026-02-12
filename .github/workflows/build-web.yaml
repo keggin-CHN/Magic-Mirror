@@ -1,0 +1,71 @@
+name: Build Web (Debian/Ubuntu)
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "src/**"
+      - "src-python/**"
+      - "scripts/install-web.sh"
+      - "index.html"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "vite.config.ts"
+      - "tsconfig.json"
+      - "tsconfig.node.json"
+      - "uno.config.ts"
+      - ".github/workflows/build-web.yaml"
+      - "!src-python/server.py"
+      - "!src-tauri/**"
+  pull_request:
+    paths:
+      - "src/**"
+      - "src-python/**"
+      - "scripts/install-web.sh"
+      - "index.html"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "vite.config.ts"
+      - "tsconfig.json"
+      - "tsconfig.node.json"
+      - "uno.config.ts"
+      - ".github/workflows/build-web.yaml"
+      - "!src-python/server.py"
+      - "!src-tauri/**"
+
+jobs:
+  build-web:
+    name: Ubuntu (Debian/Ubuntu)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8.5.1
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+          cache-dependency-path: "pnpm-lock.yaml"
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+      - name: Build web frontend
+        run: VITE_OUT_DIR=dist-web pnpm build
+      - name: Package web bundle
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p dist
+          tar -czf "dist/magicmirror_web_${VERSION}_debian_ubuntu_x86_64.tar.gz" \
+            dist-web \
+            src-python \
+            scripts/install-web.sh \
+            LICENSE
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: web_debian_ubuntu_x86_64
+          path: dist/*.tar.gz
+          if-no-files-found: error

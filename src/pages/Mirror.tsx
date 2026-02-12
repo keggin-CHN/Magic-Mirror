@@ -1,12 +1,20 @@
 import { ProgressBar } from "@/components/ProgressBar";
 import { useDragDrop } from "@/hooks/useDragDrop";
 import { useSwapFace } from "@/hooks/useSwapFace";
+import { isTauri } from "@/services/runtime";
+import {
+  WebServerClient,
+  type LibraryItem,
+  type UploadResult,
+} from "@/services/webServer";
 import { Server, type FaceSource, type Region } from "@/services/server";
 import { getFileExtension, isImageFile, isVideoFile } from "@/services/utils";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { exit } from "@tauri-apps/plugin-process";
-import { open as openExternal } from "@tauri-apps/plugin-shell";
+import {
+  convertFileSrcSafe,
+  exitAppSafe,
+  openDialogSafe,
+  openExternalSafe,
+} from "@/services/tauriBridge";
 import {
   useCallback,
   useEffect,
@@ -17,6 +25,7 @@ import {
   type WheelEvent,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 
 import "@/styles/mirror.css";
 
@@ -28,6 +37,7 @@ interface Asset {
   path: string;
   src: string;
   type?: "image" | "video";
+  name?: string;
 }
 
 interface FaceAsset extends FaceSource {
@@ -55,6 +65,10 @@ export function MirrorPage() {
   rebuild.current = () => setFlag(!flag);
 
   const { i18n, t } = useTranslation();
+  const navigate = useNavigate();
+  const isDesktop = isTauri();
+  const isWeb = !isDesktop;
+  const webClient = WebServerClient;
 
   const {
     isSwapping,
@@ -66,6 +80,9 @@ export function MirrorPage() {
   } = useSwapFace();
   const [success, setSuccess] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
+  const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
+  const [isLibraryLoading, setIsLibraryLoading] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [regions, setRegions] = useState<Region[]>([]);
   const [draftRegion, setDraftRegion] = useState<Region | null>(null);
   const [inputSize, setInputSize] = useState<{
@@ -96,6 +113,7 @@ export function MirrorPage() {
   const [isMultiFaceMode, setIsMultiFaceMode] = useState(false);
   const [faceSources, setFaceSources] = useState<FaceAsset[]>([]);
   const faceSourceInputRef = useRef<HTMLInputElement | null>(null);
+  const mainInputRef = useRef<HTMLInputElement | null>(null);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const autoDetectedImagePathRef = useRef<string | null>(null);
   const [videoDurationMs, setVideoDurationMs] = useState(0);
@@ -103,6 +121,189 @@ export function MirrorPage() {
   const [isDetectingFaces, setIsDetectingFaces] = useState(false);
   const [selectionZoom, setSelectionZoom] = useState(1);
   const [activeFaceSourceId, setActiveFaceSourceId] = useState<string | null>(null);
+
+  const refreshLibrary = useCallback(async () => {
+    if (!isWeb || !webClient.isAuthed) {
+      return;
+    }
+    setIsLibraryLoading(true);
+    const items = await webClient.listLibrary();
+    setLibraryItems(items);
+    setIsLibraryLoading(false);
+  }, [isWeb, webClient]);
+
+  useEffect(() => {
+    if (!isWeb) {
+      return;
+    }
+    if (!webClient.isAuthed) {
+      navigate("/login");
+      return;
+    }
+    refreshLibrary();
+  }, [isWeb, navigate, refreshLibrary, webClient]);
+
+  const addFaceSourcesFromLibraryItems = useCallback((items: LibraryItem[]) => {
+    if (!items.length) {
+      return;
+    }
+    setFaceSources((prev: FaceAsset[]) => {
+      const existed = new Set(prev.map((item) => item.id));
+      const additions = items
+        .filter((item) => !existed.has(item.id))
+        .map((item) => ({
+          id: item.id,
+          path: item.id,
+          src: item.url,
+          name: item.name,
+        }));
+      if (!additions.length) {
+        return prev;
+      }
+      return [...prev, ...additions];
+    });
+    setNotice(null);
+  }, []);
+
+  const setMeFromLibraryItem = useCallback((item: LibraryItem) => {
+    kMirrorStates.me = {
+      path: item.id,
+      src: item.url,
+      type: "image",
+      name: item.name,
+    };
+    kMirrorStates.result = undefined;
+    setNotice(null);
+    rebuild.current();
+  }, []);
+
+  const handleSelectLibraryItem = useCallback(
+    (item: LibraryItem) => {
+      if (kMirrorStates.isMe) {
+        setMeFromLibraryItem(item);
+        return;
+      }
+      if (isMultiFaceMode) {
+        addFaceSourcesFromLibraryItems([item]);
+        setActiveFaceSourceId(item.id);
+      }
+    },
+    [addFaceSourcesFromLibraryItems, isMultiFaceMode, setMeFromLibraryItem]
+  );
+
+  const uploadLibraryFiles = useCallback(
+    async (
+      files: File[],
+      options?: { selectFirst?: boolean; addToFaceSources?: boolean }
+    ) => {
+      if (!isWeb) {
+        return [];
+      }
+      const validFiles = files.filter((file) => {
+        const ext = getFileExtension(file.name);
+        if (ext === ".heic" || ext === ".heif") {
+          return false;
+        }
+        return isImageFile(file.name);
+      });
+      if (!validFiles.length) {
+        setNotice(t("Please use an image for your face photo."));
+        return [];
+      }
+      setIsUploading(true);
+      const uploaded: LibraryItem[] = [];
+      for (const file of validFiles) {
+        const item = await webClient.uploadLibrary(file);
+        if (item) {
+          uploaded.push(item);
+        }
+      }
+      setIsUploading(false);
+      if (!uploaded.length) {
+        setNotice(t("Upload failed. Please try again."));
+        return uploaded;
+      }
+      setNotice(null);
+      setLibraryItems((prev: LibraryItem[]) => {
+        const map = new Map<string, LibraryItem>(
+          prev.map((item: LibraryItem) => [item.id, item])
+        );
+        for (const item of uploaded) {
+          map.set(item.id, item);
+        }
+        return Array.from(map.values());
+      });
+      if (options?.addToFaceSources) {
+        addFaceSourcesFromLibraryItems(uploaded);
+      }
+      if (options?.selectFirst && uploaded.length) {
+        setMeFromLibraryItem(uploaded[0]);
+      }
+      return uploaded;
+    },
+    [
+      addFaceSourcesFromLibraryItems,
+      isWeb,
+      setMeFromLibraryItem,
+      t,
+      webClient,
+    ]
+  );
+
+  const uploadInputFile = useCallback(
+    async (file: File): Promise<UploadResult | null> => {
+      if (!isWeb) {
+        return null;
+      }
+      const ext = getFileExtension(file.name);
+      const isHeic = ext === ".heic" || ext === ".heif";
+      if (isHeic) {
+        setNotice(t("HEIC/HEIF is not supported. Please convert to JPG/PNG."));
+        return null;
+      }
+      const isImage = isImageFile(file.name);
+      const isVideo = isVideoFile(file.name);
+      if (!isImage && !isVideo) {
+        setNotice(t("Unsupported file type."));
+        return null;
+      }
+      setIsUploading(true);
+      const uploaded = await webClient.uploadFile(file);
+      setIsUploading(false);
+      if (!uploaded) {
+        setNotice(t("Upload failed. Please try again."));
+        return null;
+      }
+      kMirrorStates.input = {
+        path: uploaded.fileId,
+        src: uploaded.url,
+        type: uploaded.type,
+        name: uploaded.name,
+      };
+      kMirrorStates.result = undefined;
+      setNotice(null);
+      rebuild.current();
+      if (kMirrorStates.me) {
+        setIsEditingRegions(true);
+      }
+      return uploaded;
+    },
+    [isWeb, t, webClient]
+  );
+
+  const handleMainInputChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files;
+      if (!files || files.length === 0) {
+        return;
+      }
+      if (isWeb) {
+        await uploadInputFile(files[0]);
+      }
+      event.target.value = "";
+    },
+    [isWeb, uploadInputFile]
+  );
 
   useEffect(() => {
     setTimeout(() => {
@@ -167,7 +368,7 @@ export function MirrorPage() {
       img.onerror = () => {
         console.error("[Mirror] 图片加载失败:", input.path);
       };
-      img.src = convertFileSrc(input.path);
+      img.src = input.src || convertFileSrcSafe(input.path);
 
       // 清理函数：防止内存泄漏
       return () => {
@@ -183,19 +384,21 @@ export function MirrorPage() {
     if (!isMultiFaceMode || !me) {
       return;
     }
+    const defaultId = isWeb ? me.path : kDefaultFaceSourceId;
     setFaceSources((prev: FaceAsset[]) => {
-      const others = prev.filter((item) => item.id !== kDefaultFaceSourceId);
+      const others = prev.filter((item) => item.id !== defaultId);
       return [
         {
-          id: kDefaultFaceSourceId,
+          id: defaultId,
           path: me.path,
           src: me.src,
           locked: true,
+          name: me.name,
         },
         ...others,
       ];
     });
-  }, [isMultiFaceMode, flag]);
+  }, [isMultiFaceMode, flag, isWeb]);
 
   const clamp = (value: number, min: number, max: number) =>
     Math.max(min, Math.min(value, max));
@@ -341,7 +544,9 @@ export function MirrorPage() {
 
     (async () => {
       setIsDetectingFaces(true);
-      const detected = await Server.detectImageFaces(input.path);
+      const detected = isWeb
+        ? await webClient.detectImageFaces(input.path)
+        : await Server.detectImageFaces(input.path);
       if (cancelled) {
         return;
       }
@@ -372,7 +577,15 @@ export function MirrorPage() {
     return () => {
       cancelled = true;
     };
-  }, [showSelection, isImageInput, inputSize, mapMediaRegionsToScreen, t]);
+  }, [
+    showSelection,
+    isImageInput,
+    inputSize,
+    mapMediaRegionsToScreen,
+    t,
+    isWeb,
+    webClient,
+  ]);
 
   useEffect(() => {
     if (!isVideoInput || !showSelection) {
@@ -739,15 +952,15 @@ export function MirrorPage() {
           return next;
         }
         setFaceSources((prevSources: FaceAsset[]) => {
-          const others = prevSources.filter(
-            (item) => item.id !== kDefaultFaceSourceId
-          );
+          const defaultId = isWeb ? me.path : kDefaultFaceSourceId;
+          const others = prevSources.filter((item) => item.id !== defaultId);
           return [
             {
-              id: kDefaultFaceSourceId,
+              id: defaultId,
               path: me.path,
               src: me.src,
               locked: true,
+              name: me.name,
             },
             ...others,
           ];
@@ -757,7 +970,7 @@ export function MirrorPage() {
     });
     setNotice(null);
     setActiveFaceSourceId(null);
-  }, []);
+  }, [isWeb]);
 
   const addFaceSourcesFromPaths = useCallback((paths: string[]) => {
     if (!paths.length) {
@@ -771,7 +984,7 @@ export function MirrorPage() {
       .map((path: string, idx: number) => ({
         id: `face-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
         path,
-        src: convertFileSrc(path),
+        src: convertFileSrcSafe(path),
       }));
 
     if (!additions.length) {
@@ -790,8 +1003,12 @@ export function MirrorPage() {
   }, []);
 
   const handleOpenFaceSourcePicker = useCallback(async () => {
+    if (isWeb) {
+      faceSourceInputRef.current?.click();
+      return;
+    }
     try {
-      const selected = await openDialog({
+      const selected = await openDialogSafe({
         multiple: true,
         directory: false,
         filters: [
@@ -814,46 +1031,40 @@ export function MirrorPage() {
         addFaceSourcesFromPaths(paths);
       }
     } catch {
-      // fallback: keep old file input way in web/dev environment
       faceSourceInputRef.current?.click();
     }
-  }, [addFaceSourcesFromPaths]);
+  }, [addFaceSourcesFromPaths, isWeb]);
 
   const handleFaceSourceInputChange = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      // 修复：event.target.files 可能是 null，且类型转换可能存在问题
-      // 另外，input type="file" 的 onChange 事件触发后，如果再次选择相同文件可能不会触发
-      // 所以需要在处理完后清空 value
-
+    async (event: ChangeEvent<HTMLInputElement>) => {
       const files = event.target.files;
       if (!files || files.length === 0) {
         return;
       }
 
+      if (isWeb) {
+        await uploadLibraryFiles(Array.from(files), {
+          selectFirst: kMirrorStates.isMe,
+          addToFaceSources: !kMirrorStates.isMe && isMultiFaceMode,
+        });
+        event.target.value = "";
+        return;
+      }
+
       const fileList = Array.from(files);
-      // 注意：浏览器出于安全考虑，通常不直接暴露完整文件路径 (file.path)
-      // 但在 Tauri 环境中，如果配置了适当的权限，File 对象可能会包含 path 属性
-      // 或者我们需要使用 Tauri 的 dialog API 来选择文件，而不是原生的 input
-
-      // 尝试读取 path，如果不存在（比如在纯浏览器环境），则回退到使用 URL.createObjectURL (虽然这只对本次会话有效)
-      // 但根据项目上下文，这是一个 Tauri 应用，且 Asset 接口定义了 path: string
-
       const paths = fileList
-        .map((file) => (file as any).path) // 强制转换，Tauri 环境下 File 对象通常有 path 属性
+        .map((file) => (file as any).path)
         .filter((path): path is string => !!path);
 
       if (paths.length > 0) {
         addFaceSourcesFromPaths(paths);
       } else {
-        // 如果获取不到 path (例如在非 Tauri 环境或权限问题)，尝试使用 createObjectURL
-        // 但这里为了保持一致性，我们假设是在 Tauri 环境下运行
-        // 如果 paths 为空，可能是因为 input 没能获取到 path
         console.warn("无法获取文件路径，请确保在 Tauri 环境中运行");
       }
 
       event.target.value = "";
     },
-    [addFaceSourcesFromPaths]
+    [addFaceSourcesFromPaths, isMultiFaceMode, isWeb, uploadLibraryFiles]
   );
 
   const handleAssignSelectedRegionFaceSource = useCallback(
@@ -892,9 +1103,6 @@ export function MirrorPage() {
 
   const handleRemoveFaceSource = useCallback(
     (faceSourceId: string) => {
-      if (faceSourceId === kDefaultFaceSourceId) {
-        return;
-      }
       setFaceSources((prev: FaceAsset[]) =>
         prev.filter((source: FaceAsset) => source.id !== faceSourceId || source.locked)
       );
@@ -931,10 +1139,15 @@ export function MirrorPage() {
     setNotice(null);
     setSelectionZoom(1);
     setIsDetectingFaces(true);
-    const detected = await Server.detectVideoFaces(
-      input.path,
-      Math.max(0, Math.round(videoKeyFrameMs))
-    );
+    const detected = isWeb
+      ? await webClient.detectVideoFaces(
+        input.path,
+        Math.max(0, Math.round(videoKeyFrameMs))
+      )
+      : await Server.detectVideoFaces(
+        input.path,
+        Math.max(0, Math.round(videoKeyFrameMs))
+      );
     setIsDetectingFaces(false);
 
     if (detected.error) {
@@ -960,7 +1173,21 @@ export function MirrorPage() {
     if (!screenRegions.length) {
       setNotice(t("No face detected in selected areas."));
     }
-  }, [inputSize, mapMediaRegionsToScreen, t, videoKeyFrameMs]);
+  }, [inputSize, isWeb, mapMediaRegionsToScreen, t, videoKeyFrameMs, webClient]);
+
+  const buildResultName = useCallback(
+    (input: Asset | undefined, type: "image" | "video") => {
+      if (!input || !input.name) {
+        return type === "video" ? "result.mp4" : "result.png";
+      }
+      const ext = getFileExtension(input.name);
+      if (type === "video") {
+        return ext ? input.name.replace(ext, "_output.mp4") : `${input.name}_output.mp4`;
+      }
+      return ext ? input.name.replace(ext, `_output${ext}`) : `${input.name}_output`;
+    },
+    []
+  );
 
   const handleStartSwap = useCallback(async () => {
     const me = kMirrorStates.me;
@@ -1014,23 +1241,39 @@ export function MirrorPage() {
 
         beginSwap();
 
-        const result = await swapVideo({
-          inputVideo: input.path,
-          regions: videoRegions,
-          faceSources: faceSources.map((item: FaceAsset) => ({
-            id: item.id,
-            path: item.path,
-          })),
-          keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
-          useGpu: useGpu,
-        });
+        const result = await swapVideo(
+          isWeb
+            ? {
+              inputFileId: input.path,
+              regions: videoRegions,
+              faceSources: faceSources.map((item: FaceAsset) => ({
+                id: item.id,
+                path: item.path,
+              })),
+              keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
+              useGpu: useGpu,
+            }
+            : {
+              inputVideo: input.path,
+              regions: videoRegions,
+              faceSources: faceSources.map((item: FaceAsset) => ({
+                id: item.id,
+                path: item.path,
+              })),
+              keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
+              useGpu: useGpu,
+            }
+        );
 
         setSuccess(result != null);
         if (result) {
           kMirrorStates.result = {
-            src: `${convertFileSrc(result)}?t=${Date.now()}`,
+            src: isWeb
+              ? `${webClient.buildFileUrl(result)}?t=${Date.now()}`
+              : `${convertFileSrcSafe(result)}?t=${Date.now()}`,
             path: result,
             type: "video",
+            name: buildResultName(input, "video"),
           };
         } else {
           setIsEditingRegions(true);
@@ -1041,18 +1284,29 @@ export function MirrorPage() {
 
       beginSwap();
 
-      const result = await swapVideo({
-        inputVideo: input.path,
-        targetFace: me.path,
-        useGpu: useGpu,
-      });
+      const result = await swapVideo(
+        isWeb
+          ? {
+            inputFileId: input.path,
+            targetFaceId: me.path,
+            useGpu: useGpu,
+          }
+          : {
+            inputVideo: input.path,
+            targetFace: me.path,
+            useGpu: useGpu,
+          }
+      );
 
       setSuccess(result != null);
       if (result) {
         kMirrorStates.result = {
-          src: `${convertFileSrc(result)}?t=${Date.now()}`,
+          src: isWeb
+            ? `${webClient.buildFileUrl(result)}?t=${Date.now()}`
+            : `${convertFileSrcSafe(result)}?t=${Date.now()}`,
           path: result,
           type: "video",
+          name: buildResultName(input, "video"),
         };
       } else {
         setIsEditingRegions(true);
@@ -1092,49 +1346,126 @@ export function MirrorPage() {
     beginSwap();
 
     const result = await swapFace(
-      isMultiFaceMode
-        ? {
-          inputImage: input.path,
-          regions: imageRegions,
-          faceSources: faceSources.map((item: FaceAsset) => ({
-            id: item.id,
-            path: item.path,
-          })),
-        }
-        : {
-          inputImage: input.path,
-          targetFace: me.path,
-          regions: imageRegions,
-        }
+      isWeb
+        ? isMultiFaceMode
+          ? {
+            inputFileId: input.path,
+            regions: imageRegions,
+            faceSources: faceSources.map((item: FaceAsset) => ({
+              id: item.id,
+              path: item.path,
+            })),
+          }
+          : {
+            inputFileId: input.path,
+            targetFaceId: me.path,
+            regions: imageRegions,
+          }
+        : isMultiFaceMode
+          ? {
+            inputImage: input.path,
+            regions: imageRegions,
+            faceSources: faceSources.map((item: FaceAsset) => ({
+              id: item.id,
+              path: item.path,
+            })),
+          }
+          : {
+            inputImage: input.path,
+            targetFace: me.path,
+            regions: imageRegions,
+          }
     );
 
     setSuccess(result != null);
     if (result) {
       kMirrorStates.result = {
-        src: `${convertFileSrc(result)}?t=${Date.now()}`,
+        src: isWeb
+          ? `${webClient.buildFileUrl(result)}?t=${Date.now()}`
+          : `${convertFileSrcSafe(result)}?t=${Date.now()}`,
         path: result,
         type: "image",
+        name: buildResultName(input, "image"),
       };
     } else {
       setIsEditingRegions(true);
     }
     rebuild.current();
   }, [
+    buildResultName,
     faceSources,
     isMultiFaceMode,
+    isWeb,
     regions,
     swapFace,
     swapVideo,
     t,
     toImageRegions,
     videoKeyFrameMs,
+    webClient,
   ]);
 
-  const { ref, isOverTarget } = useDragDrop(async (paths: string[]) => {
-    if (!paths.length) {
+  const handleDownloadResult = useCallback(async () => {
+    const result = kMirrorStates.result;
+    if (!isWeb || !result) {
       return;
     }
+    const ok = await webClient.downloadResult(result.path, result.name);
+    if (!ok) {
+      setNotice(t("Download failed. Please try again."));
+      return;
+    }
+    setNotice(t("Download complete."));
+  }, [isWeb, t, webClient]);
 
+  const handleChangePassword = useCallback(async () => {
+    if (!isWeb) {
+      return;
+    }
+    if (!webClient.isAuthed) {
+      navigate("/login");
+      return;
+    }
+    const nextPassword = window.prompt(t("Enter new password"));
+    if (!nextPassword) {
+      return;
+    }
+    const { success } = await webClient.updateCredential(nextPassword);
+    if (!success) {
+      setNotice(t("Update failed. Please try again."));
+      return;
+    }
+    setNotice(t("Password updated."));
+  }, [isWeb, navigate, t, webClient]);
+
+  const handleResetAll = useCallback(() => {
+    kMirrorStates.isMe = true;
+    kMirrorStates.me = undefined;
+    kMirrorStates.input = undefined;
+    kMirrorStates.result = undefined;
+    setNotice(null);
+    setIsEditingRegions(false);
+    setIsMultiFaceMode(false);
+    setFaceSources([]);
+    setRegions([]);
+    setDraftRegion(null);
+    setInputSize(null);
+    setSelectedRegionIndex(null);
+    setActiveFaceSourceId(null);
+    setVideoDurationMs(0);
+    setVideoKeyFrameMs(0);
+    setIsDetectingFaces(false);
+    setSelectionZoom(1);
+    selectingRef.current = false;
+    startPointRef.current = null;
+    resizeRef.current = null;
+    moveRef.current = null;
+    inputPathRef.current = null;
+    autoDetectedImagePathRef.current = null;
+    rebuild.current();
+  }, []);
+
+  const { ref, isOverTarget } = useDragDrop(async ({ paths, files }) => {
     const shouldAddFaceSources =
       !kMirrorStates.isMe &&
       isEditingRegions &&
@@ -1143,35 +1474,25 @@ export function MirrorPage() {
       (kMirrorStates.input.type === "image" ||
         kMirrorStates.input.type === "video");
 
-    // 修复：支持拖拽到素材池区域
-    // 检查是否拖拽到了素材池区域
-    // const isOverFaceSourcePool = (event?: DragEvent) => {
-    //   // 由于 useDragDrop 钩子目前只提供了 paths，没有提供 event 对象或坐标
-    //   // 我们需要修改 useDragDrop 或者在这里做一些假设
-    //   // 但根据用户描述 "另外把图片从外部拖动到素材池也可以！"
-    //   // 我们可以简单地认为，只要处于多脸模式且正在编辑区域，拖拽进来的图片就应该被视为添加素材
-    //   // 除非用户明确是想替换主输入图片（但这通常需要拖拽到特定区域，或者在非编辑模式下）
+    if (isWeb) {
+      if (!files.length) {
+        return;
+      }
+      if (kMirrorStates.isMe) {
+        await uploadLibraryFiles(files, { selectFirst: true });
+        return;
+      }
+      if (shouldAddFaceSources) {
+        await uploadLibraryFiles(files, { addToFaceSources: true });
+        return;
+      }
+      await uploadInputFile(files[0]);
+      return;
+    }
 
-    //   // 现有的逻辑是：如果处于多脸模式编辑状态，拖拽就认为是添加素材。
-    //   // 这似乎符合逻辑。
-    //   // 但用户反馈说 "把图片从外部拖动到素材池也可以"，暗示可能之前的逻辑有问题或者用户期望更明确的交互。
-
-    //   // 让我们检查一下 shouldAddFaceSources 的条件：
-    //   // !kMirrorStates.isMe (不是在设置自己的脸)
-    //   // isEditingRegions (正在编辑区域)
-    //   // isMultiFaceMode (多脸模式)
-    //   // !!kMirrorStates.input (有输入图片/视频)
-
-    //   // 这个逻辑看起来是正确的，只要满足这些条件，拖拽就会调用 addFaceSourcesFromPaths。
-    //   // 可能是用户在操作时，某些条件不满足？
-    //   // 或者用户希望即使不满足某些条件（比如不在编辑区域？），只要拖拽到素材池那个 UI 区域，也能添加？
-
-    //   // 由于我们无法获取拖拽的具体坐标（useDragDrop 限制），我们只能依赖全局状态。
-    //   // 现有的逻辑已经覆盖了 "在多脸模式下拖拽添加素材" 的需求。
-    //   // 也许问题在于 useDragDrop 的实现，或者 isOverTarget 的判断。
-
-    //   return true;
-    // };
+    if (!paths.length) {
+      return;
+    }
 
     if (shouldAddFaceSources) {
       addFaceSourcesFromPaths(paths);
@@ -1179,7 +1500,7 @@ export function MirrorPage() {
     }
 
     const path = paths[0];
-    const src = convertFileSrc(path);
+    const src = convertFileSrcSafe(path);
     const isVideo = isVideoFile(path);
     const isImage = isImageFile(path);
     const ext = getFileExtension(path);
@@ -1279,32 +1600,40 @@ export function MirrorPage() {
 
   const tips = notice
     ? notice
-    : kMirrorStates.isMe
-      ? t("First, drag your front-facing photo into the mirror.")
-      : !isReady
-        ? t("Then, drag the photo you want to swap faces with into the mirror.")
-        : isSwapping
-          ? isVideoInput
-            ? videoProgress > 0
-              ? t("Video processing progress", { progress: videoProgress.toFixed(1) }) +
-              (videoEtaSeconds !== null && videoEtaSeconds !== undefined
-                ? ` - ${t("Estimated remaining time", { eta: formatEta(videoEtaSeconds) })}`
-                : "")
-              : t("Initializing video processing...")
-            : t("Face swapping... This may take a few seconds, please wait.")
-          : isDetectingFaces
-            ? t("Detecting faces...")
-            : selectionTips
-              ? selectionTips
-              : swapErrorMessage
-                ? swapErrorMessage
-                : success
-                  ? isVideoInput
-                    ? t("Face swap successful! Video saved locally.")
-                    : t("Face swap successful! Image saved locally.")
-                  : isVideoInput
-                    ? t("Video face swap failed. Try a different video.")
-                    : t("Face swap failed. Try a different image.");
+    : isUploading
+      ? t("Uploading...")
+      : isLibraryLoading
+        ? t("Loading library...")
+        : kMirrorStates.isMe
+          ? t("First, drag your front-facing photo into the mirror.")
+          : !isReady
+            ? t("Then, drag the photo you want to swap faces with into the mirror.")
+            : isSwapping
+              ? isVideoInput
+                ? videoProgress > 0
+                  ? t("Video processing progress", { progress: videoProgress.toFixed(1) }) +
+                  (videoEtaSeconds !== null && videoEtaSeconds !== undefined
+                    ? ` - ${t("Estimated remaining time", { eta: formatEta(videoEtaSeconds) })}`
+                    : "")
+                  : t("Initializing video processing...")
+                : t("Face swapping... This may take a few seconds, please wait.")
+              : isDetectingFaces
+                ? t("Detecting faces...")
+                : selectionTips
+                  ? selectionTips
+                  : swapErrorMessage
+                    ? swapErrorMessage
+                    : success
+                      ? isVideoInput
+                        ? isWeb
+                          ? t("Face swap successful! Click download to save the video.")
+                          : t("Face swap successful! Video saved locally.")
+                        : isWeb
+                          ? t("Face swap successful! Click download to save the image.")
+                          : t("Face swap successful! Image saved locally.")
+                      : isVideoInput
+                        ? t("Video face swap failed. Try a different video.")
+                        : t("Face swap failed. Try a different image.");
 
   const previewSrc = kMirrorStates.isMe
     ? kMirrorStates.me?.src || background
@@ -1327,6 +1656,13 @@ export function MirrorPage() {
         multiple
         className="hidden"
         onChange={handleFaceSourceInputChange}
+      />
+      <input
+        ref={mainInputRef}
+        type="file"
+        accept="image/*,video/*"
+        className="hidden"
+        onChange={handleMainInputChange}
       />
       <div ref={ref} className="relative w-full h-full">
         <div className="absolute top-[-40px] w-full flex-c-c c-white z-10">
@@ -1358,13 +1694,24 @@ export function MirrorPage() {
                     {t("Switch")}
                   </div>
                 )}
+                {isWeb && (
+                  <div onClick={handleChangePassword}>
+                    {t("Change Password")}
+                  </div>
+                )}
                 {!kMirrorStates.isMe && (isImageInput || isVideoInput) && (
                   <div onClick={handleToggleMultiFaceMode}>
                     {isMultiFaceMode ? t("Single-Face Mode") : t("Multi-Face Swap")}
                   </div>
                 )}
-                <div onClick={() => openExternal(t("aboutLink"))}>{t("About")}</div>
-                <div onClick={() => exit(0)}>{t("Quit")}</div>
+                <div onClick={() => openExternalSafe(t("aboutLink"))}>
+                  {t("About")}
+                </div>
+                {isWeb ? (
+                  <div onClick={handleResetAll}>{t("Reload/Reset")}</div>
+                ) : (
+                  <div onClick={() => exitAppSafe()}>{t("Quit")}</div>
+                )}
               </div>
             </div>
           </div>
@@ -1559,16 +1906,38 @@ export function MirrorPage() {
                 </div>
               </div>
             )}
-            {!showSelection && isImageInput && kMirrorStates.result && (
+            {isWeb && !showSelection && !isSwapping && !kMirrorStates.isMe && (
               <div
                 className="selection-toolbar"
                 onPointerDown={(
                   event: PointerEvent<HTMLDivElement>
                 ) => event.stopPropagation()}
               >
-                <div className="selection-btn" onClick={handleEditRegions}>
-                  {t("Edit Selection")}
+                <div
+                  className={`selection-btn ${isUploading ? "disabled" : ""}`}
+                  onClick={() => mainInputRef.current?.click()}
+                >
+                  {t("Upload Image/Video")}
                 </div>
+              </div>
+            )}
+            {!showSelection && kMirrorStates.result && (
+              <div
+                className="selection-toolbar"
+                onPointerDown={(
+                  event: PointerEvent<HTMLDivElement>
+                ) => event.stopPropagation()}
+              >
+                {isWeb && (
+                  <div className="selection-btn" onClick={handleDownloadResult}>
+                    {t("Download Result")}
+                  </div>
+                )}
+                {isImageInput && (
+                  <div className="selection-btn" onClick={handleEditRegions}>
+                    {t("Edit Selection")}
+                  </div>
+                )}
               </div>
             )}
             {showSelection && isMultiFaceMode && (
@@ -1580,10 +1949,53 @@ export function MirrorPage() {
               >
                 <div className="face-source-header">
                   <span>{t("Face Source Pool")}</span>
-                  <div className="selection-btn" onClick={handleOpenFaceSourcePicker}>
-                    {t("Add Face Sources")}
+                  <div
+                    className={`selection-btn ${isUploading ? "disabled" : ""}`}
+                    onClick={handleOpenFaceSourcePicker}
+                  >
+                    {isWeb ? t("Upload to Library") : t("Add Face Sources")}
                   </div>
                 </div>
+                {isWeb && (
+                  <>
+                    <div className="face-source-bind-row">
+                      <span>{t("Library")}</span>
+                    </div>
+                    {isLibraryLoading ? (
+                      <div className="face-source-empty">
+                        {t("Loading library...")}
+                      </div>
+                    ) : libraryItems.length ? (
+                      <div className="face-source-list">
+                        {libraryItems.map((item: LibraryItem) => {
+                          const isSelected = faceSources.some(
+                            (source: FaceAsset) => source.id === item.id
+                          );
+                          return (
+                            <div
+                              key={`library-${item.id}`}
+                              className={`face-source-card ${isSelected ? "selected" : ""}`}
+                              onClick={() => handleSelectLibraryItem(item)}
+                            >
+                              <img
+                                src={item.url}
+                                className="face-source-thumb"
+                                draggable={false}
+                              />
+                              <div className="face-source-meta">
+                                <span className="face-source-title">{item.name}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="face-source-empty">
+                        {t("No library items yet.")}
+                      </div>
+                    )}
+                  </>
+                )}
                 {selectedRegionIndex !== null && (
                   <div className="face-source-bind-row">
                     <span>
@@ -1667,6 +2079,43 @@ export function MirrorPage() {
                   <div className="face-source-empty">
                     {t("No face sources yet. Add images to begin.")}
                   </div>
+                )}
+              </div>
+            )}
+            {isWeb && kMirrorStates.isMe && (
+              <div className="face-source-panel library-panel">
+                <div className="face-source-header">
+                  <span>{t("Library")}</span>
+                  <div
+                    className={`selection-btn ${isUploading ? "disabled" : ""}`}
+                    onClick={() => faceSourceInputRef.current?.click()}
+                  >
+                    {t("Upload to Library")}
+                  </div>
+                </div>
+                {isLibraryLoading ? (
+                  <div className="face-source-empty">{t("Loading library...")}</div>
+                ) : libraryItems.length ? (
+                  <div className="face-source-list">
+                    {libraryItems.map((item: LibraryItem) => (
+                      <div
+                        key={item.id}
+                        className={`face-source-card ${kMirrorStates.me?.path === item.id ? "selected" : ""}`}
+                        onClick={() => handleSelectLibraryItem(item)}
+                      >
+                        <img
+                          src={item.url}
+                          className="face-source-thumb"
+                          draggable={false}
+                        />
+                        <div className="face-source-meta">
+                          <span className="face-source-title">{item.name}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="face-source-empty">{t("No library items yet.")}</div>
                 )}
               </div>
             )}

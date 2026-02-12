@@ -334,6 +334,11 @@
   bottom: -228px;
 }
 
+.face-source-panel.library-panel {
+  bottom: -140px;
+  width: min(520px, 90vw);
+}
+
 .face-source-header {
   display: flex;
   justify-content: space-between;
