@@ -10,11 +10,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 INSTALL_DIR="${INSTALL_DIR:-$PROJECT_ROOT}"
-WEB_PORT="${WEB_PORT:-8033}"
+WEB_PORT="${WEB_PORT:-21859}"
+WEB_UI_PORT="${WEB_UI_PORT:-15129}"
 WEB_HOST="${WEB_HOST:-0.0.0.0}"
 SERVICE_NAME="${SERVICE_NAME:-magic-mirror-web}"
 SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-root}}"
 SKIP_WEB_BUILD="${SKIP_WEB_BUILD:-0}"
+SKIP_MODEL_DOWNLOAD="${SKIP_MODEL_DOWNLOAD:-0}"
+MODEL_BASE_URL="${MODEL_BASE_URL:-https://github.com/idootop/TinyFace/releases/download/models-1.0.0}"
+MODEL_FILES=("arcface_w600k_r50.onnx" "gfpgan_1.4.onnx" "inswapper_128_fp16.onnx" "scrfd_2.5g.onnx")
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -29,6 +33,7 @@ apt-get install -y --no-install-recommends \
   python3-pip \
   ffmpeg \
   build-essential \
+  nginx \
   rsync
 
 if [ "$INSTALL_DIR" != "$PROJECT_ROOT" ]; then
@@ -48,6 +53,23 @@ cd "$INSTALL_DIR"
 echo "==> Preparing data directories..."
 mkdir -p "$INSTALL_DIR/data/web/uploads" "$INSTALL_DIR/data/web/library"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/data"
+
+if [ "$SKIP_MODEL_DOWNLOAD" != "1" ]; then
+  echo "==> Downloading model files..."
+  MODEL_DIR="$INSTALL_DIR/src-python/models"
+  mkdir -p "$MODEL_DIR"
+  for model in "${MODEL_FILES[@]}"; do
+    if [ ! -f "$MODEL_DIR/$model" ]; then
+      echo "==> Downloading $model..."
+      curl -fL "${MODEL_BASE_URL}/${model}" -o "$MODEL_DIR/$model"
+    else
+      echo "==> Model $model exists; skip."
+    fi
+  done
+  chown -R "$SERVICE_USER:$SERVICE_USER" "$MODEL_DIR"
+else
+  echo "==> Skip model download."
+fi
 
 if [ "$SKIP_WEB_BUILD" != "1" ]; then
   if [ ! -f "dist-web/index.html" ]; then
@@ -104,7 +126,43 @@ EOF
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
+NGINX_SITE="/etc/nginx/sites-available/${SERVICE_NAME}"
+echo "==> Configuring Nginx for web UI on port ${WEB_UI_PORT}..."
+cat > "$NGINX_SITE" <<EOF
+server {
+  listen ${WEB_UI_PORT};
+  server_name _;
+  root ${INSTALL_DIR}/dist-web;
+  index index.html;
+  client_max_body_size 2g;
+
+  location /api/ {
+    proxy_pass http://127.0.0.1:${WEB_PORT};
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+  }
+
+  location / {
+    try_files \$uri /index.html;
+  }
+}
+EOF
+
+ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/"${SERVICE_NAME}"
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+systemctl enable --now nginx
+systemctl reload nginx
+
 echo "==> Service status:"
 systemctl status "$SERVICE_NAME" --no-pager
+systemctl status nginx --no-pager
 
-echo "==> Done. Web server running on http://$WEB_HOST:$WEB_PORT"
+echo "==> Done."
+echo "==> API: http://$WEB_HOST:$WEB_PORT"
+echo "==> UI : http://$WEB_HOST:$WEB_UI_PORT"
