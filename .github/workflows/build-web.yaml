@@ -44,7 +44,7 @@ jobs:
       - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential patchelf curl git
+          apt-get install -y --no-install-recommends build-essential patchelf curl git libgl1 libglib2.0-0
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
