@@ -7,7 +7,11 @@ if [ "${EUID}" -ne 0 ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [[ "$(basename "$SCRIPT_DIR")" == "scripts" ]]; then
+  PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+  PROJECT_ROOT="$SCRIPT_DIR"
+fi
 
 INSTALL_DIR="${INSTALL_DIR:-$PROJECT_ROOT}"
 WEB_PORT="${WEB_PORT:-21859}"
@@ -27,7 +31,9 @@ if [ -f /etc/os-release ]; then
     CODENAME="$(lsb_release -cs || true)"
   fi
   if [ -n "$CODENAME" ]; then
-    cp /etc/apt/sources.list "/etc/apt/sources.list.bak.$(date +%Y%m%d%H%M%S)" || true
+    if [ -f /etc/apt/sources.list ]; then
+      cp /etc/apt/sources.list "/etc/apt/sources.list.bak.$(date +%Y%m%d%H%M%S)" || true
+    fi
     if [ "$ID" = "ubuntu" ]; then
       cat > /etc/apt/sources.list <<EOF
 deb http://mirrors.aliyun.com/ubuntu/ ${CODENAME} main restricted universe multiverse
@@ -66,7 +72,23 @@ apt-get install -y --no-install-recommends \
   libsm6 \
   libxrender1 \
   libxext6 \
-  rsync
+  rsync \
+  unzip \
+  procps
+
+# Auto-extract artifact zip or tarball if present
+if [ -f "${PROJECT_ROOT}/web_debian_ubuntu_x86_64.zip" ]; then
+  echo "==> Found artifact zip, extracting..."
+  unzip -o "${PROJECT_ROOT}/web_debian_ubuntu_x86_64.zip" -d "$PROJECT_ROOT"
+fi
+
+TARBALL=$(find "$PROJECT_ROOT" -maxdepth 1 -name "magicmirror_web_*_debian_ubuntu_x86_64.tar.gz" | head -n 1)
+if [ -n "$TARBALL" ]; then
+  if [ ! -d "$PROJECT_ROOT/web_server.dist" ] || [ ! -d "$PROJECT_ROOT/dist-web" ]; then
+    echo "==> Extracting tarball $TARBALL..."
+    tar -xzf "$TARBALL" -C "$PROJECT_ROOT"
+  fi
+fi
 
 if [ "$INSTALL_DIR" != "$PROJECT_ROOT" ]; then
   echo "==> Copying project to ${INSTALL_DIR}..."
@@ -106,31 +128,6 @@ if [ ! -f "$WEB_SERVER_BIN" ]; then
 fi
 chmod +x "$WEB_SERVER_BIN"
 
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-
-echo "==> Installing systemd service: ${SERVICE_NAME}"
-cat > "$SERVICE_FILE" <<EOF
-[Unit]
-Description=MagicMirror Web Server
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$WEB_SERVER_BIN
-Restart=on-failure
-Environment=WEB_HOST=$WEB_HOST
-Environment=WEB_PORT=$WEB_PORT
-User=$SERVICE_USER
-Group=$SERVICE_USER
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now "$SERVICE_NAME"
-
 NGINX_SITE="/etc/nginx/sites-available/${SERVICE_NAME}"
 echo "==> Configuring Nginx for web UI on port ${WEB_UI_PORT}..."
 cat > "$NGINX_SITE" <<EOF
@@ -161,13 +158,58 @@ EOF
 ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/"${SERVICE_NAME}"
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
-systemctl enable --now nginx
-systemctl reload nginx
 
-echo "==> Service status:"
-systemctl status "$SERVICE_NAME" --no-pager
-systemctl status nginx --no-pager
+if command -v systemctl >/dev/null 2>&1; then
+  SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
-echo "==> Done."
-echo "==> API: http://$WEB_HOST:$WEB_PORT"
-echo "==> UI : http://$WEB_HOST:$WEB_UI_PORT"
+  echo "==> Installing systemd service: ${SERVICE_NAME}"
+  cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=MagicMirror Web Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$WEB_SERVER_BIN
+Restart=on-failure
+Environment=WEB_HOST=$WEB_HOST
+Environment=WEB_PORT=$WEB_PORT
+User=$SERVICE_USER
+Group=$SERVICE_USER
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now "$SERVICE_NAME"
+  
+  systemctl enable --now nginx
+  systemctl reload nginx
+
+  echo "==> Service status:"
+  systemctl status "$SERVICE_NAME" --no-pager
+  systemctl status nginx --no-pager
+
+  echo "==> Done."
+  echo "==> API: http://$WEB_HOST:$WEB_PORT"
+  echo "==> UI : http://$WEB_HOST:$WEB_UI_PORT"
+else
+  echo "==> systemctl not found, skipping systemd service installation."
+  echo "==> Starting Nginx manually..."
+  if pgrep nginx >/dev/null; then
+    nginx -s reload
+  else
+    nginx
+  fi
+
+  echo "==> Done."
+  echo "==> API: http://$WEB_HOST:$WEB_PORT"
+  echo "==> UI : http://$WEB_HOST:$WEB_UI_PORT"
+  
+  echo "==> Starting Web Server in foreground..."
+  export WEB_HOST
+  export WEB_PORT
+  exec "$WEB_SERVER_BIN"
+fi
