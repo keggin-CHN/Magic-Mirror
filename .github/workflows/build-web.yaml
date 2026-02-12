@@ -54,13 +54,55 @@ jobs:
         run: pnpm install --no-frozen-lockfile
       - name: Build web frontend
         run: VITE_OUT_DIR=dist-web pnpm build
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+          cache-dependency-path: "src-python/requirements.txt"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential patchelf
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r src-python/requirements.txt
+          pip install nuitka
+      - name: Download model files
+        run: |
+          mkdir -p src-python/models
+          cd src-python/models
+          BASE_URL="https://github.com/idootop/TinyFace/releases/download/models-1.0.0"
+          curl -# -O -L "${BASE_URL}/arcface_w600k_r50.onnx"
+          curl -# -O -L "${BASE_URL}/gfpgan_1.4.onnx"
+          curl -# -O -L "${BASE_URL}/inswapper_128_fp16.onnx"
+          curl -# -O -L "${BASE_URL}/scrfd_2.5g.onnx"
+      - name: Build web server binary
+        run: |
+          python -m nuitka --standalone --assume-yes-for-downloads \
+            --include-package=onnx \
+            --include-package=google.protobuf \
+            --include-package=onnxruntime \
+            --include-package-data=onnxruntime \
+            --include-package=async_tasks \
+            --include-package=cv2 \
+            --include-package=numpy \
+            --include-package=tinyface \
+            --include-package=bottle \
+            --include-package-data=onnx \
+            --include-data-files="src-python/models/*.onnx=models/" \
+            --output-dir=out-web src-python/web_server.py
+          test -d out-web/web_server.dist
+          rm -rf web_server.dist
+          cp -R out-web/web_server.dist web_server.dist
       - name: Package web bundle
         run: |
           VERSION=$(node -p "require('./package.json').version")
           mkdir -p dist
           tar -czf "dist/magicmirror_web_${VERSION}_debian_ubuntu_x86_64.tar.gz" \
             dist-web \
-            src-python \
+            web_server.dist \
             scripts/install-web.sh \
             LICENSE
       - name: Upload web bundle
