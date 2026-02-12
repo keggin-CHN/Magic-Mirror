@@ -5,10 +5,12 @@ on:
     paths:
       - "src-python/**"
       - ".github/workflows/build-server.yaml"
+      - "!src-python/web_server.py"
   pull_request:
     paths:
       - "src-python/**"
       - ".github/workflows/build-server.yaml"
+      - "!src-python/web_server.py"
 
 jobs:
   models:

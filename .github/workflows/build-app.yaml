@@ -14,6 +14,7 @@ on:
       - "tsconfig.node.json"
       - "uno.config.ts"
       - ".github/workflows/build-app.yaml"
+      - "!scripts/install-web.sh"
   pull_request:
     paths:
       - "src/**"
@@ -27,6 +28,7 @@ on:
       - "tsconfig.node.json"
       - "uno.config.ts"
       - ".github/workflows/build-app.yaml"
+      - "!scripts/install-web.sh"
 
 jobs:
   build-for-windows:

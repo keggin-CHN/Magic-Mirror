@@ -1,6 +1,7 @@
 import { DragDropEvent, getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isTauri } from "@/services/runtime";
 
 // 类型安全的 debounce 实现
 function debounce<T extends (...args: any[]) => any>(
@@ -30,11 +31,17 @@ function debounce<T extends (...args: any[]) => any>(
   return debouncedFn;
 }
 
-export function useDragDrop(onDrop: (paths: string[]) => void) {
+export function useDragDrop(
+  onDrop: (payload: { paths: string[]; files: File[] }) => void
+) {
   const ref = useRef<HTMLDivElement | null>(null);
   const onDropRef = useRef(onDrop);
   const [isOverTarget, setIsOverTarget] = useState(false);
-  const debouncedDropRef = useRef<((paths: string[]) => void) & { cancel?: () => void }>();
+  const debouncedDropRef = useRef<
+    ((payload: { paths: string[]; files: File[] }) => void) & {
+      cancel?: () => void;
+    }
+  >();
 
   useEffect(() => {
     onDropRef.current = onDrop;
@@ -42,9 +49,12 @@ export function useDragDrop(onDrop: (paths: string[]) => void) {
 
   useEffect(() => {
     // 创建 debounced 函数
-    debouncedDropRef.current = debounce((paths: string[]) => {
-      onDropRef.current(paths);
-    }, 100);
+    debouncedDropRef.current = debounce(
+      (payload: { paths: string[]; files: File[] }) => {
+        onDropRef.current(payload);
+      },
+      100
+    );
 
     // 清理函数
     return () => {
@@ -52,11 +62,14 @@ export function useDragDrop(onDrop: (paths: string[]) => void) {
     };
   }, []);
 
-  const onDropped = useCallback((paths: string[]) => {
-    debouncedDropRef.current?.(paths);
+  const onDropped = useCallback((paths: string[], files: File[] = []) => {
+    debouncedDropRef.current?.({ paths, files });
   }, []);
 
   useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
     const checkIsInside = async (event: DragDropEvent) => {
       const targetRect = ref.current?.getBoundingClientRect();
       if (!targetRect || event.type === "leave") {
@@ -98,6 +111,39 @@ export function useDragDrop(onDrop: (paths: string[]) => void) {
 
     return () => {
       cleanup?.();
+    };
+  }, [onDropped]);
+
+  useEffect(() => {
+    if (isTauri()) {
+      return;
+    }
+    const target = ref.current;
+    if (!target) {
+      return;
+    }
+    const handleDragOver = (event: DragEvent) => {
+      event.preventDefault();
+      setIsOverTarget(true);
+    };
+    const handleDragLeave = () => {
+      setIsOverTarget(false);
+    };
+    const handleDrop = (event: DragEvent) => {
+      event.preventDefault();
+      setIsOverTarget(false);
+      const files = Array.from(event.dataTransfer?.files || []);
+      if (files.length) {
+        onDropped([], files);
+      }
+    };
+    target.addEventListener("dragover", handleDragOver);
+    target.addEventListener("dragleave", handleDragLeave);
+    target.addEventListener("drop", handleDrop);
+    return () => {
+      target.removeEventListener("dragover", handleDragOver);
+      target.removeEventListener("dragleave", handleDragLeave);
+      target.removeEventListener("drop", handleDrop);
     };
   }, [onDropped]);
 
