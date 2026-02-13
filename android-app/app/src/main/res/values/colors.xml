@@ -1,0 +1,8 @@
+<resources>
+    <color name="ic_launcher_background">#1A1A2E</color>
+    <color name="primary">#E94560</color>
+    <color name="primary_dark">#C73E54</color>
+    <color name="secondary">#533483</color>
+    <color name="background">#1A1A2E</color>
+    <color name="surface">#16213E</color>
+</resources>

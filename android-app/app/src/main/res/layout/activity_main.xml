@@ -1,0 +1,627 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1A1A2E"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- 标题 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="✨ Magic Mirror"
+            android:textSize="28sp"
+            android:textColor="#E94560"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:layout_marginBottom="4dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/app_subtitle"
+            android:textSize="14sp"
+            android:textColor="#8888AA"
+            android:gravity="center"
+            android:layout_marginBottom="12dp" />
+
+        <!-- 模式切换 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginBottom="10dp">
+
+            <Button
+                android:id="@+id/btn_mode_image"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="40dp"
+                android:text="@string/mode_image"
+                android:textSize="13sp"
+                android:backgroundTint="#E94560"
+                android:textColor="#FFFFFF"
+                android:layout_marginEnd="4dp" />
+
+            <Button
+                android:id="@+id/btn_mode_video"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="40dp"
+                android:text="@string/mode_video"
+                android:textSize="13sp"
+                android:backgroundTint="#333355"
+                android:textColor="#AAAACC"
+                android:layout_marginStart="4dp" />
+        </LinearLayout>
+
+        <!-- 设置开关 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginBottom="8dp">
+
+            <Switch
+                android:id="@+id/switch_gpu"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/switch_gpu"
+                android:textColor="#CCCCDD"
+                android:layout_marginEnd="16dp" />
+
+            <Switch
+                android:id="@+id/switch_enhancer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/switch_enhancer"
+                android:textColor="#CCCCDD"
+                android:layout_marginEnd="16dp" />
+
+            <Switch
+                android:id="@+id/switch_swap_all"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/switch_swap_all"
+                android:textColor="#CCCCDD" />
+        </LinearLayout>
+
+        <!-- 状态栏 -->
+        <TextView
+            android:id="@+id/tv_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/status_initializing"
+            android:textSize="13sp"
+            android:textColor="#AAAACC"
+            android:gravity="center"
+            android:layout_marginBottom="6dp" />
+
+        <ProgressBar
+            android:id="@+id/progress_bar"
+            style="@android:style/Widget.ProgressBar.Horizontal"
+            android:layout_width="match_parent"
+            android:layout_height="6dp"
+            android:max="100"
+            android:progress="0"
+            android:progressTint="#E94560"
+            android:progressBackgroundTint="#333355"
+            android:layout_marginBottom="12dp"
+            android:visibility="gone" />
+
+        <!-- ========== 图片模式区域 ========== -->
+        <LinearLayout
+            android:id="@+id/layout_image_mode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="visible">
+
+            <!-- 源图和目标图 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginBottom="10dp">
+
+                <!-- 源图（带人脸检测叠加层） -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginEnd="6dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_source"
+                        android:textColor="#CCCCDD"
+                        android:textSize="13sp"
+                        android:gravity="center"
+                        android:layout_marginBottom="4dp" />
+
+                    <androidx.cardview.widget.CardView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        app:cardCornerRadius="12dp"
+                        app:cardBackgroundColor="#16213E"
+                        app:cardElevation="4dp">
+
+                        <FrameLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="180dp">
+
+                            <ImageView
+                                android:id="@+id/iv_source"
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent"
+                                android:scaleType="centerCrop"
+                                android:src="@drawable/placeholder" />
+
+                            <com.magicmirror.app.view.FaceOverlayView
+                                android:id="@+id/face_overlay"
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent" />
+                        </FrameLayout>
+                    </androidx.cardview.widget.CardView>
+
+                    <Button
+                        android:id="@+id/btn_select_source"
+                        android:layout_width="match_parent"
+                        android:layout_height="38dp"
+                        android:text="@string/btn_select_source"
+                        android:textSize="12sp"
+                        android:backgroundTint="#0F3460"
+                        android:textColor="#FFFFFF"
+                        android:layout_marginTop="4dp" />
+                </LinearLayout>
+
+                <!-- 目标人脸 -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginStart="6dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_target"
+                        android:textColor="#CCCCDD"
+                        android:textSize="13sp"
+                        android:gravity="center"
+                        android:layout_marginBottom="4dp" />
+
+                    <androidx.cardview.widget.CardView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        app:cardCornerRadius="12dp"
+                        app:cardBackgroundColor="#16213E"
+                        app:cardElevation="4dp">
+
+                        <ImageView
+                            android:id="@+id/iv_target"
+                            android:layout_width="match_parent"
+                            android:layout_height="180dp"
+                            android:scaleType="centerCrop"
+                            android:src="@drawable/placeholder" />
+                    </androidx.cardview.widget.CardView>
+
+                    <Button
+                        android:id="@+id/btn_select_target"
+                        android:layout_width="match_parent"
+                        android:layout_height="38dp"
+                        android:text="@string/btn_select_target"
+                        android:textSize="12sp"
+                        android:backgroundTint="#0F3460"
+                        android:textColor="#FFFFFF"
+                        android:layout_marginTop="4dp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 区域选择和多人脸源按钮行 -->
+            <LinearLayout
+                android:id="@+id/layout_multi_face_controls"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:layout_marginBottom="8dp"
+                android:visibility="gone">
+
+                <Button
+                    android:id="@+id/btn_region_select"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="36dp"
+                    android:text="@string/btn_region_select"
+                    android:textSize="11sp"
+                    android:backgroundTint="#533483"
+                    android:textColor="#FFFFFF"
+                    android:layout_marginEnd="4dp" />
+
+                <Button
+                    android:id="@+id/btn_clear_regions"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="36dp"
+                    android:text="@string/btn_clear_regions"
+                    android:textSize="11sp"
+                    android:backgroundTint="#333355"
+                    android:textColor="#AAAACC"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginEnd="4dp" />
+
+                <Button
+                    android:id="@+id/btn_add_face_source"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="36dp"
+                    android:text="@string/btn_add_face_source"
+                    android:textSize="11sp"
+                    android:backgroundTint="#0F3460"
+                    android:textColor="#FFFFFF"
+                    android:layout_marginStart="4dp" />
+            </LinearLayout>
+
+            <!-- 多人脸源绑定列表容器 -->
+            <LinearLayout
+                android:id="@+id/layout_face_bindings"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:layout_marginBottom="8dp" />
+
+            <!-- 人脸源提示 -->
+            <TextView
+                android:id="@+id/tv_face_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/face_source_hint"
+                android:textSize="11sp"
+                android:textColor="#666688"
+                android:gravity="center"
+                android:layout_marginBottom="6dp"
+                android:visibility="gone" />
+
+            <!-- 图片换脸按钮 -->
+            <Button
+                android:id="@+id/btn_swap"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:text="@string/btn_swap"
+                android:textSize="17sp"
+                android:textStyle="bold"
+                android:backgroundTint="#E94560"
+                android:textColor="#FFFFFF"
+                android:layout_marginBottom="12dp"
+                android:enabled="false" />
+
+            <!-- 结果图 -->
+            <TextView
+                android:id="@+id/tv_result_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/label_result"
+                android:textColor="#CCCCDD"
+                android:textSize="14sp"
+                android:gravity="center"
+                android:layout_marginBottom="4dp"
+                android:visibility="gone" />
+
+            <androidx.cardview.widget.CardView
+                android:id="@+id/card_result"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                app:cardCornerRadius="12dp"
+                app:cardBackgroundColor="#16213E"
+                app:cardElevation="4dp"
+                android:layout_marginBottom="10dp"
+                android:visibility="gone">
+
+                <ImageView
+                    android:id="@+id/iv_result"
+                    android:layout_width="match_parent"
+                    android:layout_height="280dp"
+                    android:scaleType="fitCenter" />
+            </androidx.cardview.widget.CardView>
+
+            <!-- 保存按钮 -->
+            <Button
+                android:id="@+id/btn_save"
+                android:layout_width="match_parent"
+                android:layout_height="42dp"
+                android:text="@string/btn_save"
+                android:textSize="14sp"
+                android:backgroundTint="#533483"
+                android:textColor="#FFFFFF"
+                android:visibility="gone"
+                android:layout_marginBottom="16dp" />
+        </LinearLayout>
+
+        <!-- ========== 视频模式区域 ========== -->
+        <LinearLayout
+            android:id="@+id/layout_video_mode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <!-- 视频选择 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginBottom="10dp">
+
+                <!-- 视频源 -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginEnd="6dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_video_source"
+                        android:textColor="#CCCCDD"
+                        android:textSize="13sp"
+                        android:gravity="center"
+                        android:layout_marginBottom="4dp" />
+
+                    <androidx.cardview.widget.CardView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        app:cardCornerRadius="12dp"
+                        app:cardBackgroundColor="#16213E"
+                        app:cardElevation="4dp">
+
+                        <ImageView
+                            android:id="@+id/iv_video_thumb"
+                            android:layout_width="match_parent"
+                            android:layout_height="120dp"
+                            android:scaleType="centerCrop"
+                            android:src="@drawable/placeholder" />
+                    </androidx.cardview.widget.CardView>
+
+                    <Button
+                        android:id="@+id/btn_select_video"
+                        android:layout_width="match_parent"
+                        android:layout_height="38dp"
+                        android:text="@string/btn_select_video"
+                        android:textSize="12sp"
+                        android:backgroundTint="#0F3460"
+                        android:textColor="#FFFFFF"
+                        android:layout_marginTop="4dp" />
+                </LinearLayout>
+
+                <!-- 目标人脸（视频模式） -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:layout_marginStart="6dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_video_target"
+                        android:textColor="#CCCCDD"
+                        android:textSize="13sp"
+                        android:gravity="center"
+                        android:layout_marginBottom="4dp" />
+
+                    <androidx.cardview.widget.CardView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        app:cardCornerRadius="12dp"
+                        app:cardBackgroundColor="#16213E"
+                        app:cardElevation="4dp">
+
+                        <ImageView
+                            android:id="@+id/iv_video_target"
+                            android:layout_width="match_parent"
+                            android:layout_height="120dp"
+                            android:scaleType="centerCrop"
+                            android:src="@drawable/placeholder" />
+                    </androidx.cardview.widget.CardView>
+
+                    <Button
+                        android:id="@+id/btn_select_video_target"
+                        android:layout_width="match_parent"
+                        android:layout_height="38dp"
+                        android:text="@string/btn_select_target"
+                        android:textSize="12sp"
+                        android:backgroundTint="#0F3460"
+                        android:textColor="#FFFFFF"
+                        android:layout_marginTop="4dp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 视频信息 -->
+            <TextView
+                android:id="@+id/tv_video_info"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="12sp"
+                android:textColor="#8888AA"
+                android:gravity="center"
+                android:layout_marginBottom="8dp"
+                android:visibility="gone" />
+
+            <!-- 关键帧选择器 -->
+            <LinearLayout
+                android:id="@+id/layout_key_frame"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:layout_marginBottom="8dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_key_frame"
+                        android:textColor="#CCCCDD"
+                        android:textSize="12sp"
+                        android:layout_marginEnd="8dp" />
+
+                    <SeekBar
+                        android:id="@+id/seekbar_key_frame"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:max="100"
+                        android:progress="0"
+                        android:progressTint="#E94560"
+                        android:thumbTint="#E94560" />
+
+                    <TextView
+                        android:id="@+id/tv_key_frame_time"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="0.0s"
+                        android:textColor="#AAAACC"
+                        android:textSize="12sp"
+                        android:layout_marginStart="8dp"
+                        android:minWidth="48dp"
+                        android:gravity="end" />
+                </LinearLayout>
+
+                <!-- 关键帧缩略图 + 人脸叠加 -->
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="160dp"
+                    android:layout_marginTop="6dp">
+
+                    <ImageView
+                        android:id="@+id/iv_key_frame_thumb"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:scaleType="centerCrop"
+                        android:background="#16213E" />
+
+                    <com.magicmirror.app.view.FaceOverlayView
+                        android:id="@+id/video_face_overlay"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent" />
+                </FrameLayout>
+            </LinearLayout>
+
+            <!-- 视频人脸检测 + 多人脸源按钮行 -->
+            <LinearLayout
+                android:id="@+id/layout_video_face_controls"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:layout_marginBottom="8dp"
+                android:visibility="gone">
+
+                <Button
+                    android:id="@+id/btn_detect_video_faces"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="36dp"
+                    android:text="@string/btn_detect_video_faces"
+                    android:textSize="11sp"
+                    android:backgroundTint="#533483"
+                    android:textColor="#FFFFFF"
+                    android:layout_marginEnd="4dp" />
+
+                <Button
+                    android:id="@+id/btn_add_video_face_source"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="36dp"
+                    android:text="@string/btn_add_video_face_source"
+                    android:textSize="11sp"
+                    android:backgroundTint="#0F3460"
+                    android:textColor="#FFFFFF"
+                    android:layout_marginStart="4dp" />
+            </LinearLayout>
+
+            <!-- 视频多人脸源绑定列表 -->
+            <LinearLayout
+                android:id="@+id/layout_video_face_bindings"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:layout_marginBottom="8dp" />
+
+            <!-- 视频换脸按钮 -->
+            <Button
+                android:id="@+id/btn_swap_video"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:text="@string/btn_swap_video"
+                android:textSize="17sp"
+                android:textStyle="bold"
+                android:backgroundTint="#E94560"
+                android:textColor="#FFFFFF"
+                android:layout_marginBottom="12dp"
+                android:enabled="false" />
+
+            <!-- 视频结果信息 -->
+            <androidx.cardview.widget.CardView
+                android:id="@+id/card_video_result"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                app:cardCornerRadius="12dp"
+                app:cardBackgroundColor="#16213E"
+                app:cardElevation="4dp"
+                android:layout_marginBottom="16dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/video_result_title"
+                        android:textSize="16sp"
+                        android:textColor="#4CAF50"
+                        android:textStyle="bold"
+                        android:gravity="center"
+                        android:layout_marginBottom="8dp" />
+
+                    <TextView
+                        android:id="@+id/tv_video_result_info"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text=""
+                        android:textSize="13sp"
+                        android:textColor="#CCCCDD"
+                        android:gravity="center"
+                        android:lineSpacingExtra="4dp" />
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>

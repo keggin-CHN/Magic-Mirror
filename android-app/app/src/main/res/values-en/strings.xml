@@ -1,0 +1,82 @@
+<resources>
+    <string name="app_name">Magic Mirror</string>
+    <string name="app_subtitle">AI Face Swap · Local Inference</string>
+
+    <!-- Mode switch -->
+    <string name="mode_image">🖼️ Image Swap</string>
+    <string name="mode_video">🎬 Video Swap</string>
+
+    <!-- Switches -->
+    <string name="switch_gpu">GPU Accel</string>
+    <string name="switch_enhancer">Enhance</string>
+    <string name="switch_swap_all">Swap All</string>
+
+    <!-- Status -->
+    <string name="status_initializing">Initializing…</string>
+    <string name="status_loading_detector">Loading face detection model…</string>
+    <string name="status_loading_embedder">Loading embedding model…</string>
+    <string name="status_loading_swapper">Loading swap model…</string>
+    <string name="status_loading_enhancer">Loading enhancer model…</string>
+    <string name="status_models_ready">Models loaded. Select an image or video.</string>
+    <string name="status_models_failed">Model loading failed: %1$s</string>
+    <string name="status_source_selected">Source selected (%1$dx%2$d)</string>
+    <string name="status_target_selected">Target face selected</string>
+    <string name="status_video_selected">Video selected</string>
+    <string name="status_video_target_selected">Video target face selected</string>
+    <string name="status_detecting_faces">Detecting faces…</string>
+    <string name="status_faces_detected">%1$d face(s) detected</string>
+    <string name="status_no_faces">No faces detected</string>
+    <string name="status_swap_done">Swap complete!</string>
+    <string name="status_processing">Processing, please wait</string>
+
+    <!-- Image mode -->
+    <string name="label_source">📷 Source</string>
+    <string name="label_target">🎭 Target Face</string>
+    <string name="label_result">🖼️ Result</string>
+    <string name="btn_select_source">Select Source</string>
+    <string name="btn_select_target">Select Face</string>
+    <string name="btn_swap">✨ Start Swap</string>
+    <string name="btn_save">💾 Save Result</string>
+    <string name="btn_add_face_source">➕ Add Face Source</string>
+    <string name="btn_region_select">📐 Select Region</string>
+    <string name="btn_region_done">✅ Done</string>
+    <string name="btn_clear_regions">🗑️ Clear Regions</string>
+
+    <!-- Video mode -->
+    <string name="label_video_source">🎬 Source Video</string>
+    <string name="label_video_target">🎭 Target Face</string>
+    <string name="btn_select_video">Select Video</string>
+    <string name="btn_swap_video">🎬 Start Video Swap</string>
+    <string name="btn_detect_video_faces">🔍 Detect Video Faces</string>
+    <string name="btn_add_video_face_source">➕ Add Face Source</string>
+    <string name="label_key_frame">Key Frame</string>
+    <string name="video_faces_detected">%1$d face(s) detected in video frame</string>
+    <string name="video_result_title">✅ Video Processing Complete</string>
+    <string name="video_result_frames">Frames: </string>
+    <string name="video_result_resolution">Resolution: </string>
+    <string name="video_result_fps">FPS: </string>
+    <string name="video_result_output">Output:</string>
+    <string name="video_swap_done">Video swap done! %1$d frames</string>
+
+    <!-- Multi-face source binding -->
+    <string name="face_source_binding">Face Source #%1$d</string>
+    <string name="face_source_hint">Tap a face box to select, or use region selection</string>
+    <string name="btn_remove_binding">Remove</string>
+
+    <!-- Model download -->
+    <string name="model_download_title">Model Download</string>
+    <string name="model_download_progress">Downloading %1$s… (%2$d%%)</string>
+    <string name="model_download_done">Model download complete</string>
+    <string name="model_download_failed">Model download failed: %1$s</string>
+    <string name="model_check_assets">Please ensure ONNX model files are in the assets directory</string>
+
+    <!-- General -->
+    <string name="permission_required">Storage permission is required</string>
+    <string name="load_image_failed">Failed to load image: %1$s</string>
+    <string name="load_video_failed">Failed to load video: %1$s</string>
+    <string name="swap_failed">Swap failed: %1$s</string>
+    <string name="video_swap_failed">Video swap failed: %1$s</string>
+    <string name="save_success">Saved to Pictures/MagicMirror</string>
+    <string name="save_failed">Save failed: %1$s</string>
+    <string name="saved_to">Saved to %1$s</string>
+</resources>
