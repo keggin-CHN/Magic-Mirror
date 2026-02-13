@@ -1,0 +1,82 @@
+<resources>
+    <string name="app_name">Magic Mirror</string>
+    <string name="app_subtitle">AI 换脸 · 本地推理</string>
+
+    <!-- 模式切换 -->
+    <string name="mode_image">🖼️ 图片换脸</string>
+    <string name="mode_video">🎬 视频换脸</string>
+
+    <!-- 开关 -->
+    <string name="switch_gpu">GPU 加速</string>
+    <string name="switch_enhancer">人脸增强</string>
+    <string name="switch_swap_all">全部换脸</string>
+
+    <!-- 状态 -->
+    <string name="status_initializing">正在初始化…</string>
+    <string name="status_loading_detector">正在加载人脸检测模型…</string>
+    <string name="status_loading_embedder">正在加载特征提取模型…</string>
+    <string name="status_loading_swapper">正在加载换脸模型…</string>
+    <string name="status_loading_enhancer">正在加载增强模型…</string>
+    <string name="status_models_ready">模型加载完成，请选择图片或视频</string>
+    <string name="status_models_failed">模型加载失败: %1$s</string>
+    <string name="status_source_selected">源图已选择 (%1$dx%2$d)</string>
+    <string name="status_target_selected">目标人脸已选择</string>
+    <string name="status_video_selected">视频已选择</string>
+    <string name="status_video_target_selected">视频目标人脸已选择</string>
+    <string name="status_detecting_faces">正在检测人脸…</string>
+    <string name="status_faces_detected">检测到 %1$d 张人脸</string>
+    <string name="status_no_faces">未检测到人脸</string>
+    <string name="status_swap_done">换脸完成！</string>
+    <string name="status_processing">正在处理中，请稍候</string>
+
+    <!-- 图片模式 -->
+    <string name="label_source">📷 源图</string>
+    <string name="label_target">🎭 目标人脸</string>
+    <string name="label_result">🖼️ 结果</string>
+    <string name="btn_select_source">选择源图</string>
+    <string name="btn_select_target">选择人脸</string>
+    <string name="btn_swap">✨ 开始换脸</string>
+    <string name="btn_save">💾 保存结果</string>
+    <string name="btn_add_face_source">➕ 添加人脸源</string>
+    <string name="btn_region_select">📐 选择区域</string>
+    <string name="btn_region_done">✅ 完成选择</string>
+    <string name="btn_clear_regions">🗑️ 清除区域</string>
+
+    <!-- 视频模式 -->
+    <string name="label_video_source">🎬 源视频</string>
+    <string name="label_video_target">🎭 目标人脸</string>
+    <string name="btn_select_video">选择视频</string>
+    <string name="btn_swap_video">🎬 开始视频换脸</string>
+    <string name="btn_detect_video_faces">🔍 检测视频人脸</string>
+    <string name="btn_add_video_face_source">➕ 添加人脸源</string>
+    <string name="label_key_frame">关键帧</string>
+    <string name="video_faces_detected">视频帧检测到 %1$d 张人脸</string>
+    <string name="video_result_title">✅ 视频处理完成</string>
+    <string name="video_result_frames">帧数: </string>
+    <string name="video_result_resolution">分辨率: </string>
+    <string name="video_result_fps">帧率: </string>
+    <string name="video_result_output">输出路径:</string>
+    <string name="video_swap_done">视频换脸完成！共 %1$d 帧</string>
+
+    <!-- 多人脸源绑定 -->
+    <string name="face_source_binding">人脸源 #%1$d</string>
+    <string name="face_source_hint">点击人脸框选择要替换的人脸，或使用区域选择</string>
+    <string name="btn_remove_binding">移除</string>
+
+    <!-- 模型下载 -->
+    <string name="model_download_title">模型下载</string>
+    <string name="model_download_progress">正在下载 %1$s… (%2$d%%)</string>
+    <string name="model_download_done">模型下载完成</string>
+    <string name="model_download_failed">模型下载失败: %1$s</string>
+    <string name="model_check_assets">请确保 assets 目录下有 ONNX 模型文件</string>
+
+    <!-- 通用 -->
+    <string name="permission_required">需要存储权限才能使用</string>
+    <string name="load_image_failed">加载图片失败: %1$s</string>
+    <string name="load_video_failed">加载视频失败: %1$s</string>
+    <string name="swap_failed">换脸失败: %1$s</string>
+    <string name="video_swap_failed">视频换脸失败: %1$s</string>
+    <string name="save_success">已保存到 Pictures/MagicMirror</string>
+    <string name="save_failed">保存失败: %1$s</string>
+    <string name="saved_to">已保存到 %1$s</string>
+</resources>

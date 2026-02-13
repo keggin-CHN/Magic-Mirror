@@ -1,0 +1,13 @@
+<resources>
+    <style name="Theme.MagicMirror" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#E94560</item>
+        <item name="colorPrimaryVariant">#C73E54</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondary">#533483</item>
+        <item name="colorSecondaryVariant">#3F2768</item>
+        <item name="colorOnSecondary">#FFFFFF</item>
+        <item name="android:statusBarColor">#0F0F23</item>
+        <item name="android:navigationBarColor">#0F0F23</item>
+        <item name="android:windowBackground">#1A1A2E</item>
+    </style>
+</resources>
