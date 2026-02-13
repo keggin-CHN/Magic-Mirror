@@ -20,14 +20,20 @@ android {
     }
 
     signingConfigs {
-        // CI 环境使用环境变量中的签名信息，本地开发用 debug 签名
+        // 优先使用环境变量中的正式签名（GitHub Secrets），否则用仓库内的 CI 签名
         release {
-            def ksFile = System.getenv("KEYSTORE_FILE")
-            if (ksFile != null && file(ksFile).exists()) {
-                storeFile file(ksFile)
+            def ksEnv = System.getenv("KEYSTORE_FILE")
+            if (ksEnv != null && file(ksEnv).exists()) {
+                storeFile file(ksEnv)
                 storePassword System.getenv("KEYSTORE_PASSWORD") ?: ""
                 keyAlias System.getenv("KEY_ALIAS") ?: ""
                 keyPassword System.getenv("KEY_PASSWORD") ?: ""
+            } else if (rootProject.file("ci-signing/ci.keystore").exists()) {
+                // 仓库内的 CI 固定签名（非保密，仅用于 CI 构建和测试安装）
+                storeFile rootProject.file("ci-signing/ci.keystore")
+                storePassword "magicmirror"
+                keyAlias "magicmirror-ci"
+                keyPassword "magicmirror"
             }
         }
     }
@@ -36,11 +42,7 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            // 有签名配置时使用 release 签名，否则用 debug
-            def ksFile = System.getenv("KEYSTORE_FILE")
-            if (ksFile != null && file(ksFile).exists()) {
-                signingConfig signingConfigs.release
-            }
+            signingConfig signingConfigs.release
         }
     }
 
