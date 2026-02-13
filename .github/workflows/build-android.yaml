@@ -26,79 +26,74 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-          cache: gradle
-          cache-dependency-path: android-app/**/*.gradle*
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('android-app/**/*.gradle*', 'android-app/gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: gradle-
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x ./gradlew
+      # 生成 CI 固定签名密钥（保证每次构建签名一致，升级安装不冲突）
+      # 如果配置了 Secrets 中的正式签名，则使用正式签名
+      - name: Setup signing
         working-directory: android-app
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          K_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          K_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          mkdir -p ci-signing
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "使用 Secrets 中的正式签名密钥"
+            echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+            echo "KEYSTORE_FILE=${{ github.workspace }}/android-app/release.keystore" >> $GITHUB_ENV
+            echo "KEYSTORE_PASSWORD=$KS_PASSWORD" >> $GITHUB_ENV
+            echo "KEY_ALIAS=$K_ALIAS" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=$K_PASSWORD" >> $GITHUB_ENV
+          else
+            echo "生成 CI 固定签名密钥"
+            keytool -genkeypair -v \
+              -keystore ci-signing/ci.keystore \
+              -alias magicmirror-ci \
+              -keyalg RSA -keysize 2048 -validity 36500 \
+              -storepass magicmirror \
+              -keypass magicmirror \
+              -dname "CN=MagicMirror CI, OU=CI, O=MagicMirror, L=Beijing, ST=Beijing, C=CN"
+          fi
 
       - name: Read version
         id: version
         run: |
-          VERSION=$(grep -oP 'versionName "\K[^"]+' app/build.gradle)
-          VERSION_CODE=$(grep -oP 'versionCode \K\d+' app/build.gradle)
+          VERSION=$(grep -oP 'versionName "\K[^"]+' android-app/app/build.gradle)
+          VERSION_CODE=$(grep -oP 'versionCode \K\d+' android-app/app/build.gradle)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
           echo "APK version: $VERSION (code: $VERSION_CODE)"
-        working-directory: android-app
-
-      # 如果配置了签名密钥，使用 release 签名
-      - name: Decode keystore
-        if: env.KEYSTORE_BASE64 != ''
-        env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          echo "$KEYSTORE_BASE64" | base64 -d > android-app/release.keystore
-          echo "KEYSTORE_FILE=${{ github.workspace }}/android-app/release.keystore" >> $GITHUB_ENV
-
-      - name: Set signing env
-        if: env.KEYSTORE_FILE != ''
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
-          echo "KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
-          echo "KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
 
       - name: Build Release APK
-        run: ./gradlew assembleRelease --no-daemon --stacktrace
         working-directory: android-app
+        run: gradle assembleRelease --no-daemon --stacktrace
 
-      - name: Rename APK
+      - name: Prepare APK artifact
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          APK_SRC=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          APK_SRC=$(find android-app/app/build/outputs/apk/release -name "*.apk" | head -1)
           if [ -z "$APK_SRC" ]; then
             echo "::error::No APK found in build outputs"
             exit 1
           fi
           APK_NAME="MagicMirror_${VERSION}_android_arm64-v8a.apk"
-          cp "$APK_SRC" "$APK_NAME"
-          echo "apk_path=android-app/$APK_NAME" >> $GITHUB_ENV
+          mkdir -p dist
+          cp "$APK_SRC" "dist/$APK_NAME"
           echo "apk_name=$APK_NAME" >> $GITHUB_ENV
-          echo "Built: $APK_NAME ($(du -h "$APK_NAME" | cut -f1))"
-        working-directory: android-app
+          echo "Built: $APK_NAME ($(du -h "dist/$APK_NAME" | cut -f1))"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: android_arm64-v8a
-          path: ${{ env.apk_path }}
+          path: dist/*.apk
           if-no-files-found: error
 
   release:
@@ -115,9 +110,8 @@ jobs:
       - name: Read version
         id: version
         run: |
-          VERSION=$(grep -oP 'versionName "\K[^"]+' app/build.gradle)
+          VERSION=$(grep -oP 'versionName "\K[^"]+' android-app/app/build.gradle)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-        working-directory: android-app
 
       - name: Download APK
         uses: actions/download-artifact@v4
