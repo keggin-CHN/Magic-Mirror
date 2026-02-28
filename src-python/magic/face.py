@@ -118,10 +118,10 @@ def _get_tf_instance(use_gpu=False):
     """获取 TinyFace 实例（CPU 或 GPU）"""
     if use_gpu:
         if _init_gpu_models() and _tf_gpu is not None:
-            return _tf_gpu, _tf_gpu_lock
+            return _tf_gpu, _tf_gpu_lock, True
         else:
             print("[WARN] GPU 不可用，回退到 CPU")
-    return _tf, _tf_lock
+    return _tf, _tf_lock, False
 
 
 def _emit_stage(stage_callback, stage: str):
@@ -378,7 +378,17 @@ def _swap_face_video(
         # 提取目标人脸
         _emit_stage(stage_callback, "extracting-target-face")
         print(f"[INFO] 提取目标人脸: {face_path}")
-        tf_instance, tf_lock = _get_tf_instance(use_gpu)
+
+        if use_gpu:
+            _emit_stage(stage_callback, "gpu-initializing")
+        tf_instance, tf_lock, using_gpu = _get_tf_instance(use_gpu)
+        if using_gpu:
+            _emit_stage(stage_callback, "gpu-enabled")
+        elif use_gpu:
+            _emit_stage(stage_callback, "gpu-fallback-cpu")
+        else:
+            _emit_stage(stage_callback, "using-cpu")
+
         with tf_lock:
             destination_face = tf_instance.get_one_face(_read_image(face_path))
         if destination_face is None:
@@ -1006,7 +1016,17 @@ def _swap_face_video_by_sources(
             raise RuntimeError("invalid-face-source-binding")
 
         _emit_stage(stage_callback, "extracting-target-face")
-        tf_instance, tf_lock = _get_tf_instance(use_gpu)
+
+        if use_gpu:
+            _emit_stage(stage_callback, "gpu-initializing")
+        tf_instance, tf_lock, using_gpu = _get_tf_instance(use_gpu)
+        if using_gpu:
+            _emit_stage(stage_callback, "gpu-enabled")
+        elif use_gpu:
+            _emit_stage(stage_callback, "gpu-fallback-cpu")
+        else:
+            _emit_stage(stage_callback, "using-cpu")
+
         destination_faces = {}
         for source_id, source_path in face_sources.items():
             face_img = _read_image(source_path)

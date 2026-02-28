@@ -77,6 +77,7 @@ export function MirrorPage() {
     error: swapError,
     videoProgress,
     videoEtaSeconds,
+    videoStage,
   } = useSwapFace();
   const [success, setSuccess] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1598,6 +1599,37 @@ export function MirrorPage() {
     return `${mm}:${ss}`;
   }, []);
 
+  const formatVideoStage = useCallback(
+    (stage: string | null | undefined) => {
+      if (!stage) {
+        return null;
+      }
+      const stageKeyMap: Record<string, string> = {
+        queued: "Queued",
+        "validating-input": "Validating input",
+        "opening-video": "Opening video",
+        "reading-video-metadata": "Reading video metadata",
+        "extracting-target-face": "Extracting target face",
+        "gpu-initializing": "Initializing GPU...",
+        "gpu-enabled": "GPU acceleration enabled",
+        "gpu-fallback-cpu": "GPU unavailable, fallback to CPU",
+        "using-cpu": "Using CPU mode",
+        "building-face-tracks": "Building face tracks",
+        "processing-video-frames": "Processing video frames",
+        "muxing-audio": "Muxing audio",
+        finalizing: "Finalizing output",
+        done: "Completed",
+        failed: "Failed",
+        cancelled: "Cancelled",
+      };
+      const key = stageKeyMap[stage];
+      return key ? t(key) : stage;
+    },
+    [t]
+  );
+
+  const videoStageLabel = formatVideoStage(videoStage);
+
   const tips = notice
     ? notice
     : isUploading
@@ -1611,11 +1643,20 @@ export function MirrorPage() {
             : isSwapping
               ? isVideoInput
                 ? videoProgress > 0
-                  ? t("Video processing progress", { progress: videoProgress.toFixed(1) }) +
+                  ? t("Video processing progress", {
+                    progress: videoProgress.toFixed(1),
+                  }) +
+                  (videoStageLabel
+                    ? ` · ${t("Current stage", { stage: videoStageLabel })}`
+                    : "") +
                   (videoEtaSeconds !== null && videoEtaSeconds !== undefined
-                    ? ` - ${t("Estimated remaining time", { eta: formatEta(videoEtaSeconds) })}`
+                    ? ` - ${t("Estimated remaining time", {
+                      eta: formatEta(videoEtaSeconds),
+                    })}`
                     : "")
-                  : t("Initializing video processing...")
+                  : videoStageLabel
+                    ? t("Current stage", { stage: videoStageLabel })
+                    : t("Initializing video processing...")
                 : t("Face swapping... This may take a few seconds, please wait.")
               : isDetectingFaces
                 ? t("Detecting faces...")
@@ -2129,11 +2170,18 @@ export function MirrorPage() {
                     })}
                   </span>
                   <span>
-                    {videoEtaSeconds !== null && videoEtaSeconds !== undefined
-                      ? t("Estimated remaining time", {
-                        eta: formatEta(videoEtaSeconds),
-                      })
-                      : t("Calculating...")}
+                    {videoStageLabel
+                      ? `${t("Current stage", { stage: videoStageLabel })}${videoEtaSeconds !== null && videoEtaSeconds !== undefined
+                        ? ` · ${t("Estimated remaining time", {
+                          eta: formatEta(videoEtaSeconds),
+                        })}`
+                        : ""
+                      }`
+                      : videoEtaSeconds !== null && videoEtaSeconds !== undefined
+                        ? t("Estimated remaining time", {
+                          eta: formatEta(videoEtaSeconds),
+                        })
+                        : t("Calculating...")}
                   </span>
                 </div>
               </div>

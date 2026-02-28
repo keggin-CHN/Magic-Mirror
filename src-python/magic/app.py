@@ -421,6 +421,7 @@ def create_video_task():
             status="running",
             progress=0,
             etaSeconds=None,
+            stage="queued",
             frameCount=0,
             totalFrames=0,
             error=None,
@@ -429,8 +430,13 @@ def create_video_task():
 
         # 定义回调函数（必须在 task_callable 之前定义）
         def _on_stage(stage: str):
-            # 简化：不再更新stage，只在日志中记录
             print(f"[INFO] 视频处理阶段: {stage}")
+            _set_video_task_progress(
+                task_id,
+                status="running",
+                stage=stage,
+                error=None,
+            )
 
         def _on_progress(frame_count: int, total_frames: int, elapsed_seconds: float):
             progress = 0.0
@@ -497,6 +503,7 @@ def create_video_task():
                     status="success",
                     progress=100,
                     etaSeconds=0,
+                    stage="done",
                     error=None,
                     result=res,
                 )
@@ -505,6 +512,7 @@ def create_video_task():
                 _set_video_task_progress(
                     task_id,
                     status="failed",
+                    stage="failed",
                     error=final_error,
                     etaSeconds=None,
                 )
@@ -516,6 +524,7 @@ def create_video_task():
             _set_video_task_progress(
                 task_id,
                 status="failed",
+                stage="failed",
                 error=_simplify_task_error(e),
                 etaSeconds=None,
             )
@@ -530,6 +539,7 @@ def create_video_task():
             _set_video_task_progress(
                 task_id,
                 status="failed",
+                stage="failed",
                 error=_simplify_task_error(e),
                 etaSeconds=None,
             )
@@ -548,6 +558,7 @@ def cancel_task(task_id):
     _set_video_task_progress(
         task_id,
         status="cancelled",
+        stage="cancelled",
         etaSeconds=None,
         error="cancelled",
     )
