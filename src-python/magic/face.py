@@ -336,6 +336,33 @@ def _swap_face_video(
     stop_event = threading.Event()  # 统一的停止标志
     processing_error = threading.Lock()  # 使用锁保护错误
     error_container = {'error': None}  # 线程安全的错误容器
+    workers_done_event = threading.Event()
+    workers_done_lock = threading.Lock()
+    workers_done_count = {'count': 0}
+
+    def _queue_put_with_stop(
+        q_obj,
+        item,
+        *,
+        timeout=1,
+        warn_prefix="队列已满，等待中...",
+    ) -> bool:
+        wait_count = 0
+        while not stop_event.is_set():
+            try:
+                q_obj.put(item, timeout=timeout)
+                return True
+            except queue.Full:
+                wait_count += 1
+                if wait_count % 5 == 0:
+                    print(f"[WARN] {warn_prefix} (已等待约 {wait_count} 秒)")
+        return False
+
+    def _mark_worker_done():
+        with workers_done_lock:
+            workers_done_count['count'] += 1
+            if workers_done_count['count'] >= num_workers:
+                workers_done_event.set()
 
     try:
         _emit_stage(stage_callback, "opening-video")
@@ -412,28 +439,23 @@ def _swap_face_video(
                     ok, frame = cap.read()
                     if not ok:
                         break
-                    # 添加超时和重试机制，避免队列满时死锁
-                    retry_count = 0
-                    while not stop_event.is_set() and retry_count < 5:
-                        try:
-                            read_queue.put((frame_idx, frame), timeout=2)
-                            break
-                        except queue.Full:
-                            retry_count += 1
-                            print(f"[WARN] 读取队列已满，等待中... (重试 {retry_count}/5)")
-                            if retry_count >= 5:
-                                print("[ERROR] 读取队列持续满载，可能发生死锁")
-                                stop_event.set()
-                                # 清空队列避免死锁
-                                _clear_queue(read_queue)
-                                return
+                    if not _queue_put_with_stop(
+                        read_queue,
+                        (frame_idx, frame),
+                        timeout=1,
+                        warn_prefix="读取队列已满，等待处理线程消费",
+                    ):
+                        return
                     frame_idx += 1
                 # 发送结束信号
                 for _ in range(num_workers):
-                    try:
-                        read_queue.put((None, None), timeout=5)
-                    except queue.Full:
-                        print("[WARN] 无法发送结束信号到读取队列")
+                    if not _queue_put_with_stop(
+                        read_queue,
+                        (None, None),
+                        timeout=1,
+                        warn_prefix="读取队列已满，等待投递结束信号",
+                    ):
+                        break
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
@@ -481,7 +503,13 @@ def _swap_face_video(
                             reference_face = tf_instance.get_one_face(frame)
                         
                         if reference_face is None:
-                            write_queue.put((frame_idx, frame))
+                            if not _queue_put_with_stop(
+                                write_queue,
+                                (frame_idx, frame),
+                                timeout=1,
+                                warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
+                            ):
+                                break
                             with stats_lock:
                                 stats['failed_count'] += 1
                             continue
@@ -495,14 +523,26 @@ def _swap_face_video(
                         
                         out = output_frame if output_frame is not None else frame
                         out = _normalize_output_frame(out, width, height)
-                        write_queue.put((frame_idx, out))
+                        if not _queue_put_with_stop(
+                            write_queue,
+                            (frame_idx, out),
+                            timeout=1,
+                            warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
+                        ):
+                            break
                         
                         with stats_lock:
                             stats['processed_count'] += 1
                     
                     except Exception as e:
                         print(f"[WARN] 第{current_frame}帧处理失败: {str(e)}")
-                        write_queue.put((frame_idx, frame))
+                        if not _queue_put_with_stop(
+                            write_queue,
+                            (frame_idx, frame),
+                            timeout=1,
+                            warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
+                        ):
+                            break
                         with stats_lock:
                             stats['failed_count'] += 1
             
@@ -511,25 +551,31 @@ def _swap_face_video(
                     error_container['error'] = e
                 print(f"[ERROR] 处理线程 Worker-{worker_id} 异常: {str(e)}")
                 stop_event.set()
+            finally:
+                _mark_worker_done()
 
-        # 写入线程（按顺序写入）
         def write_frames():
             try:
                 _emit_stage(stage_callback, "processing-video-frames")
                 next_frame_idx = 0
                 frame_buffer = {}  # 缓存乱序到达的帧
                 frames_written = 0
-                idle_count = 0  # 空闲计数器
-                max_idle = 30  # 最多等待30秒（30次 * 1秒）
-                
-                while not stop_event.is_set():
+
+                while True:
+                    if stop_event.is_set() and write_queue.empty():
+                        break
+
                     try:
                         frame_idx, frame = write_queue.get(timeout=1)
-                        idle_count = 0  # 重置空闲计数
                     except queue.Empty:
-                        idle_count += 1
-                        # 如果已经写入了所有帧，或者空闲时间过长，退出
-                        if (total_frames > 0 and frames_written >= total_frames) or idle_count >= max_idle:
+                        # 仅当处理线程全部结束后才允许写线程退出，避免“空闲30秒提前结束”
+                        if workers_done_event.is_set():
+                            if frame_buffer:
+                                # 若存在残留乱序帧，按索引顺序尽力写出，避免丢结果
+                                for pending_idx in sorted(frame_buffer.keys()):
+                                    writer.write(frame_buffer[pending_idx])
+                                    frames_written += 1
+                                frame_buffer.clear()
                             break
                         continue
                     
@@ -542,14 +588,19 @@ def _swap_face_video(
                         frames_written += 1
                         next_frame_idx += 1
                     
-                    # 检查是否完成（但不立即退出，等待缓冲区中的帧）
-                    if total_frames > 0 and frames_written >= total_frames and not frame_buffer:
+                    # 若已写满总帧且处理线程也已结束，可安全退出
+                    if (
+                        total_frames > 0
+                        and frames_written >= total_frames
+                        and workers_done_event.is_set()
+                    ):
                         break
                         
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
                 print(f"[ERROR] 写入线程异常: {str(e)}")
+                stop_event.set()
                 stop_event.set()
 
         # 启动线程（移除 daemon=True 以确保线程正确完成）
@@ -988,6 +1039,33 @@ def _swap_face_video_by_sources(
     stop_event = threading.Event()
     processing_error = threading.Lock()
     error_container = {'error': None}
+    workers_done_event = threading.Event()
+    workers_done_lock = threading.Lock()
+    workers_done_count = {'count': 0}
+
+    def _queue_put_with_stop(
+        q_obj,
+        item,
+        *,
+        timeout=1,
+        warn_prefix="队列已满，等待中...",
+    ) -> bool:
+        wait_count = 0
+        while not stop_event.is_set():
+            try:
+                q_obj.put(item, timeout=timeout)
+                return True
+            except queue.Full:
+                wait_count += 1
+                if wait_count % 5 == 0:
+                    print(f"[WARN] {warn_prefix} (已等待约 {wait_count} 秒)")
+        return False
+
+    def _mark_worker_done():
+        with workers_done_lock:
+            workers_done_count['count'] += 1
+            if workers_done_count['count'] >= num_workers:
+                workers_done_event.set()
     
     try:
         _emit_stage(stage_callback, "opening-video")
@@ -1076,26 +1154,22 @@ def _swap_face_video_by_sources(
                     ok, frame = cap.read()
                     if not ok:
                         break
-                    # 添加超时和重试机制，避免队列满时死锁
-                    retry_count = 0
-                    while not stop_event.is_set() and retry_count < 5:
-                        try:
-                            read_queue.put((frame_idx, frame), timeout=2)
-                            break
-                        except queue.Full:
-                            retry_count += 1
-                            print(f"[WARN] 读取队列已满，等待中... (重试 {retry_count}/5)")
-                            if retry_count >= 5:
-                                print("[ERROR] 读取队列持续满载，可能发生死锁")
-                                stop_event.set()
-                                _clear_queue(read_queue)
-                                return
+                    if not _queue_put_with_stop(
+                        read_queue,
+                        (frame_idx, frame),
+                        timeout=1,
+                        warn_prefix="读取队列已满，等待处理线程消费",
+                    ):
+                        return
                     frame_idx += 1
                 for _ in range(num_workers):
-                    try:
-                        read_queue.put((None, None), timeout=5)
-                    except queue.Full:
-                        print("[WARN] 无法发送结束信号到读取队列")
+                    if not _queue_put_with_stop(
+                        read_queue,
+                        (None, None),
+                        timeout=1,
+                        warn_prefix="读取队列已满，等待投递结束信号",
+                    ):
+                        break
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
@@ -1195,30 +1269,41 @@ def _swap_face_video_by_sources(
                             print(f"[WARN] 帧{current_frame} 轨迹{track_id} 换脸失败: {str(e)}")
                     
                     out = _normalize_output_frame(out, width, height)
-                    write_queue.put((frame_idx, out))
+                    if not _queue_put_with_stop(
+                        write_queue,
+                        (frame_idx, out),
+                        timeout=1,
+                        warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
+                    ):
+                        break
                     
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
                 print(f"[ERROR] 处理线程 Worker-{worker_id} 异常: {str(e)}")
                 stop_event.set()
+            finally:
+                _mark_worker_done()
 
-        # 写入线程
         def write_frames():
             try:
                 next_frame_idx = 0
                 frame_buffer = {}
                 frames_written = 0
-                idle_count = 0
-                max_idle = 30
                 
-                while not stop_event.is_set():
+                while True:
+                    if stop_event.is_set() and write_queue.empty():
+                        break
+
                     try:
                         frame_idx, frame = write_queue.get(timeout=1)
-                        idle_count = 0
                     except queue.Empty:
-                        idle_count += 1
-                        if (total_frames > 0 and frames_written >= total_frames) or idle_count >= max_idle:
+                        if workers_done_event.is_set():
+                            if frame_buffer:
+                                for pending_idx in sorted(frame_buffer.keys()):
+                                    writer.write(frame_buffer[pending_idx])
+                                    frames_written += 1
+                                frame_buffer.clear()
                             break
                         continue
                     
@@ -1229,13 +1314,18 @@ def _swap_face_video_by_sources(
                         frames_written += 1
                         next_frame_idx += 1
                     
-                    if total_frames > 0 and frames_written >= total_frames and not frame_buffer:
+                    if (
+                        total_frames > 0
+                        and frames_written >= total_frames
+                        and workers_done_event.is_set()
+                    ):
                         break
                         
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
                 print(f"[ERROR] 写入线程异常: {str(e)}")
+                stop_event.set()
                 stop_event.set()
 
         # 启动线程（移除 daemon=True 以确保线程正确完成）

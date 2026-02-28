@@ -41,6 +41,8 @@ ALLOWED_VIDEO_EXTS = {
 
 VIDEO_TASK_PROGRESS = {}
 VIDEO_TASK_PROGRESS_LOCK = threading.RLock()
+VIDEO_TASK_CANCELLED = set()
+VIDEO_TASK_CANCELLED_LOCK = threading.RLock()
 
 
 def _set_video_task_progress(task_id: str, **updates):
@@ -56,6 +58,40 @@ def _get_video_task_progress(task_id: str):
         if not state:
             return {"status": "idle", "progress": 0, "etaSeconds": None, "stage": None}
         return state.copy()
+
+
+def _mark_video_task_cancelled(task_id: str):
+    with VIDEO_TASK_CANCELLED_LOCK:
+        VIDEO_TASK_CANCELLED.add(task_id)
+
+
+def _clear_video_task_cancelled(task_id: str):
+    with VIDEO_TASK_CANCELLED_LOCK:
+        VIDEO_TASK_CANCELLED.discard(task_id)
+
+
+def _is_video_task_cancelled(task_id: str) -> bool:
+    with VIDEO_TASK_CANCELLED_LOCK:
+        return task_id in VIDEO_TASK_CANCELLED
+
+
+def _run_video_task_async(task_id: str, task_callable, on_completion):
+    def _worker():
+        res = None
+        err = None
+        try:
+            res = task_callable()
+        except Exception as e:
+            err = e
+        try:
+            on_completion(res, err)
+        except Exception:
+            print("[ERROR] video task completion callback failed:\n", traceback.format_exc())
+        finally:
+            _clear_video_task_cancelled(task_id)
+
+    thread = threading.Thread(target=_worker, name=f"VideoTask-{task_id}", daemon=True)
+    thread.start()
 
 
 def _ext(path: str) -> str:
@@ -428,8 +464,12 @@ def create_video_task():
             result=None,
         )
 
+        _clear_video_task_cancelled(task_id)
+
         # 定义回调函数（必须在 task_callable 之前定义）
         def _on_stage(stage: str):
+            if _is_video_task_cancelled(task_id):
+                return
             print(f"[INFO] 视频处理阶段: {stage}")
             _set_video_task_progress(
                 task_id,
@@ -439,6 +479,8 @@ def create_video_task():
             )
 
         def _on_progress(frame_count: int, total_frames: int, elapsed_seconds: float):
+            if _is_video_task_cancelled(task_id):
+                return
             progress = 0.0
             eta_seconds = None
             if total_frames and total_frames > 0:
@@ -496,6 +538,10 @@ def create_video_task():
 
         
         def _on_completion(res, err):
+            if _is_video_task_cancelled(task_id):
+                print(f"[API] 视频换脸任务已取消，忽略完成回调: task_id={task_id}")
+                return
+
             if res:
                 print(f"[API] 视频换脸任务完成: {res}")
                 _set_video_task_progress(
@@ -518,7 +564,7 @@ def create_video_task():
                 )
 
         try:
-            AsyncTask.run_async(task_callable, task_id=task_id, on_completion=_on_completion)
+            _run_video_task_async(task_id, task_callable, _on_completion)
         except Exception as e:
             print(f"[ERROR] 启动异步任务失败: {str(e)}")
             _set_video_task_progress(
@@ -555,6 +601,7 @@ def get_video_task_progress(task_id):
 @app.delete("/task/<task_id>")
 def cancel_task(task_id):
     AsyncTask.cancel(task_id)
+    _mark_video_task_cancelled(task_id)
     _set_video_task_progress(
         task_id,
         status="cancelled",
