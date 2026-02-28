@@ -42,7 +42,7 @@ jobs:
         include:
           - target: x86_64-pc-windows-msvc
             build: windows
-            os: windows-2019
+            os: windows-latest
             arch: x86_64
 
     runs-on: ${{ matrix.os }}
