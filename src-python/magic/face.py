@@ -1190,16 +1190,18 @@ def _swap_face_video_by_sources(
     cap = None
     writer = None
     
-    # 动态计算队列大小和线程数
+    # 关键修复：
+    # 多人视频换脸依赖 tracks（跨帧状态）按时间顺序更新。
+    # 若使用多处理线程并发，不同帧会乱序更新同一份 tracks，导致轨迹错配/丢失，
+    # 表现为“选了多个人脸框，但有时只换其中一个”。
+    # 因此这里固定为单处理线程，优先保证多人换脸正确性与稳定性。
     cpu_count = multiprocessing.cpu_count()
-    if use_gpu:
-        num_workers = max(2, min(cpu_count, 6))
-        queue_size = max(8, num_workers * 3)
-    else:
-        num_workers = max(1, min(cpu_count - 1, 8))
-        queue_size = max(5, num_workers * 2)
+    num_workers = 1
+    queue_size = 8 if use_gpu else 5
     
-    print(f"[INFO] 多人换脸使用 {num_workers} 个处理线程，队列大小: {queue_size}")
+    print(
+        f"[INFO] 多人换脸使用 {num_workers} 个处理线程（CPU核数={cpu_count}），队列大小: {queue_size}"
+    )
     
     # 多线程队列
     read_queue = queue.Queue(maxsize=queue_size)
@@ -1412,7 +1414,8 @@ def _swap_face_video_by_sources(
                             if track_id in matched_track_ids:
                                 continue
                             track["missed"] = int(track.get("missed", 0)) + 1
-                            if track["missed"] > 45:
+                            # 容忍更长时间的短暂丢脸，避免某个目标被过早清理后不再参与换脸
+                            if track["missed"] > 300:
                                 stale_track_ids.append(track_id)
                         
                         for track_id in stale_track_ids:
@@ -1816,8 +1819,13 @@ def _center_distance(box_a, box_b):
 
 
 def _build_tracks_from_seed_regions(seed_regions, detections):
-    if not seed_regions or not detections:
+    if not seed_regions:
         return {}
+
+    # 关键修复：
+    # 即使关键帧检测不完整（例如只检测到 1 张脸），也要为每个用户选区创建轨迹，
+    # 避免“两个框只初始化了一个轨迹”导致后续始终只换一个人。
+    detections = detections or []
 
     tracks = {}
     used_det = set()
@@ -1846,14 +1854,17 @@ def _build_tracks_from_seed_regions(seed_regions, detections):
                     best_dist = dist
                     best_idx = idx
 
-        if best_idx < 0:
-            continue
+        # 若关键帧未匹配到检测框，回退使用用户选区本身作为初始轨迹框
+        if best_idx >= 0:
+            used_det.add(best_idx)
+            init_box = detections[best_idx]["box"]
+        else:
+            init_box = region_box
 
-        used_det.add(best_idx)
         tracks[track_id] = {
             "trackId": track_id,
             "faceSourceId": str(region["faceSourceId"]),
-            "box": detections[best_idx]["box"],
+            "box": init_box,
             "missed": 0,
         }
         track_id += 1
