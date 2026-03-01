@@ -3,6 +3,7 @@ import type {
   Region,
   Task,
   TaskResult,
+  VideoGpuModesResult,
   VideoTask,
   VideoTaskProgress,
 } from "./server";
@@ -239,6 +240,54 @@ class WebServer {
     }
   }
 
+  async getVideoGpuModes(): Promise<VideoGpuModesResult> {
+    try {
+      const res = await fetch(`${this._baseURL}/task/video/gpu-modes`, {
+        method: "get",
+        headers: this._headers(),
+      });
+
+      if (!res.ok) {
+        return {
+          modes: [{ id: "cpu", name: "CPU" }],
+          error: `http-${res.status}`,
+        };
+      }
+
+      const data = await res.json();
+      const modes = Array.isArray(data?.modes)
+        ? data.modes
+          .filter(
+            (mode: any) =>
+              mode &&
+              typeof mode.id === "string" &&
+              ["cpu", "directml", "cuda"].includes(mode.id)
+          )
+          .map((mode: any) => ({
+            id: mode.id,
+            name: String(mode.name || mode.id),
+          }))
+        : [];
+
+      if (!modes.some((mode: any) => mode.id === "cpu")) {
+        modes.unshift({ id: "cpu", name: "CPU" });
+      }
+
+      return {
+        modes: modes.length ? modes : [{ id: "cpu", name: "CPU" }],
+        availableProviders: Array.isArray(data?.availableProviders)
+          ? data.availableProviders.map((item: any) => String(item))
+          : [],
+        error: data?.error,
+      };
+    } catch {
+      return {
+        modes: [{ id: "cpu", name: "CPU" }],
+        error: "network",
+      };
+    }
+  }
+
   async createTask(task: Omit<Task, "id"> & { id: string } & { inputFileId: string; targetFaceId?: string }) {
     try {
       const res = await fetch(`${this._baseURL}/task`, {
@@ -297,6 +346,7 @@ class WebServer {
           faceSources: task.faceSources,
           keyFrameMs: task.keyFrameMs,
           useGpu: task.useGpu,
+          gpuProvider: task.gpuProvider,
         }),
       });
 

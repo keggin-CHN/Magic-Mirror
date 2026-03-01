@@ -104,6 +104,12 @@
   "Enable GPU acceleration for faster processing?": "是否启用 GPU 加速以提升处理速度？",
   "GPU acceleration can speed up video processing by 10-50x, but requires compatible graphics drivers.": "GPU 加速可将视频处理速度提升 10-50 倍，但需要兼容的显卡驱动。",
   "Click OK to enable GPU, or Cancel to use CPU only.": "点击「确定」启用 GPU，点击「取消」仅使用 CPU。",
+  "Select video acceleration mode before starting:": "开始视频换脸前，请选择加速模式：",
+  "Enter mode number, or leave blank to cancel.": "请输入模式编号，留空可取消。",
+  "Invalid acceleration mode selection. Please try again.": "加速模式选择无效，请重试。",
+  "CUDA (NVIDIA GPU)": "CUDA（NVIDIA 显卡）",
+  "DirectML (Recommended for Windows)": "DirectML（Windows 推荐）",
+  "CPU (Compatible, slower)": "CPU（兼容性最好，速度较慢）",
   "downloadURL": "https://github.com/idootop/MagicMirror/releases/download/server-v1.0.0/server_{{type}}_{{arch}}.zip",
   "downloadTutorial": "https://ccnpyvkdfkte.feishu.cn/wiki/LAn6w4NqwiqeKmkXBrLc4MEBnDh",
   "aboutLink": "https://github.com/idootop/MagicMirror"

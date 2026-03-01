@@ -7,7 +7,12 @@ import {
   type LibraryItem,
   type UploadResult,
 } from "@/services/webServer";
-import { Server, type FaceSource, type Region } from "@/services/server";
+import {
+  Server,
+  type FaceSource,
+  type Region,
+  type VideoGpuProvider,
+} from "@/services/server";
 import { getFileExtension, isImageFile, isVideoFile } from "@/services/utils";
 import {
   convertFileSrcSafe,
@@ -1190,6 +1195,91 @@ export function MirrorPage() {
     []
   );
 
+  const localizeVideoGpuMode = useCallback(
+    (modeId: VideoGpuProvider | string, fallbackName?: string) => {
+      switch (modeId) {
+        case "cuda":
+          return t("CUDA (NVIDIA GPU)");
+        case "directml":
+          return t("DirectML (Recommended for Windows)");
+        case "cpu":
+          return t("CPU (Compatible, slower)");
+        default:
+          return fallbackName || String(modeId);
+      }
+    },
+    [t]
+  );
+
+  const chooseVideoGpuProvider = useCallback(
+    async (): Promise<VideoGpuProvider | null> => {
+      const gpuModesResult = isWeb
+        ? await webClient.getVideoGpuModes()
+        : await Server.getVideoGpuModes();
+
+      if (gpuModesResult.error) {
+        console.warn("[Mirror] 获取 GPU 模式失败:", gpuModesResult.error);
+      }
+
+      const fallbackModes = [{ id: "cpu" as const, name: "CPU" }];
+      const modeList =
+        Array.isArray(gpuModesResult.modes) && gpuModesResult.modes.length > 0
+          ? gpuModesResult.modes
+          : fallbackModes;
+
+      const preferredModeIndex = modeList.findIndex(
+        (mode) => mode.id === "cuda" || mode.id === "directml"
+      );
+      const defaultModeIndex = preferredModeIndex >= 0 ? preferredModeIndex : 0;
+
+      const optionsText = modeList
+        .map(
+          (mode, index) =>
+            `${index + 1}. ${localizeVideoGpuMode(mode.id, mode.name)}`
+        )
+        .join("\n");
+
+      const promptText =
+        t("Select video acceleration mode before starting:") +
+        "\n\n" +
+        optionsText +
+        "\n\n" +
+        t("Enter mode number, or leave blank to cancel.");
+
+      const userInput = window.prompt(promptText, String(defaultModeIndex + 1));
+
+      if (userInput === null) {
+        return null;
+      }
+
+      const normalized = userInput.trim().toLowerCase();
+      if (!normalized) {
+        return null;
+      }
+
+      let selectedMode = modeList.find((mode) => mode.id === normalized);
+
+      if (!selectedMode) {
+        const selectedNumber = Number.parseInt(normalized, 10);
+        if (
+          Number.isFinite(selectedNumber) &&
+          selectedNumber >= 1 &&
+          selectedNumber <= modeList.length
+        ) {
+          selectedMode = modeList[selectedNumber - 1];
+        }
+      }
+
+      if (!selectedMode) {
+        setNotice(t("Invalid acceleration mode selection. Please try again."));
+        return null;
+      }
+
+      return selectedMode.id as VideoGpuProvider;
+    },
+    [isWeb, localizeVideoGpuMode, setNotice, t, webClient]
+  );
+
   const handleStartSwap = useCallback(async () => {
     const me = kMirrorStates.me;
     const input = kMirrorStates.input;
@@ -1211,13 +1301,11 @@ export function MirrorPage() {
     };
 
     if (input.type === "video") {
-      // 询问用户是否使用 GPU 加速
-      const useGpu = window.confirm(
-        t("Enable GPU acceleration for faster processing?") + "\n\n" +
-        t("GPU acceleration can speed up video processing by 10-50x, but requires compatible graphics drivers.") + "\n\n" +
-        t("Click OK to enable GPU, or Cancel to use CPU only.")
-      );
-
+      const selectedGpuProvider = await chooseVideoGpuProvider();
+      if (!selectedGpuProvider) {
+        return;
+      }
+      const useGpu = selectedGpuProvider !== "cpu";
       if (isMultiFaceMode) {
         if (!regions.length) {
           setNotice(t("Please select at least one area."));
@@ -1253,6 +1341,7 @@ export function MirrorPage() {
               })),
               keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
               useGpu: useGpu,
+              gpuProvider: selectedGpuProvider,
             }
             : {
               inputVideo: input.path,
@@ -1263,6 +1352,7 @@ export function MirrorPage() {
               })),
               keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
               useGpu: useGpu,
+              gpuProvider: selectedGpuProvider,
             }
         );
 
@@ -1291,11 +1381,13 @@ export function MirrorPage() {
             inputFileId: input.path,
             targetFaceId: me.path,
             useGpu: useGpu,
+            gpuProvider: selectedGpuProvider,
           }
           : {
             inputVideo: input.path,
             targetFace: me.path,
             useGpu: useGpu,
+            gpuProvider: selectedGpuProvider,
           }
       );
 
@@ -1394,6 +1486,7 @@ export function MirrorPage() {
     rebuild.current();
   }, [
     buildResultName,
+    chooseVideoGpuProvider,
     faceSources,
     isMultiFaceMode,
     isWeb,

@@ -104,6 +104,12 @@
   "Enable GPU acceleration for faster processing?": "Enable GPU acceleration for faster processing?",
   "GPU acceleration can speed up video processing by 10-50x, but requires compatible graphics drivers.": "GPU acceleration can speed up video processing by 10-50x, but requires compatible graphics drivers.",
   "Click OK to enable GPU, or Cancel to use CPU only.": "Click OK to enable GPU, or Cancel to use CPU only.",
+  "Select video acceleration mode before starting:": "Select video acceleration mode before starting:",
+  "Enter mode number, or leave blank to cancel.": "Enter mode number, or leave blank to cancel.",
+  "Invalid acceleration mode selection. Please try again.": "Invalid acceleration mode selection. Please try again.",
+  "CUDA (NVIDIA GPU)": "CUDA (NVIDIA GPU)",
+  "DirectML (Recommended for Windows)": "DirectML (Recommended for Windows)",
+  "CPU (Compatible, slower)": "CPU (Compatible, slower)",
   "downloadURL": "https://github.com/idootop/MagicMirror/releases/download/server-v1.0.0/server_{{type}}_{{arch}}.zip",
   "downloadTutorial": "https://thread-sphynx-f26.notion.site/MagicMirror-User-Guide-147aea89ebf680c189cdd76f5668261a",
   "aboutLink": "https://github.com/idootop/MagicMirror"

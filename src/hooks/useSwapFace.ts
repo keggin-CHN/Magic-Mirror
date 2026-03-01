@@ -33,6 +33,7 @@ type WebVideoTask = {
   faceSources?: FaceSource[];
   keyFrameMs?: number;
   useGpu?: boolean;
+  gpuProvider?: "auto" | "cpu" | "directml" | "cuda";
 };
 
 type AnyImageTask = Omit<Task, "id"> | WebImageTask;
