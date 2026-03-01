@@ -15,6 +15,7 @@ from bottle import Bottle, request, response, static_file
 from magic.face import (
     detect_face_boxes_in_image,
     detect_face_boxes_in_video,
+    get_gpu_acceleration_modes,
     load_models,
     swap_face,
     swap_face_regions,
@@ -672,6 +673,24 @@ def create_task():
         return {"error": _simplify_task_error(e)}
 
 
+@app.route("/api/task/video/gpu-modes", method=["GET", "OPTIONS"])
+def get_video_gpu_modes():
+    if request.method == "OPTIONS":
+        return {}
+    if not _require_auth():
+        return {"error": "unauthorized"}
+
+    try:
+        return get_gpu_acceleration_modes()
+    except Exception as e:
+        response.status = 500
+        return {
+            "modes": [{"id": "cpu", "name": "CPU"}],
+            "availableProviders": [],
+            "error": _simplify_task_error(e),
+        }
+
+
 @app.route("/api/task/video", method=["POST", "OPTIONS"])
 def create_video_task():
     if request.method == "OPTIONS":
@@ -688,6 +707,21 @@ def create_video_task():
         face_sources = body.get("faceSources")
         key_frame_ms = body.get("keyFrameMs", 0)
         use_gpu = body.get("useGpu", False)
+        gpu_provider = str(body.get("gpuProvider", "auto") or "auto").strip().lower()
+        if gpu_provider in ("dml", "directml"):
+            gpu_provider = "directml"
+        elif gpu_provider == "cuda":
+            gpu_provider = "cuda"
+        elif gpu_provider == "cpu":
+            gpu_provider = "cpu"
+        else:
+            gpu_provider = "auto"
+
+        if gpu_provider == "cpu":
+            use_gpu = False
+        elif gpu_provider in ("directml", "cuda"):
+            use_gpu = True
+
         has_face_sources = "faceSources" in body
 
         if not all([task_id, input_id]):
@@ -795,6 +829,7 @@ def create_video_task():
                 progress_callback=_on_progress,
                 stage_callback=_on_stage,
                 use_gpu=use_gpu,
+                gpu_provider=gpu_provider,
             )
         else:
             if not target_face_id:
@@ -819,6 +854,7 @@ def create_video_task():
                 progress_callback=_on_progress,
                 stage_callback=_on_stage,
                 use_gpu=use_gpu,
+                gpu_provider=gpu_provider,
             )
 
         def _on_completion(res, err):

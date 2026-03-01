@@ -9,6 +9,7 @@ from bottle import Bottle, request, response
 from .face import (
     detect_face_boxes_in_image,
     detect_face_boxes_in_video,
+    get_gpu_acceleration_modes,
     load_models,
     swap_face,
     swap_face_regions,
@@ -366,6 +367,22 @@ def detect_faces_for_video():
         return {"error": _simplify_task_error(e)}
 
 
+@app.route("/task/video/gpu-modes", method=["GET", "OPTIONS"])
+def get_video_gpu_modes():
+    if request.method == "OPTIONS":
+        return {}
+
+    try:
+        return get_gpu_acceleration_modes()
+    except Exception as e:
+        response.status = 500
+        return {
+            "modes": [{"id": "cpu", "name": "CPU"}],
+            "availableProviders": [],
+            "error": _simplify_task_error(e),
+        }
+
+
 @app.route("/task/video", method=["POST", "OPTIONS"])
 def create_video_task():
     # 处理 OPTIONS 预检请求
@@ -382,6 +399,21 @@ def create_video_task():
         face_sources = body.get("faceSources")
         key_frame_ms = body.get("keyFrameMs", 0)
         use_gpu = body.get("useGpu", False)
+        gpu_provider = str(body.get("gpuProvider", "auto") or "auto").strip().lower()
+        if gpu_provider in ("dml", "directml"):
+            gpu_provider = "directml"
+        elif gpu_provider == "cuda":
+            gpu_provider = "cuda"
+        elif gpu_provider == "cpu":
+            gpu_provider = "cpu"
+        else:
+            gpu_provider = "auto"
+
+        if gpu_provider == "cpu":
+            use_gpu = False
+        elif gpu_provider in ("directml", "cuda"):
+            use_gpu = True
+
         has_face_sources = "faceSources" in body
 
         print("[API] 收到视频换脸请求:")
@@ -391,6 +423,7 @@ def create_video_task():
         print(f"  - has_face_sources: {has_face_sources}")
         print(f"  - key_frame_ms: {key_frame_ms}")
         print(f"  - use_gpu: {use_gpu}")
+        print(f"  - gpu_provider: {gpu_provider}")
 
         if not all([task_id, input_video]):
             response.status = 400
@@ -510,6 +543,7 @@ def create_video_task():
                 progress_callback=_on_progress,
                 stage_callback=_on_stage,
                 use_gpu=use_gpu,
+                gpu_provider=gpu_provider,
             )
         else:
             if not target_face:
@@ -532,6 +566,7 @@ def create_video_task():
                 progress_callback=_on_progress,
                 stage_callback=_on_stage,
                 use_gpu=use_gpu,
+                gpu_provider=gpu_provider,
             )
 # 使用异步任务处理，避免阻塞请求线程
 # 前端通过轮询获取进度和最终结果

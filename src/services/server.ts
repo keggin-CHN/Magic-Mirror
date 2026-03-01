@@ -27,6 +27,8 @@ export interface Task {
   faceSources?: FaceSource[];
 }
 
+export type VideoGpuProvider = "auto" | "cpu" | "directml" | "cuda";
+
 export interface VideoTask {
   id: string;
   inputVideo: string;
@@ -35,6 +37,18 @@ export interface VideoTask {
   faceSources?: FaceSource[];
   keyFrameMs?: number;
   useGpu?: boolean;
+  gpuProvider?: VideoGpuProvider;
+}
+
+export interface VideoGpuMode {
+  id: "cpu" | "directml" | "cuda";
+  name: string;
+}
+
+export interface VideoGpuModesResult {
+  modes: VideoGpuMode[];
+  availableProviders?: string[];
+  error?: string;
 }
 
 export interface DetectFacesResult {
@@ -323,6 +337,53 @@ class _Server {
     } catch {
       return {
         regions: [],
+        error: "network",
+      };
+    }
+  }
+
+  async getVideoGpuModes(): Promise<VideoGpuModesResult> {
+    try {
+      const res = await fetch(`${this._baseURL}/task/video/gpu-modes`, {
+        method: "get",
+      });
+
+      if (!res.ok) {
+        return {
+          modes: [{ id: "cpu", name: "CPU" }],
+          error: `http-${res.status}`,
+        };
+      }
+
+      const data = await res.json();
+      const modes: VideoGpuMode[] = Array.isArray(data?.modes)
+        ? data.modes
+          .filter(
+            (mode: any) =>
+              mode &&
+              typeof mode.id === "string" &&
+              ["cpu", "directml", "cuda"].includes(mode.id)
+          )
+          .map((mode: any) => ({
+            id: mode.id as VideoGpuMode["id"],
+            name: String(mode.name || mode.id),
+          }))
+        : [];
+
+      if (!modes.some((mode) => mode.id === "cpu")) {
+        modes.unshift({ id: "cpu", name: "CPU" });
+      }
+
+      return {
+        modes: modes.length ? modes : [{ id: "cpu", name: "CPU" }],
+        availableProviders: Array.isArray(data?.availableProviders)
+          ? data.availableProviders.map((item: any) => String(item))
+          : [],
+        error: data?.error,
+      };
+    } catch {
+      return {
+        modes: [{ id: "cpu", name: "CPU" }],
         error: "network",
       };
     }

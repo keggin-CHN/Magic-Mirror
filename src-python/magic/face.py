@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -17,10 +18,15 @@ from tinyface import TinyFace
 _tf = TinyFace()
 _tf_lock = threading.RLock()
 
-# GPU 加速的 TinyFace 实例（按需创建）
-_tf_gpu = None
+# GPU 加速的 TinyFace 实例池缓存（按 Provider 复用）
+# 结构: {
+#   provider: {
+#     "instances": [TinyFace, ...],
+#     "locks": [RLock, ...],
+#   }
+# }
+_tf_gpu_instances = {}
 _tf_gpu_lock = threading.RLock()
-_gpu_initialized = False
 
 
 def _log_error(context: str, error: Exception):
@@ -57,71 +63,164 @@ def load_models():
         return False
 
 
-def _init_gpu_models():
-    """初始化 GPU 加速的模型（使用 DirectML）- 双重检查锁定模式"""
-    global _tf_gpu, _gpu_initialized
-    
-    # 第一次检查（无锁，快速路径）
-    if _gpu_initialized:
-        return _tf_gpu is not None
-    
-    # 使用锁保护初始化检查，避免竞态条件
-    with _tf_gpu_lock:
-        # 第二次检查（有锁，确保只初始化一次）
-        if _gpu_initialized:
-            return _tf_gpu is not None
-        
+def _get_available_execution_providers():
+    try:
+        import onnxruntime as ort
+
+        providers = ort.get_available_providers()
+        return list(providers) if providers else []
+    except Exception as e:
+        print(f"[WARN] 获取 ExecutionProvider 失败: {str(e)}")
+        return []
+
+
+def get_gpu_acceleration_modes():
+    """返回当前环境可用的加速模式，供前端在视频换脸前选择。"""
+    available_providers = _get_available_execution_providers()
+    modes = [{"id": "cpu", "name": "CPU"}]
+
+    if "DmlExecutionProvider" in available_providers:
+        modes.append({"id": "directml", "name": "DirectML"})
+
+    if "CUDAExecutionProvider" in available_providers:
+        modes.append({"id": "cuda", "name": "CUDA"})
+
+    return {"modes": modes, "availableProviders": available_providers}
+
+
+def _normalize_gpu_provider(gpu_provider: str):
+    mode = (gpu_provider or "auto").strip().lower()
+    if mode in {"dml", "directml"}:
+        return "directml"
+    if mode == "cuda":
+        return "cuda"
+    if mode == "cpu":
+        return "cpu"
+    return "auto"
+
+
+def _resolve_execution_provider(gpu_provider: str):
+    mode = _normalize_gpu_provider(gpu_provider)
+    if mode == "cpu":
+        return None
+
+    available_providers = _get_available_execution_providers()
+    if mode == "cuda":
+        candidates = ["CUDAExecutionProvider"]
+    elif mode == "directml":
+        candidates = ["DmlExecutionProvider"]
+    else:
+        candidates = ["DmlExecutionProvider", "CUDAExecutionProvider"]
+
+    for provider in candidates:
+        if provider in available_providers:
+            return provider
+    return None
+
+def _resolve_gpu_pool_size(num_workers: int) -> int:
+    """根据并发线程数和环境变量推导 GPU 实例池大小。"""
+    env_val = os.environ.get("MAGIC_GPU_POOL_SIZE")
+    if env_val:
         try:
-            print("[INFO] 正在初始化 GPU 加速模型...")
-            import onnxruntime as ort
-            
-            # 检查可用的 ExecutionProvider
-            available_providers = ort.get_available_providers()
-            print(f"[INFO] 可用的 ExecutionProvider: {available_providers}")
-            
-            # 优先使用 DirectML（Windows 通用），其次 CUDA
-            if 'DmlExecutionProvider' in available_providers:
-                providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
-                print("[INFO] 使用 DirectML 加速")
-            elif 'CUDAExecutionProvider' in available_providers:
-                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-                print("[INFO] 使用 CUDA 加速")
-            else:
-                print("[WARN] 未找到 GPU ExecutionProvider，回退到 CPU")
-                _gpu_initialized = True
-                return False
-            
-            # 创建 GPU 版本的 TinyFace 实例
-            _tf_gpu = TinyFace()
-            _tf_gpu.config.face_detector_model = _get_model_path("scrfd_2.5g.onnx")
-            _tf_gpu.config.face_embedder_model = _get_model_path("arcface_w600k_r50.onnx")
-            _tf_gpu.config.face_swapper_model = _get_model_path("inswapper_128_fp16.onnx")
-            _tf_gpu.config.face_enhancer_model = _get_model_path("gfpgan_1.4.onnx")
-            
-            # 设置 ExecutionProvider
-            _tf_gpu.config.execution_providers = providers
-            
-            _tf_gpu.prepare()
-            _gpu_initialized = True
-            print("[SUCCESS] GPU 模型初始化成功")
-            return True
-            
+            forced = int(env_val)
+            if forced > 0:
+                return max(1, min(forced, 8))
+        except Exception:
+            print(f"[WARN] 无效 MAGIC_GPU_POOL_SIZE={env_val}，将使用自动策略")
+    # 默认最多 4 个实例，避免显存占用过高
+    return max(1, min(int(num_workers or 1), 4))
+
+
+def _init_gpu_models(gpu_provider: str = "auto", pool_size: int = 1):
+    """按需初始化指定 Provider 的 GPU 模型实例池，并缓存。"""
+    global _tf_gpu_instances
+
+    selected_provider = _resolve_execution_provider(gpu_provider)
+    if selected_provider is None:
+        return False, None
+
+    target_pool_size = max(1, int(pool_size or 1))
+
+    with _tf_gpu_lock:
+        cache = _tf_gpu_instances.get(selected_provider)
+
+        # 兼容旧结构：provider -> TinyFace
+        if cache is not None and not isinstance(cache, dict):
+            cache = {"instances": [cache], "locks": [threading.RLock()]}
+            _tf_gpu_instances[selected_provider] = cache
+
+        if cache is None:
+            cache = {"instances": [], "locks": []}
+            _tf_gpu_instances[selected_provider] = cache
+
+        instances = cache.get("instances")
+        locks = cache.get("locks")
+        if not isinstance(instances, list) or not isinstance(locks, list):
+            cache["instances"] = []
+            cache["locks"] = []
+            instances = cache["instances"]
+            locks = cache["locks"]
+
+        if len(instances) >= target_pool_size:
+            return True, selected_provider
+
+        try:
+            for idx in range(len(instances), target_pool_size):
+                print(
+                    f"[INFO] 正在初始化 GPU 加速模型: {selected_provider} ({idx + 1}/{target_pool_size})"
+                )
+                tf_gpu = TinyFace()
+                tf_gpu.config.face_detector_model = _get_model_path("scrfd_2.5g.onnx")
+                tf_gpu.config.face_embedder_model = _get_model_path("arcface_w600k_r50.onnx")
+                tf_gpu.config.face_swapper_model = _get_model_path("inswapper_128_fp16.onnx")
+                tf_gpu.config.face_enhancer_model = _get_model_path("gfpgan_1.4.onnx")
+                tf_gpu.config.execution_providers = [selected_provider, "CPUExecutionProvider"]
+                tf_gpu.prepare()
+                instances.append(tf_gpu)
+                locks.append(threading.RLock())
+
+            print(
+                f"[SUCCESS] GPU 模型初始化成功: {selected_provider}, 实例数={len(instances)}"
+            )
+            return True, selected_provider
+
         except Exception as e:
-            print(f"[ERROR] GPU 模型初始化失败: {str(e)}")
+            print(f"[ERROR] GPU 模型初始化失败({selected_provider}): {str(e)}")
             print(traceback.format_exc())
-            _tf_gpu = None
-            _gpu_initialized = True
-            return False
+            # 若已有可用实例，降级使用现有池
+            if len(instances) > 0 and len(instances) == len(locks):
+                print(
+                    f"[WARN] 使用已初始化的 GPU 实例池继续运行: {selected_provider}, 实例数={len(instances)}"
+                )
+                return True, selected_provider
+            _tf_gpu_instances.pop(selected_provider, None)
+            return False, None
 
 
-def _get_tf_instance(use_gpu=False):
-    """获取 TinyFace 实例（CPU 或 GPU）"""
+def _get_tf_pool(use_gpu=False, gpu_provider="auto", pool_size=1):
+    """获取 TinyFace 实例池（CPU 单实例或 GPU 多实例）。"""
     if use_gpu:
-        if _init_gpu_models() and _tf_gpu is not None:
-            return _tf_gpu, _tf_gpu_lock, True
-        else:
-            print("[WARN] GPU 不可用，回退到 CPU")
-    return _tf, _tf_lock, False
+        ok, selected_provider = _init_gpu_models(
+            gpu_provider=gpu_provider, pool_size=pool_size
+        )
+        if ok and selected_provider:
+            with _tf_gpu_lock:
+                cache = _tf_gpu_instances.get(selected_provider) or {}
+                instances = list(cache.get("instances") or [])
+                locks = list(cache.get("locks") or [])
+            if instances and len(instances) == len(locks):
+                return list(zip(instances, locks)), True, selected_provider
+        print("[WARN] GPU 不可用，回退到 CPU")
+    return [(_tf, _tf_lock)], False, None
+
+
+def _get_tf_instance(use_gpu=False, gpu_provider="auto"):
+    """兼容旧调用：获取一个 TinyFace 实例（CPU 或 GPU）。"""
+    tf_pool, using_gpu, selected_provider = _get_tf_pool(
+        use_gpu=use_gpu, gpu_provider=gpu_provider, pool_size=1
+    )
+    tf_instance, tf_lock = tf_pool[0]
+    return tf_instance, tf_lock, using_gpu, selected_provider
 
 
 def _emit_stage(stage_callback, stage: str):
@@ -255,10 +354,19 @@ def swap_face_regions_by_sources(input_path, face_sources, regions):
         raise
 
 
-def swap_face_video(input_path, face_path, progress_callback=None, stage_callback=None, use_gpu=False):
+def swap_face_video(
+    input_path,
+    face_path,
+    progress_callback=None,
+    stage_callback=None,
+    use_gpu=False,
+    gpu_provider="auto",
+):
     try:
         _emit_stage(stage_callback, "validating-input")
-        print(f"[INFO] 开始视频换脸: input={input_path}, face={face_path}, use_gpu={use_gpu}")
+        print(
+            f"[INFO] 开始视频换脸: input={input_path}, face={face_path}, use_gpu={use_gpu}, gpu_provider={gpu_provider}"
+        )
 
         # 检查输入文件是否存在
         if not os.path.exists(input_path):
@@ -276,6 +384,7 @@ def swap_face_video(input_path, face_path, progress_callback=None, stage_callbac
             progress_callback=progress_callback,
             stage_callback=stage_callback,
             use_gpu=use_gpu,
+            gpu_provider=gpu_provider,
         )
 
         if not output_path or not os.path.exists(output_path):
@@ -304,10 +413,10 @@ def _swap_face_video(
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
+    gpu_provider="auto",
 ):
     """
     视频换脸处理（支持 GPU 加速和多线程处理池）
-    
     架构：
     - 读取线程：从视频读取帧 -> read_queue
     - 处理线程池：多个线程并行处理帧 -> write_queue
@@ -315,30 +424,26 @@ def _swap_face_video(
     """
     cap = None
     writer = None
-    
-    # 动态计算队列大小和线程数
+
     cpu_count = multiprocessing.cpu_count()
-    # GPU模式：使用较少线程避免锁竞争；CPU模式：使用更多线程
-    # 确保至少有1个worker，最多不超过8个
     if use_gpu:
-        num_workers = 2
+        num_workers = max(2, min(cpu_count, 6))
+        queue_size = max(8, num_workers * 3)
     else:
         num_workers = max(1, min(cpu_count - 1, 8))
-    queue_size = max(5, num_workers * 2)  # 队列大小为线程数的2倍
-    
+        queue_size = max(5, num_workers * 2)
+
     print(f"[INFO] 使用 {num_workers} 个处理线程，队列大小: {queue_size}")
-    
-    # 多线程队列
+
     read_queue = queue.Queue(maxsize=queue_size)
-    write_queue = queue.PriorityQueue(maxsize=queue_size)  # 使用优先队列保证顺序
-    
-    # 控制标志
-    stop_event = threading.Event()  # 统一的停止标志
-    processing_error = threading.Lock()  # 使用锁保护错误
-    error_container = {'error': None}  # 线程安全的错误容器
+    write_queue = queue.PriorityQueue(maxsize=queue_size)
+
+    stop_event = threading.Event()
+    processing_error = threading.Lock()
+    error_container = {"error": None}
     workers_done_event = threading.Event()
     workers_done_lock = threading.Lock()
-    workers_done_count = {'count': 0}
+    workers_done_count = {"count": 0}
 
     def _queue_put_with_stop(
         q_obj,
@@ -360,8 +465,8 @@ def _swap_face_video(
 
     def _mark_worker_done():
         with workers_done_lock:
-            workers_done_count['count'] += 1
-            if workers_done_count['count'] >= num_workers:
+            workers_done_count["count"] += 1
+            if workers_done_count["count"] >= num_workers:
                 workers_done_event.set()
 
     try:
@@ -371,7 +476,6 @@ def _swap_face_video(
         if not cap.isOpened():
             raise RuntimeError("video-open-failed")
 
-        # 获取视频属性
         _emit_stage(stage_callback, "reading-video-metadata")
         fps = cap.get(cv2.CAP_PROP_FPS)
         if not fps or fps <= 0:
@@ -383,6 +487,7 @@ def _swap_face_video(
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        total_frames = _resolve_total_frames(input_path, fps, total_frames)
 
         print(f"[INFO] 视频尺寸: {width}x{height}, 总帧数: {total_frames}")
 
@@ -395,43 +500,49 @@ def _swap_face_video(
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             print(f"[INFO] 从第一帧获取尺寸: {width}x{height}")
 
-        # 创建视频写入器
         print(f"[INFO] 创建输出视频: {save_path}")
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
         if not writer.isOpened():
             raise RuntimeError("video-write-failed")
 
-        # 提取目标人脸
         _emit_stage(stage_callback, "extracting-target-face")
         print(f"[INFO] 提取目标人脸: {face_path}")
 
+        gpu_pool_size = _resolve_gpu_pool_size(num_workers) if use_gpu else 1
         if use_gpu:
             _emit_stage(stage_callback, "gpu-initializing")
-        tf_instance, tf_lock, using_gpu = _get_tf_instance(use_gpu)
+        tf_pool, using_gpu, selected_provider = _get_tf_pool(
+            use_gpu=use_gpu,
+            gpu_provider=gpu_provider,
+            pool_size=gpu_pool_size,
+        )
         if using_gpu:
             _emit_stage(stage_callback, "gpu-enabled")
+            print(
+                f"[INFO] 当前 GPU Provider: {selected_provider}, 实例池={len(tf_pool)}, worker={num_workers}"
+            )
         elif use_gpu:
             _emit_stage(stage_callback, "gpu-fallback-cpu")
+            print(f"[INFO] 已回退 CPU: worker={num_workers}")
         else:
             _emit_stage(stage_callback, "using-cpu")
 
-        with tf_lock:
-            destination_face = tf_instance.get_one_face(_read_image(face_path))
+        bootstrap_tf, bootstrap_lock = tf_pool[0]
+        with bootstrap_lock:
+            destination_face = bootstrap_tf.get_one_face(_read_image(face_path))
         if destination_face is None:
             raise RuntimeError("no-face-detected")
         print("[SUCCESS] 成功提取目标人脸")
 
-        # 统计信息
         stats = {
-            'frame_count': 0,
-            'processed_count': 0,
-            'failed_count': 0,
-            'start_time': time.time()
+            "frame_count": 0,
+            "processed_count": 0,
+            "failed_count": 0,
+            "start_time": time.time(),
         }
         stats_lock = threading.Lock()
 
-        # 读取线程
         def read_frames():
             try:
                 frame_idx = 0
@@ -447,7 +558,7 @@ def _swap_face_video(
                     ):
                         return
                     frame_idx += 1
-                # 发送结束信号
+
                 for _ in range(num_workers):
                     if not _queue_put_with_stop(
                         read_queue,
@@ -458,50 +569,54 @@ def _swap_face_video(
                         break
             except Exception as e:
                 with processing_error:
-                    error_container['error'] = e
+                    error_container["error"] = e
                 print(f"[ERROR] 读取线程异常: {str(e)}")
                 stop_event.set()
-                # 清空队列避免死锁
                 _clear_queue(read_queue)
 
-        # 处理线程（多个）
         def process_frames(worker_id):
+            worker_tf, worker_lock = tf_pool[worker_id % len(tf_pool)]
             try:
                 while not stop_event.is_set():
                     try:
                         frame_idx, frame = read_queue.get(timeout=1)
                     except queue.Empty:
                         continue
-                    
-                    # 结束信号
+
                     if frame_idx is None:
                         break
-                    
+
                     with stats_lock:
-                        stats['frame_count'] += 1
-                        current_frame = stats['frame_count']
-                    
-                    # 进度回调
+                        stats["frame_count"] += 1
+                        current_frame = stats["frame_count"]
+
                     if progress_callback and current_frame % 5 == 0:
                         try:
                             with stats_lock:
                                 progress_callback(
                                     frame_count=current_frame,
                                     total_frames=total_frames,
-                                    elapsed_seconds=max(0.0, time.time() - stats['start_time']),
+                                    elapsed_seconds=max(
+                                        0.0, time.time() - stats["start_time"]
+                                    ),
                                 )
                         except Exception as e:
                             print(f"[WARN] progress_callback failed: {str(e)}")
-                    
+
                     if current_frame % 30 == 0:
-                        progress = (current_frame / total_frames * 100) if total_frames > 0 else 0
-                        print(f"[PROGRESS] 处理进度: {current_frame}/{total_frames} ({progress:.1f}%) [Worker-{worker_id}]")
-                    
-                    # 人脸检测和换脸
+                        progress = (
+                            (current_frame / total_frames * 100)
+                            if total_frames > 0
+                            else 0
+                        )
+                        print(
+                            f"[PROGRESS] 处理进度: {current_frame}/{total_frames} ({progress:.1f}%) [Worker-{worker_id}]"
+                        )
+
                     try:
-                        with tf_lock:
-                            reference_face = tf_instance.get_one_face(frame)
-                        
+                        with worker_lock:
+                            reference_face = worker_tf.get_one_face(frame)
+
                         if reference_face is None:
                             if not _queue_put_with_stop(
                                 write_queue,
@@ -511,16 +626,16 @@ def _swap_face_video(
                             ):
                                 break
                             with stats_lock:
-                                stats['failed_count'] += 1
+                                stats["failed_count"] += 1
                             continue
-                        
-                        with tf_lock:
-                            output_frame = tf_instance.swap_face(
+
+                        with worker_lock:
+                            output_frame = worker_tf.swap_face(
                                 vision_frame=frame,
                                 reference_face=reference_face,
                                 destination_face=destination_face,
                             )
-                        
+
                         out = output_frame if output_frame is not None else frame
                         out = _normalize_output_frame(out, width, height)
                         if not _queue_put_with_stop(
@@ -530,10 +645,10 @@ def _swap_face_video(
                             warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
                         ):
                             break
-                        
+
                         with stats_lock:
-                            stats['processed_count'] += 1
-                    
+                            stats["processed_count"] += 1
+
                     except Exception as e:
                         print(f"[WARN] 第{current_frame}帧处理失败: {str(e)}")
                         if not _queue_put_with_stop(
@@ -544,11 +659,11 @@ def _swap_face_video(
                         ):
                             break
                         with stats_lock:
-                            stats['failed_count'] += 1
-            
+                            stats["failed_count"] += 1
+
             except Exception as e:
                 with processing_error:
-                    error_container['error'] = e
+                    error_container["error"] = e
                 print(f"[ERROR] 处理线程 Worker-{worker_id} 异常: {str(e)}")
                 stop_event.set()
             finally:
@@ -558,7 +673,7 @@ def _swap_face_video(
             try:
                 _emit_stage(stage_callback, "processing-video-frames")
                 next_frame_idx = 0
-                frame_buffer = {}  # 缓存乱序到达的帧
+                frame_buffer = {}
                 frames_written = 0
 
                 while True:
@@ -568,78 +683,67 @@ def _swap_face_video(
                     try:
                         frame_idx, frame = write_queue.get(timeout=1)
                     except queue.Empty:
-                        # 仅当处理线程全部结束后才允许写线程退出，避免“空闲30秒提前结束”
                         if workers_done_event.is_set():
                             if frame_buffer:
-                                # 若存在残留乱序帧，按索引顺序尽力写出，避免丢结果
                                 for pending_idx in sorted(frame_buffer.keys()):
                                     writer.write(frame_buffer[pending_idx])
                                     frames_written += 1
                                 frame_buffer.clear()
                             break
                         continue
-                    
-                    # 缓存帧
+
                     frame_buffer[frame_idx] = frame
-                    
-                    # 按顺序写入
                     while next_frame_idx in frame_buffer:
                         writer.write(frame_buffer.pop(next_frame_idx))
                         frames_written += 1
                         next_frame_idx += 1
-                    
-                    # 若已写满总帧且处理线程也已结束，可安全退出
+
                     if (
                         total_frames > 0
                         and frames_written >= total_frames
                         and workers_done_event.is_set()
                     ):
                         break
-                        
+
             except Exception as e:
                 with processing_error:
-                    error_container['error'] = e
+                    error_container["error"] = e
                 print(f"[ERROR] 写入线程异常: {str(e)}")
                 stop_event.set()
-                stop_event.set()
 
-        # 启动线程（移除 daemon=True 以确保线程正确完成）
         read_thread = threading.Thread(target=read_frames, name="VideoReader")
         process_threads = [
             threading.Thread(target=process_frames, args=(i,), name=f"VideoProcessor-{i}")
             for i in range(num_workers)
         ]
         write_thread = threading.Thread(target=write_frames, name="VideoWriter")
-        
+
         read_thread.start()
         for t in process_threads:
             t.start()
         write_thread.start()
-        
-        # 等待所有线程完成
+
         read_thread.join()
         for t in process_threads:
             t.join()
         write_thread.join()
-        
-        # 检查是否有错误
+
         with processing_error:
-            if error_container['error'] is not None:
-                raise error_container['error']
-        
+            if error_container["error"] is not None:
+                raise error_container["error"]
+
         print("[INFO] 视频处理完成:")
         print(f"  - 总帧数: {stats['frame_count']}")
         print(f"  - 成功换脸: {stats['processed_count']}")
         print(f"  - 跳过/失败: {stats['failed_count']}")
-        
-        # 最终进度回调
+
         if progress_callback:
             try:
-                final_count = total_frames if total_frames > 0 else stats['frame_count']
+                final_count = total_frames if total_frames > 0 else stats["frame_count"]
                 progress_callback(
                     frame_count=final_count,
                     total_frames=final_count,
-                    elapsed_seconds=max(0.0, time.time() - stats['start_time']),
+                    elapsed_seconds=max(0.0, time.time() - stats["start_time"]),
                 )
             except Exception as e:
                 print(f"[WARN] progress_callback(final) failed: {str(e)}")
@@ -647,19 +751,15 @@ def _swap_face_video(
         return save_path
 
     except Exception as e:
-        # 停止所有线程
         stop_event.set()
         _log_error("_swap_face_video", e)
         raise
 
     finally:
-        # 确保所有线程停止
         stop_event.set()
-        
-        # 清空队列，避免线程阻塞
         _clear_queue(read_queue)
         _clear_queue(write_queue)
-        
+
         if cap is not None:
             cap.release()
             print("[INFO] 释放视频读取器")
@@ -818,6 +918,73 @@ def _get_output_video_path(file_name):
     return base_name + "_output.mp4"
 
 
+def _resolve_total_frames(input_video_path: str, fps: float, current_total: int) -> int:
+    """优先使用 OpenCV 帧数；若为 0，则尝试用 ffprobe 回退估算。"""
+    if current_total and current_total > 0:
+        return int(current_total)
+
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        print("[WARN] 未找到 ffprobe，无法回退估算总帧数")
+        return 0
+
+    try:
+        cmd = [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=nb_frames,duration:format=duration",
+            "-of",
+            "json",
+            input_video_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0 or not proc.stdout:
+            print("[WARN] ffprobe 获取总帧数失败，继续使用未知总帧数")
+            return 0
+
+        payload = json.loads(proc.stdout)
+        stream = {}
+        streams = payload.get("streams")
+        if isinstance(streams, list) and streams:
+            if isinstance(streams[0], dict):
+                stream = streams[0]
+
+        nb_frames_raw = stream.get("nb_frames")
+        if nb_frames_raw not in (None, "", "N/A"):
+            try:
+                nb_frames = int(float(nb_frames_raw))
+                if nb_frames > 0:
+                    print(f"[INFO] ffprobe 检测总帧数: {nb_frames}")
+                    return nb_frames
+            except Exception:
+                pass
+
+        duration_raw = stream.get("duration")
+        if duration_raw in (None, "", "N/A"):
+            fmt = payload.get("format")
+            if isinstance(fmt, dict):
+                duration_raw = fmt.get("duration")
+
+        if duration_raw not in (None, "", "N/A"):
+            try:
+                duration = float(duration_raw)
+            except Exception:
+                duration = 0.0
+            if duration > 0 and fps and fps > 0:
+                estimated = max(1, int(round(duration * fps)))
+                print(f"[INFO] ffprobe 通过时长估算总帧数: {estimated}")
+                return estimated
+
+    except Exception as e:
+        print(f"[WARN] ffprobe 回退估算总帧数异常: {str(e)}")
+
+    return 0
+
+
 def _try_mux_audio(input_video_path: str, output_video_path: str):
     """如果系统中存在 ffmpeg，尝试把原视频音频复用到输出视频中（失败则忽略）。"""
     ffmpeg = shutil.which("ffmpeg")
@@ -970,6 +1137,7 @@ def swap_face_video_by_sources(
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
+    gpu_provider="auto",
 ):
     try:
         _emit_stage(stage_callback, "validating-input")
@@ -986,6 +1154,7 @@ def swap_face_video_by_sources(
             progress_callback=progress_callback,
             stage_callback=stage_callback,
             use_gpu=use_gpu,
+            gpu_provider=gpu_provider,
         )
 
         if not output_path or not os.path.exists(output_path):
@@ -1013,6 +1182,7 @@ def _swap_face_video_by_sources(
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
+    gpu_provider="auto",
 ):
     """
     多人换脸视频处理（使用多线程架构）
@@ -1022,12 +1192,12 @@ def _swap_face_video_by_sources(
     
     # 动态计算队列大小和线程数
     cpu_count = multiprocessing.cpu_count()
-    # 确保至少有1个worker，最多不超过8个
     if use_gpu:
-        num_workers = 2
+        num_workers = max(2, min(cpu_count, 6))
+        queue_size = max(8, num_workers * 3)
     else:
         num_workers = max(1, min(cpu_count - 1, 8))
-    queue_size = max(5, num_workers * 2)
+        queue_size = max(5, num_workers * 2)
     
     print(f"[INFO] 多人换脸使用 {num_workers} 个处理线程，队列大小: {queue_size}")
     
@@ -1081,6 +1251,7 @@ def _swap_face_video_by_sources(
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        total_frames = _resolve_total_frames(input_path, fps, total_frames)
 
         if width <= 0 or height <= 0:
             ok, first_frame = cap.read()
@@ -1095,21 +1266,31 @@ def _swap_face_video_by_sources(
 
         _emit_stage(stage_callback, "extracting-target-face")
 
+        gpu_pool_size = _resolve_gpu_pool_size(num_workers) if use_gpu else 1
         if use_gpu:
             _emit_stage(stage_callback, "gpu-initializing")
-        tf_instance, tf_lock, using_gpu = _get_tf_instance(use_gpu)
+        tf_pool, using_gpu, selected_provider = _get_tf_pool(
+            use_gpu=use_gpu,
+            gpu_provider=gpu_provider,
+            pool_size=gpu_pool_size,
+        )
         if using_gpu:
             _emit_stage(stage_callback, "gpu-enabled")
+            print(
+                f"[INFO] 当前 GPU Provider: {selected_provider}, 实例池={len(tf_pool)}, worker={num_workers}"
+            )
         elif use_gpu:
             _emit_stage(stage_callback, "gpu-fallback-cpu")
+            print(f"[INFO] 已回退 CPU: worker={num_workers}")
         else:
             _emit_stage(stage_callback, "using-cpu")
 
+        bootstrap_tf, bootstrap_lock = tf_pool[0]
         destination_faces = {}
         for source_id, source_path in face_sources.items():
             face_img = _read_image(source_path)
-            with tf_lock:
-                destination_face = tf_instance.get_one_face(face_img)
+            with bootstrap_lock:
+                destination_face = bootstrap_tf.get_one_face(face_img)
             if destination_face is None:
                 raise RuntimeError("no-face-detected")
             destination_faces[str(source_id)] = destination_face
@@ -1131,7 +1312,7 @@ def _swap_face_video_by_sources(
             raise RuntimeError("video-frame-read-failed")
 
         _emit_stage(stage_callback, "building-face-tracks")
-        key_detections = _get_faces_with_boxes(key_frame, tf_instance, tf_lock)
+        key_detections = _get_faces_with_boxes(key_frame, bootstrap_tf, bootstrap_lock)
         tracks = _build_tracks_from_seed_regions(normalized_regions, key_detections)
         if not tracks:
             raise RuntimeError("no-face-in-selected-regions")
@@ -1179,6 +1360,7 @@ def _swap_face_video_by_sources(
 
         # 处理线程（多个）
         def process_frames(worker_id):
+            worker_tf, worker_lock = tf_pool[worker_id % len(tf_pool)]
             try:
                 _emit_stage(stage_callback, "processing-video-frames")
                 while not stop_event.is_set():
@@ -1207,7 +1389,7 @@ def _swap_face_video_by_sources(
                             print(f"[WARN] progress_callback failed: {str(e)}")
                     
                     # 人脸检测
-                    detections = _get_faces_with_boxes(frame, tf_instance, tf_lock)
+                    detections = _get_faces_with_boxes(frame, worker_tf, worker_lock)
                     
                     # 匹配轨迹（需要锁保护）
                     with tracks_lock:
@@ -1255,8 +1437,8 @@ def _swap_face_video_by_sources(
                             continue
                         
                         try:
-                            with tf_lock:
-                                swapped = tf_instance.swap_face(
+                            with worker_lock:
+                                swapped = worker_tf.swap_face(
                                     vision_frame=out,
                                     reference_face=reference_face,
                                     destination_face=destination_face,
