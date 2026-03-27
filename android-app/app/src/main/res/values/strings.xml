@@ -31,6 +31,13 @@
     <string name="status_no_faces">未检测到人脸</string>
     <string name="status_faces_detected_autoregions">检测到 %1$d 张人脸，已自动生成选区</string>
     <string name="status_swap_done">换脸完成！</string>
+    <string name="status_swap_mode_selected_regions">已启用区域换脸模式（%1$d 个区域）</string>
+    <string name="status_swap_mode_auto_face">未选择区域，已启用自动人脸换脸模式</string>
+    <string name="status_swap_done_regions">区域换脸完成！已处理 %1$d 个区域</string>
+    <string name="status_swap_done_auto_face">自动人脸换脸完成！</string>
+    <string name="status_region_selector_opened">已打开全屏区域选择，请框选需要换脸的区域</string>
+    <string name="status_region_selector_applied">已应用区域选择（共 %1$d 个区域）</string>
+    <string name="status_region_selector_no_region">未选择任何区域，将使用自动人脸换脸</string>
     <string name="status_processing">正在处理中，请稍候</string>
 
     <!-- 图片模式 -->
@@ -43,8 +50,11 @@
     <string name="btn_save">💾 保存结果</string>
     <string name="btn_add_face_source">➕ 添加人脸源</string>
     <string name="btn_region_select">📐 选择区域</string>
+    <string name="btn_region_cancel">取消</string>
     <string name="btn_region_done">✅ 完成选择</string>
     <string name="btn_clear_regions">🗑️ 清除区域</string>
+    <string name="region_selector_title">区域选择（全屏）</string>
+    <string name="region_selector_hint">拖拽可新增区域；点击选中后可长按拖动，拖动边缘可调整大小</string>
 
     <!-- 视频模式 -->
     <string name="label_video_source">🎬 源视频</string>

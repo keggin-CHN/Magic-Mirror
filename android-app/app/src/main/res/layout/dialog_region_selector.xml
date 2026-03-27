@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="#CC0E1022" android:padding="12dp">
+
+  <TextView android:id="@+id/tv_region_title" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/region_selector_title" android:textColor="#FFFFFF" android:textStyle="bold" android:textSize="18sp" android:gravity="center" android:layout_marginBottom="6dp" />
+
+  <TextView android:id="@+id/tv_region_hint" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/region_selector_hint" android:textColor="#CDD2FF" android:textSize="12sp" android:gravity="center" android:layout_marginBottom="10dp" />
+
+  <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:background="#101633">
+
+    <ImageView android:id="@+id/iv_region_preview" android:layout_width="match_parent" android:layout_height="match_parent" android:scaleType="centerCrop" />
+
+    <com.magicmirror.app.view.FaceOverlayView android:id="@+id/overlay_region_preview" android:layout_width="match_parent" android:layout_height="match_parent" />
+  </FrameLayout>
+
+  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="10dp">
+
+    <Button android:id="@+id/btn_region_cancel" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="@string/btn_region_cancel" android:textColor="#FFFFFF" android:backgroundTint="#3B3E63" android:layout_marginEnd="4dp" />
+
+    <Button android:id="@+id/btn_region_clear" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="@string/btn_clear_regions" android:textColor="#FFFFFF" android:backgroundTint="#533483" android:layout_marginStart="4dp" android:layout_marginEnd="4dp" />
+
+    <Button android:id="@+id/btn_region_done" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="@string/btn_region_done" android:textColor="#FFFFFF" android:backgroundTint="#E94560" android:layout_marginStart="4dp" />
+  </LinearLayout>
+</LinearLayout>

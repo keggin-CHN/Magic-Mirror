@@ -995,6 +995,11 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
+        overlayPreview.setOnRegionSelectedListener(region -> {
+            int c = overlayPreview.getSelectedRegions().size();
+            setStatus(getString(R.string.status_single_region_added, c));
+        });
+
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setView(content)
                 .setCancelable(false)
@@ -1019,8 +1024,13 @@ public class MainActivity extends AppCompatActivity {
         });
 
         btnClear.setOnClickListener(v -> {
+            int oldCount = overlayPreview.getSelectedRegions().size();
             overlayPreview.clearSelectedRegions();
-            setStatus(getString(R.string.status_no_regions_to_clear));
+            if (oldCount > 0) {
+                setStatus(getString(R.string.status_regions_cleared, oldCount));
+            } else {
+                setStatus(getString(R.string.status_no_regions_to_clear));
+            }
         });
 
         btnDone.setOnClickListener(v -> {
@@ -1277,16 +1287,16 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         boolean useRegionMode = !useMultiSource && !selectedRegions.isEmpty();
+        int regionCount = selectedRegions.size();
         if (!useMultiSource) {
             if (useRegionMode) {
-                setStatus(getString(R.string.status_swap_mode_selected_regions, selectedRegions.size()));
+                setStatus(getString(R.string.status_swap_mode_selected_regions, regionCount));
             } else {
                 setStatus(getString(R.string.status_swap_mode_auto_face));
             }
         }
 
         setProcessing(true);
-        setStatus(getString(R.string.status_processing));
         progressBar.setVisibility(View.VISIBLE);
         progressBar.setProgress(0);
 
@@ -1294,6 +1304,7 @@ public class MainActivity extends AppCompatActivity {
         final List<RectF> finalSelectedRegions = selectedRegions;
         final boolean finalUseMultiSource = useMultiSource;
         final boolean finalUseRegionMode = useRegionMode;
+        final int finalRegionCount = regionCount;
         executor.execute(() -> {
             try {
                 Bitmap result;
@@ -1326,7 +1337,13 @@ public class MainActivity extends AppCompatActivity {
                         cardResult.setVisibility(View.VISIBLE);
                         tvResultLabel.setVisibility(View.VISIBLE);
                         btnSave.setVisibility(View.VISIBLE);
-                        setStatus(getString(R.string.status_swap_done));
+                        if (finalUseMultiSource) {
+                            setStatus(getString(R.string.status_swap_done));
+                        } else if (finalUseRegionMode) {
+                            setStatus(getString(R.string.status_swap_done_regions, finalRegionCount));
+                        } else {
+                            setStatus(getString(R.string.status_swap_done_auto_face));
+                        }
                     } else {
                         setStatus(getString(R.string.swap_failed, getString(R.string.swap_result_empty)));
                     }
