@@ -31,6 +31,13 @@
     <string name="status_no_faces">No faces detected</string>
     <string name="status_faces_detected_autoregions">%1$d face(s) detected, regions auto-created</string>
     <string name="status_swap_done">Swap complete!</string>
+    <string name="status_swap_mode_selected_regions">Region swap mode enabled (%1$d region(s))</string>
+    <string name="status_swap_mode_auto_face">No regions selected, auto face swap mode enabled</string>
+    <string name="status_swap_done_regions">Region swap complete! Processed %1$d region(s)</string>
+    <string name="status_swap_done_auto_face">Auto face swap complete!</string>
+    <string name="status_region_selector_opened">Fullscreen region selector opened. Draw regions to swap.</string>
+    <string name="status_region_selector_applied">Region selection applied (%1$d region(s))</string>
+    <string name="status_region_selector_no_region">No region selected, auto face swap will be used</string>
     <string name="status_processing">Processing, please wait</string>
 
     <!-- Image mode -->
@@ -43,8 +50,11 @@
     <string name="btn_save">💾 Save Result</string>
     <string name="btn_add_face_source">➕ Add Face Source</string>
     <string name="btn_region_select">📐 Select Region</string>
+    <string name="btn_region_cancel">Cancel</string>
     <string name="btn_region_done">✅ Done</string>
     <string name="btn_clear_regions">🗑️ Clear Regions</string>
+    <string name="region_selector_title">Region Selection (Fullscreen)</string>
+    <string name="region_selector_hint">Drag to create regions. Tap to select, long-press to move, drag edges to resize.</string>
 
     <!-- Video mode -->
     <string name="label_video_source">🎬 Source Video</string>
