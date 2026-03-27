@@ -54,6 +54,18 @@ android {
     buildFeatures {
         viewBinding true
     }
+
+    // Avoid compressing large ML model assets to prevent :compressDebugAssets OOM.
+    // This also speeds up packaging and avoids runtime extraction overhead.
+    androidResources {
+        noCompress += ["onnx", "ort", "bin", "dat", "tflite", "pt", "model"]
+    }
+
+    // Legacy DSL fallback for some AGP environments to ensure noCompress is honored
+    // by asset packaging tasks.
+    aaptOptions {
+        noCompress "onnx", "ort", "bin", "dat", "tflite", "pt", "model"
+    }
 }
 
 dependencies {
