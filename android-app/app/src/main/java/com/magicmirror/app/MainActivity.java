@@ -15,7 +15,10 @@ import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.LayoutInflater;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -252,7 +255,7 @@ public class MainActivity extends AppCompatActivity {
         btnSave.setOnClickListener(v -> saveResult());
 
         // 区域选择
-        btnRegionSelect.setOnClickListener(v -> toggleRegionSelect());
+        btnRegionSelect.setOnClickListener(v -> openImageRegionSelector());
         btnClearRegions.setOnClickListener(v -> {
             RectF removed = faceOverlay.removeSelectedRegion();
             if (removed != null) {
@@ -494,6 +497,7 @@ public class MainActivity extends AppCompatActivity {
 
             if (!checked && currentMode == Mode.IMAGE && sourceBitmap != null) {
                 setStatus(getString(R.string.status_region_mode_off));
+                faceOverlay.clearHighlights();
             }
 
             refreshImageFaceBoxes();
@@ -952,25 +956,93 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void toggleRegionSelect() {
-        regionSelectMode = !regionSelectMode;
-        faceOverlay.setRegionSelectMode(regionSelectMode);
-        btnRegionSelect.setText(regionSelectMode ? R.string.btn_region_done : R.string.btn_region_select);
-        btnRegionSelect.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
-                regionSelectMode ? 0xFFE94560 : 0xFF533483));
+        openImageRegionSelector();
+    }
 
-        if (regionSelectMode) {
-            if (!switchSwapAll.isChecked()) {
-                // 单人模式进入区域选择时，清空旧选区，确保可直接拖拽新建
-                faceOverlay.clearSelectedRegions();
-                faceOverlay.clearHighlights();
-            }
-            setStatus(getString(R.string.status_region_mode_on));
-        } else {
-            setStatus(getString(R.string.status_region_mode_off));
+    private void openImageRegionSelector() {
+        if (sourceBitmap == null) {
+            setStatus(getString(R.string.status_select_source_first));
+            return;
+        }
+        if (!engineInitialized) {
+            setStatus(getString(R.string.status_initializing));
+            return;
+        }
+        if (isProcessing) {
+            setStatus(getString(R.string.status_processing));
+            return;
         }
 
+        LayoutInflater inflater = LayoutInflater.from(this);
+        View content = inflater.inflate(R.layout.dialog_region_selector, null, false);
+        ImageView ivPreview = content.findViewById(R.id.iv_region_preview);
+        FaceOverlayView overlayPreview = content.findViewById(R.id.overlay_region_preview);
+        Button btnCancel = content.findViewById(R.id.btn_region_cancel);
+        Button btnClear = content.findViewById(R.id.btn_region_clear);
+        Button btnDone = content.findViewById(R.id.btn_region_done);
+
+        ivPreview.setImageBitmap(sourceBitmap);
+        ivPreview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+
+        overlayPreview.setImageSize(sourceBitmap.getWidth(), sourceBitmap.getHeight());
+        overlayPreview.setRegionSelectMode(true);
+        overlayPreview.setShowFaceBoxes(false);
+
+        List<RectF> existing = faceOverlay.getSelectedRegions();
+        for (RectF r : existing) {
+            if (r != null) {
+                overlayPreview.addSelectedRegion(new RectF(r));
+            }
+        }
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(content)
+                .setCancelable(false)
+                .create();
+
+        dialog.setOnShowListener(d -> {
+            Window w = dialog.getWindow();
+            if (w != null) {
+                w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            }
+        });
+
+        dialog.setOnDismissListener(d -> {
+            regionSelectMode = false;
+            updateOverlayFaceBoxVisibility();
+            updateButtons();
+        });
+
+        btnCancel.setOnClickListener(v -> {
+            dialog.dismiss();
+            setStatus(getString(R.string.status_region_mode_off));
+        });
+
+        btnClear.setOnClickListener(v -> {
+            overlayPreview.clearSelectedRegions();
+            setStatus(getString(R.string.status_no_regions_to_clear));
+        });
+
+        btnDone.setOnClickListener(v -> {
+            List<RectF> selected = overlayPreview.getSelectedRegions();
+            faceOverlay.clearSelectedRegions();
+            for (RectF r : selected) {
+                faceOverlay.addSelectedRegion(new RectF(r));
+            }
+
+            if (selected.isEmpty()) {
+                setStatus(getString(R.string.status_region_selector_no_region));
+            } else {
+                setStatus(getString(R.string.status_region_selector_applied, selected.size()));
+            }
+            dialog.dismiss();
+            updateButtons();
+        });
+
+        regionSelectMode = true;
         updateOverlayFaceBoxVisibility();
-        updateButtons();
+        dialog.show();
+        setStatus(getString(R.string.status_region_selector_opened));
     }
 
     private void toggleVideoRegionSelect() {
@@ -1204,14 +1276,12 @@ public class MainActivity extends AppCompatActivity {
             setStatus(getString(R.string.status_target_required));
             return;
         }
-        if (!useMultiSource && selectedRegions.isEmpty()) {
-            boolean seeded = ensureGlobalImageRegion(false);
-            selectedRegions = faceOverlay.getSelectedRegions();
-            if (seeded && !selectedRegions.isEmpty()) {
-                setStatus(getString(R.string.status_global_region_auto_applied));
+        boolean useRegionMode = !useMultiSource && !selectedRegions.isEmpty();
+        if (!useMultiSource) {
+            if (useRegionMode) {
+                setStatus(getString(R.string.status_swap_mode_selected_regions, selectedRegions.size()));
             } else {
-                setStatus(getString(R.string.status_select_regions_first));
-                return;
+                setStatus(getString(R.string.status_swap_mode_auto_face));
             }
         }
 
@@ -1223,6 +1293,7 @@ public class MainActivity extends AppCompatActivity {
         final List<FaceSwapEngine.FaceSourceBinding> finalBindings = bindings;
         final List<RectF> finalSelectedRegions = selectedRegions;
         final boolean finalUseMultiSource = useMultiSource;
+        final boolean finalUseRegionMode = useRegionMode;
         executor.execute(() -> {
             try {
                 Bitmap result;
@@ -1232,8 +1303,14 @@ public class MainActivity extends AppCompatActivity {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
                             }));
-                } else {
+                } else if (finalUseRegionMode) {
                     result = engine.swapFaceInRegions(sourceBitmap, targetBitmap, finalSelectedRegions, useEnhancer,
+                            (stage, progress) -> mainHandler.post(() -> {
+                                setStatus(stage);
+                                progressBar.setProgress(progress);
+                            }));
+                } else {
+                    result = engine.swapFace(sourceBitmap, targetBitmap, useEnhancer, false,
                             (stage, progress) -> mainHandler.post(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
