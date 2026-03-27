@@ -21,11 +21,14 @@
     <string name="status_models_failed">模型加载失败: %1$s</string>
     <string name="status_source_selected">源图已选择 (%1$dx%2$d)</string>
     <string name="status_target_selected">目标人脸已选择</string>
+    <string name="status_target_required">请先选择目标人脸</string>
+    <string name="status_select_regions_first">请先框选需要替换的区域</string>
     <string name="status_video_selected">视频已选择</string>
     <string name="status_video_target_selected">视频目标人脸已选择</string>
     <string name="status_detecting_faces">正在检测人脸…</string>
     <string name="status_faces_detected">检测到 %1$d 张人脸</string>
     <string name="status_no_faces">未检测到人脸</string>
+    <string name="status_faces_detected_autoregions">检测到 %1$d 张人脸，已自动生成选区</string>
     <string name="status_swap_done">换脸完成！</string>
     <string name="status_processing">正在处理中，请稍候</string>
 
@@ -56,6 +59,7 @@
     <string name="video_result_resolution">分辨率: </string>
     <string name="video_result_fps">帧率: </string>
     <string name="video_result_output">输出路径:</string>
+    <string name="video_result_duration">时长: </string>
     <string name="video_swap_done">视频换脸完成！共 %1$d 帧</string>
 
     <!-- 多人脸源绑定 -->
@@ -89,6 +93,20 @@
     <string name="status_regions_cleared_and_unbound">已清除 %1$d 个区域，并解除 %2$d 个人脸源绑定</string>
     <string name="status_no_regions_to_clear">当前没有可清除的区域</string>
     <string name="status_detecting_video_faces_at">正在检测关键帧人脸（%1$.1fs）…</string>
+    <string name="status_video_multi_mode_on">视频多人模式已开启：可添加多人脸源并绑定到关键帧人脸/区域</string>
+    <string name="status_video_multi_mode_off">视频多人模式已关闭：使用单目标脸换脸</string>
+    <string name="status_video_select_source_first">请先选择视频</string>
+    <string name="status_video_target_required">请先选择视频目标人脸，或添加并绑定视频人脸源</string>
+    <string name="status_video_region_mode_on">视频区域选择已开启：拖拽新增区域，拖动已有区域可调整位置</string>
+    <string name="status_video_region_mode_off">视频区域选择已关闭</string>
+    <string name="status_video_bound_face_to_source">已将视频人脸#%1$d 绑定到人脸源#%2$d</string>
+    <string name="status_video_bound_region_to_source">已将视频区域绑定到人脸源#%1$d</string>
+    <string name="status_video_no_pending_face_source">请先添加并选择视频人脸源，再点击人脸或绘制区域</string>
+    <string name="status_video_region_removed">已删除当前选中视频区域</string>
+    <string name="status_video_region_removed_and_unbound">已删除当前选中视频区域，并解除 %1$d 个人脸源绑定</string>
+    <string name="status_video_regions_cleared">已清除 %1$d 个视频区域</string>
+    <string name="status_video_regions_cleared_and_unbound">已清除 %1$d 个视频区域，并解除 %2$d 个人脸源绑定</string>
+    <string name="status_video_no_regions_to_clear">当前没有可清除的视频区域</string>
     <string name="load_image_failed">加载图片失败: %1$s</string>
     <string name="load_video_failed">加载视频失败: %1$s</string>
     <string name="swap_result_empty">结果为空</string>

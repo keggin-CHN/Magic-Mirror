@@ -21,11 +21,14 @@
     <string name="status_models_failed">Model loading failed: %1$s</string>
     <string name="status_source_selected">Source selected (%1$dx%2$d)</string>
     <string name="status_target_selected">Target face selected</string>
+    <string name="status_target_required">Please select a target face first</string>
+    <string name="status_select_regions_first">Please select at least one region first</string>
     <string name="status_video_selected">Video selected</string>
     <string name="status_video_target_selected">Video target face selected</string>
     <string name="status_detecting_faces">Detecting faces…</string>
     <string name="status_faces_detected">%1$d face(s) detected</string>
     <string name="status_no_faces">No faces detected</string>
+    <string name="status_faces_detected_autoregions">%1$d face(s) detected, regions auto-created</string>
     <string name="status_swap_done">Swap complete!</string>
     <string name="status_processing">Processing, please wait</string>
 
@@ -56,6 +59,7 @@
     <string name="video_result_resolution">Resolution: </string>
     <string name="video_result_fps">FPS: </string>
     <string name="video_result_output">Output:</string>
+    <string name="video_result_duration">Duration: </string>
     <string name="video_swap_done">Video swap done! %1$d frames</string>
 
     <!-- Multi-face source binding -->
@@ -89,6 +93,20 @@
     <string name="status_regions_cleared_and_unbound">Cleared %1$d region(s) and unbound %2$d face source(s)</string>
     <string name="status_no_regions_to_clear">No regions to clear</string>
     <string name="status_detecting_video_faces_at">Detecting faces at key frame (%1$.1fs)…</string>
+    <string name="status_video_multi_mode_on">Video multi-source mode enabled: add face sources and bind to key-frame faces/regions</string>
+    <string name="status_video_multi_mode_off">Video multi-source mode disabled: using single target face</string>
+    <string name="status_video_select_source_first">Please select a video first</string>
+    <string name="status_video_target_required">Select a target face first, or add and bind video face sources</string>
+    <string name="status_video_region_mode_on">Video region mode on: drag to create, drag a selected region to move</string>
+    <string name="status_video_region_mode_off">Video region mode off</string>
+    <string name="status_video_bound_face_to_source">Bound video Face #%1$d to Face Source #%2$d</string>
+    <string name="status_video_bound_region_to_source">Bound video region to Face Source #%1$d</string>
+    <string name="status_video_no_pending_face_source">Add/select a video face source first, then tap a face or draw a region</string>
+    <string name="status_video_region_removed">Removed selected video region</string>
+    <string name="status_video_region_removed_and_unbound">Removed selected video region and unbound %1$d face source(s)</string>
+    <string name="status_video_regions_cleared">Cleared %1$d video region(s)</string>
+    <string name="status_video_regions_cleared_and_unbound">Cleared %1$d video region(s) and unbound %2$d face source(s)</string>
+    <string name="status_video_no_regions_to_clear">No video regions to clear</string>
     <string name="load_image_failed">Failed to load image: %1$s</string>
     <string name="load_video_failed">Failed to load video: %1$s</string>
     <string name="swap_result_empty">Empty result</string>

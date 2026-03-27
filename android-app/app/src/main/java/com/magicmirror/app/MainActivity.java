@@ -45,6 +45,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -79,7 +80,8 @@ public class MainActivity extends AppCompatActivity {
     private FaceOverlayView videoFaceOverlay;
     private Button btnSelectVideo, btnSelectVideoTarget, btnSwapVideo;
     private Button btnDetectVideoFaces, btnAddVideoFaceSource;
-    private LinearLayout layoutKeyFrame, layoutVideoFaceControls, layoutVideoFaceBindings;
+    private Button btnVideoRegionSelect, btnVideoClearRegions;
+    private LinearLayout layoutKeyFrame, layoutVideoFaceControls, layoutVideoRegionControls, layoutVideoFaceBindings;
     private SeekBar seekbarKeyFrame;
     private TextView tvVideoInfo, tvVideoResultInfo, tvKeyFrameTime;
     private CardView cardVideoResult;
@@ -95,6 +97,7 @@ public class MainActivity extends AppCompatActivity {
     private List<FaceDetector.DetectedFace> detectedFaces = new ArrayList<>();
     private final List<FaceSourceEntry> faceSourceEntries = new ArrayList<>();
     private boolean regionSelectMode = false;
+    private boolean videoRegionSelectMode = false;
 
     private FaceSwapEngine engine;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -221,8 +224,11 @@ public class MainActivity extends AppCompatActivity {
         btnSwapVideo = findViewById(R.id.btn_swap_video);
         btnDetectVideoFaces = findViewById(R.id.btn_detect_video_faces);
         btnAddVideoFaceSource = findViewById(R.id.btn_add_video_face_source);
+        btnVideoRegionSelect = findViewById(R.id.btn_video_region_select);
+        btnVideoClearRegions = findViewById(R.id.btn_video_clear_regions);
         layoutKeyFrame = findViewById(R.id.layout_key_frame);
         layoutVideoFaceControls = findViewById(R.id.layout_video_face_controls);
+        layoutVideoRegionControls = findViewById(R.id.layout_video_region_controls);
         layoutVideoFaceBindings = findViewById(R.id.layout_video_face_bindings);
         seekbarKeyFrame = findViewById(R.id.seekbar_key_frame);
         tvVideoInfo = findViewById(R.id.tv_video_info);
@@ -345,16 +351,45 @@ public class MainActivity extends AppCompatActivity {
 
         // 视频人脸点击回调
         videoFaceOverlay.setOnFaceClickedListener((index, box) -> {
+            int boundSourceIndex = -1;
             if (!videoFaceSourceEntries.isEmpty()) {
-                for (FaceSourceEntry e : videoFaceSourceEntries) {
+                for (int i = 0; i < videoFaceSourceEntries.size(); i++) {
+                    FaceSourceEntry e = videoFaceSourceEntries.get(i);
                     if (e.bindingIndex < 0 && e.region == null) {
                         e.bindingIndex = index;
                         e.region = box;
                         videoFaceOverlay.highlightFace(index);
                         updateVideoFaceBindingUI(e);
+                        boundSourceIndex = i + 1;
                         break;
                     }
                 }
+            }
+
+            if (boundSourceIndex > 0) {
+                setStatus(getString(R.string.status_video_bound_face_to_source, index + 1, boundSourceIndex));
+            } else {
+                setStatus(getString(R.string.status_video_no_pending_face_source));
+            }
+        });
+
+        // 视频区域选择回调（用于检测失败时手动画框绑定）
+        videoFaceOverlay.setOnRegionSelectedListener(region -> {
+            int boundSourceIndex = -1;
+            for (int i = 0; i < videoFaceSourceEntries.size(); i++) {
+                FaceSourceEntry e = videoFaceSourceEntries.get(i);
+                if (e.region == null && e.bindingIndex < 0) {
+                    e.region = region;
+                    updateVideoFaceBindingUI(e);
+                    boundSourceIndex = i + 1;
+                    break;
+                }
+            }
+
+            if (boundSourceIndex > 0) {
+                setStatus(getString(R.string.status_video_bound_region_to_source, boundSourceIndex));
+            } else {
+                setStatus(getString(R.string.status_video_no_pending_face_source));
             }
         });
 
@@ -364,6 +399,34 @@ public class MainActivity extends AppCompatActivity {
         btnSwapVideo.setOnClickListener(v -> performVideoSwap());
         btnDetectVideoFaces.setOnClickListener(v -> detectVideoFaces());
         btnAddVideoFaceSource.setOnClickListener(v -> addVideoFaceSourceEntry());
+        btnVideoRegionSelect.setOnClickListener(v -> toggleVideoRegionSelect());
+        btnVideoClearRegions.setOnClickListener(v -> {
+            RectF removed = videoFaceOverlay.removeSelectedRegion();
+            if (removed != null) {
+                int unboundCount = clearVideoBindingsForRegion(removed);
+                if (unboundCount > 0) {
+                    setStatus(getString(R.string.status_video_region_removed_and_unbound, unboundCount));
+                } else {
+                    setStatus(getString(R.string.status_video_region_removed));
+                }
+                updateButtons();
+                return;
+            }
+
+            int regionCount = videoFaceOverlay.getSelectedRegions().size();
+            if (regionCount > 0) {
+                videoFaceOverlay.clearSelectedRegions();
+                int unboundCount = clearVideoManualRegionBindings();
+                if (unboundCount > 0) {
+                    setStatus(getString(R.string.status_video_regions_cleared_and_unbound, regionCount, unboundCount));
+                } else {
+                    setStatus(getString(R.string.status_video_regions_cleared, regionCount));
+                }
+                updateButtons();
+            } else {
+                setStatus(getString(R.string.status_video_no_regions_to_clear));
+            }
+        });
 
         // 关键帧 SeekBar
         seekbarKeyFrame.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -391,8 +454,31 @@ public class MainActivity extends AppCompatActivity {
 
         // swapAll 开关变化时显示/隐藏多人脸控件
         switchSwapAll.setOnCheckedChangeListener((btn, checked) -> {
-            layoutMultiFaceControls.setVisibility(checked && sourceBitmap != null ? View.VISIBLE : View.GONE);
-            tvFaceHint.setVisibility(checked && sourceBitmap != null ? View.VISIBLE : View.GONE);
+            updateImageSelectionControlsVisibility();
+
+            if (!checked && currentMode == Mode.IMAGE && !detectedFaces.isEmpty()) {
+                List<RectF> autoRegions = new ArrayList<>();
+                for (FaceDetector.DetectedFace face : detectedFaces) {
+                    autoRegions.add(face.box);
+                }
+                applyDetectedFacesAsRegions(autoRegions);
+                setStatus(getString(R.string.status_faces_detected_autoregions, autoRegions.size()));
+            }
+
+            if (!checked) {
+                videoRegionSelectMode = false;
+                videoFaceOverlay.setRegionSelectMode(false);
+                btnVideoRegionSelect.setText(R.string.btn_region_select);
+                btnVideoRegionSelect.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF533483));
+            }
+
+            updateVideoMultiFaceControlsVisibility();
+
+            if (currentMode == Mode.VIDEO && selectedVideoUri != null) {
+                setStatus(getString(
+                        checked ? R.string.status_video_multi_mode_on : R.string.status_video_multi_mode_off));
+            }
+            updateButtons();
         });
     }
 
@@ -419,6 +505,9 @@ public class MainActivity extends AppCompatActivity {
             btnModeImage.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF333355));
             btnModeImage.setTextColor(0xFFAAAACC);
         }
+        updateImageSelectionControlsVisibility();
+        updateVideoMultiFaceControlsVisibility();
+        updateButtons();
     }
 
     // ==================== 权限和引擎 ====================
@@ -631,12 +720,7 @@ public class MainActivity extends AppCompatActivity {
                 autoDetectFaces();
             }
 
-            // 显示多人脸控件
-            if (switchSwapAll.isChecked()) {
-                layoutMultiFaceControls.setVisibility(View.VISIBLE);
-                tvFaceHint.setVisibility(View.VISIBLE);
-            }
-
+            updateImageSelectionControlsVisibility();
             updateButtons();
         } catch (Exception e) {
             Toast.makeText(this, getString(R.string.load_image_failed, e.getMessage()), Toast.LENGTH_SHORT).show();
@@ -653,14 +737,23 @@ public class MainActivity extends AppCompatActivity {
                 mainHandler.post(() -> {
                     detectedFaces = faces;
                     List<RectF> boxes = new ArrayList<>();
-                    for (FaceDetector.DetectedFace f : faces)
+                    for (FaceDetector.DetectedFace f : faces) {
                         boxes.add(f.box);
+                    }
                     faceOverlay.setFaceBoxes(boxes);
+
+                    if (!switchSwapAll.isChecked()) {
+                        applyDetectedFacesAsRegions(boxes);
+                    }
+
                     if (faces.isEmpty()) {
                         setStatus(getString(R.string.status_no_faces));
+                    } else if (!switchSwapAll.isChecked()) {
+                        setStatus(getString(R.string.status_faces_detected_autoregions, faces.size()));
                     } else {
                         setStatus(getString(R.string.status_faces_detected, faces.size()));
                     }
+                    updateButtons();
                 });
             } catch (Exception e) {
                 Log.w(TAG, "自动检测失败: " + e.getMessage());
@@ -706,19 +799,29 @@ public class MainActivity extends AppCompatActivity {
             tvVideoInfo.setText(info);
             tvVideoInfo.setVisibility(View.VISIBLE);
 
-            // 显示关键帧选择器和人脸检测控件
+            // 显示关键帧选择器
             layoutKeyFrame.setVisibility(View.VISIBLE);
-            layoutVideoFaceControls.setVisibility(View.VISIBLE);
             seekbarKeyFrame.setProgress(0);
             tvKeyFrameTime.setText(getString(R.string.time_seconds, 0.0));
             if (thumb != null) {
                 ivKeyFrameThumb.setImageBitmap(thumb);
             }
+
+            // 重置视频选区/绑定状态
+            videoRegionSelectMode = false;
+            videoFaceOverlay.setRegionSelectMode(false);
+            btnVideoRegionSelect.setText(R.string.btn_region_select);
+            btnVideoRegionSelect.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF533483));
             videoFaceOverlay.clearAll();
             videoDetectedBoxes.clear();
             clearVideoFaceSourceEntries();
+            updateVideoMultiFaceControlsVisibility();
 
-            setStatus(getString(R.string.status_video_selected));
+            if (switchSwapAll.isChecked()) {
+                setStatus(getString(R.string.status_video_multi_mode_on));
+            } else {
+                setStatus(getString(R.string.status_video_selected));
+            }
             cardVideoResult.setVisibility(View.GONE);
             updateButtons();
         } catch (Exception e) {
@@ -768,7 +871,7 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception e) {
                 Log.e(TAG, "视频人脸检测失败", e);
                 mainHandler.post(() -> {
-                    setStatus(getString(R.string.swap_failed, e.getMessage()));
+                    setStatus(getString(R.string.video_swap_failed, e.getMessage()));
                     setProcessing(false);
                 });
             }
@@ -792,6 +895,18 @@ public class MainActivity extends AppCompatActivity {
 
     // ==================== 区域选择 ====================
 
+    private void applyDetectedFacesAsRegions(List<RectF> regions) {
+        faceOverlay.clearSelectedRegions();
+        if (regions == null || regions.isEmpty()) {
+            return;
+        }
+        for (RectF region : regions) {
+            if (region != null) {
+                faceOverlay.addSelectedRegion(new RectF(region));
+            }
+        }
+    }
+
     private void toggleRegionSelect() {
         regionSelectMode = !regionSelectMode;
         faceOverlay.setRegionSelectMode(regionSelectMode);
@@ -799,6 +914,46 @@ public class MainActivity extends AppCompatActivity {
         btnRegionSelect.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
                 regionSelectMode ? 0xFFE94560 : 0xFF533483));
         setStatus(getString(regionSelectMode ? R.string.status_region_mode_on : R.string.status_region_mode_off));
+    }
+
+    private void toggleVideoRegionSelect() {
+        if (selectedVideoUri == null) {
+            setStatus(getString(R.string.status_video_select_source_first));
+            return;
+        }
+        videoRegionSelectMode = !videoRegionSelectMode;
+        videoFaceOverlay.setRegionSelectMode(videoRegionSelectMode);
+        btnVideoRegionSelect.setText(videoRegionSelectMode ? R.string.btn_region_done : R.string.btn_region_select);
+        btnVideoRegionSelect.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                videoRegionSelectMode ? 0xFFE94560 : 0xFF533483));
+        setStatus(getString(
+                videoRegionSelectMode ? R.string.status_video_region_mode_on : R.string.status_video_region_mode_off));
+    }
+
+    private void updateImageSelectionControlsVisibility() {
+        boolean hasSource = sourceBitmap != null;
+        boolean showMulti = hasSource && switchSwapAll.isChecked();
+        layoutMultiFaceControls.setVisibility(hasSource ? View.VISIBLE : View.GONE);
+        btnAddFaceSource.setVisibility(showMulti ? View.VISIBLE : View.GONE);
+        layoutFaceBindings.setVisibility(showMulti ? View.VISIBLE : View.GONE);
+        tvFaceHint.setVisibility(showMulti ? View.VISIBLE : View.GONE);
+    }
+
+    private void updateVideoMultiFaceControlsVisibility() {
+        boolean hasVideo = currentMode == Mode.VIDEO && selectedVideoUri != null;
+        boolean showMulti = hasVideo && switchSwapAll.isChecked();
+
+        layoutVideoFaceControls.setVisibility(hasVideo ? View.VISIBLE : View.GONE);
+        btnAddVideoFaceSource.setVisibility(showMulti ? View.VISIBLE : View.GONE);
+        layoutVideoRegionControls.setVisibility(showMulti ? View.VISIBLE : View.GONE);
+        layoutVideoFaceBindings.setVisibility(showMulti ? View.VISIBLE : View.GONE);
+
+        if (!showMulti) {
+            videoRegionSelectMode = false;
+            videoFaceOverlay.setRegionSelectMode(false);
+            btnVideoRegionSelect.setText(R.string.btn_region_select);
+            btnVideoRegionSelect.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF533483));
+        }
     }
 
     // ==================== 多人脸源绑定 ====================
@@ -858,6 +1013,7 @@ public class MainActivity extends AppCompatActivity {
         entry.itemView = row;
         faceSourceEntries.add(entry);
         layoutFaceBindings.addView(row);
+        updateButtons();
     }
 
     private void removeFaceSourceEntry(FaceSourceEntry entry) {
@@ -871,6 +1027,7 @@ public class MainActivity extends AppCompatActivity {
             if (e.bindingIndex >= 0)
                 faceOverlay.highlightFace(e.bindingIndex);
         }
+        updateButtons();
     }
 
     private void updateFaceBindingUI(FaceSourceEntry entry) {
@@ -903,6 +1060,7 @@ public class MainActivity extends AppCompatActivity {
                 thumb.setImageBitmap(entry.faceImage);
             }
             updateFaceBindingUI(entry);
+            updateButtons();
         } catch (Exception e) {
             Toast.makeText(this, getString(R.string.load_image_failed, e.getMessage()), Toast.LENGTH_SHORT).show();
         }
@@ -911,21 +1069,17 @@ public class MainActivity extends AppCompatActivity {
     // ==================== 换脸执行 ====================
 
     private void performImageSwap() {
-        if (sourceBitmap == null || targetBitmap == null || !engineInitialized || isProcessing)
+        if (sourceBitmap == null || !engineInitialized || isProcessing)
             return;
-        setProcessing(true);
-        setStatus(getString(R.string.status_processing));
-        progressBar.setVisibility(View.VISIBLE);
-        progressBar.setProgress(0);
 
+        boolean multiMode = switchSwapAll.isChecked();
         boolean useEnhancer = switchEnhancer.isChecked();
-        boolean swapAll = switchSwapAll.isChecked();
+        List<RectF> selectedRegions = faceOverlay.getSelectedRegions();
 
-        // 构建多人脸源绑定
         List<FaceSwapEngine.FaceSourceBinding> bindings = new ArrayList<>();
-        if (swapAll && !faceSourceEntries.isEmpty()) {
+        if (multiMode) {
             for (FaceSourceEntry e : faceSourceEntries) {
-                if (e.faceImage != null) {
+                if (e.faceImage != null && (e.region != null || e.bindingIndex >= 0)) {
                     FaceSwapEngine.FaceSourceBinding b = new FaceSwapEngine.FaceSourceBinding();
                     b.faceImage = e.faceImage;
                     b.region = e.region;
@@ -935,18 +1089,35 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
+        boolean useMultiSource = multiMode && !bindings.isEmpty();
+        if (!useMultiSource && targetBitmap == null) {
+            setStatus(getString(R.string.status_target_required));
+            return;
+        }
+        if (!useMultiSource && selectedRegions.isEmpty()) {
+            setStatus(getString(R.string.status_select_regions_first));
+            return;
+        }
+
+        setProcessing(true);
+        setStatus(getString(R.string.status_processing));
+        progressBar.setVisibility(View.VISIBLE);
+        progressBar.setProgress(0);
+
         final List<FaceSwapEngine.FaceSourceBinding> finalBindings = bindings;
+        final List<RectF> finalSelectedRegions = selectedRegions;
+        final boolean finalUseMultiSource = useMultiSource;
         executor.execute(() -> {
             try {
                 Bitmap result;
-                if (swapAll && !finalBindings.isEmpty()) {
+                if (finalUseMultiSource) {
                     result = engine.swapFaceMultiSource(sourceBitmap, finalBindings, useEnhancer,
                             (stage, progress) -> mainHandler.post(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
                             }));
                 } else {
-                    result = engine.swapFace(sourceBitmap, targetBitmap, useEnhancer, swapAll,
+                    result = engine.swapFaceInRegions(sourceBitmap, targetBitmap, finalSelectedRegions, useEnhancer,
                             (stage, progress) -> mainHandler.post(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
@@ -984,15 +1155,13 @@ public class MainActivity extends AppCompatActivity {
         if (selectedVideoUri == null || !engineInitialized || isProcessing)
             return;
 
+        boolean multiMode = switchSwapAll.isChecked();
         boolean useEnhancer = switchEnhancer.isChecked();
-        boolean swapAll = switchSwapAll.isChecked();
 
-        // 判断是否使用多人脸源模式
-        boolean useMultiSource = !videoFaceSourceEntries.isEmpty();
         List<FaceSwapEngine.FaceSourceBinding> bindings = new ArrayList<>();
-        if (useMultiSource) {
+        if (multiMode) {
             for (FaceSourceEntry e : videoFaceSourceEntries) {
-                if (e.faceImage != null) {
+                if (e.faceImage != null && (e.region != null || e.bindingIndex >= 0)) {
                     FaceSwapEngine.FaceSourceBinding b = new FaceSwapEngine.FaceSourceBinding();
                     b.faceImage = e.faceImage;
                     b.region = e.region;
@@ -1002,9 +1171,11 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // 多人脸源模式不需要 videoTargetBitmap，单人模式需要
-        if (!useMultiSource && videoTargetBitmap == null)
+        boolean useMultiSource = multiMode && !bindings.isEmpty();
+        if (!useMultiSource && videoTargetBitmap == null) {
+            setStatus(getString(R.string.status_video_target_required));
             return;
+        }
 
         setProcessing(true);
         setStatus(getString(R.string.status_processing));
@@ -1012,12 +1183,11 @@ public class MainActivity extends AppCompatActivity {
         progressBar.setProgress(0);
 
         final List<FaceSwapEngine.FaceSourceBinding> finalBindings = bindings;
-        final boolean fUseMulti = useMultiSource;
-
+        final boolean finalUseMultiSource = useMultiSource;
         executor.execute(() -> {
             try {
                 FaceSwapEngine.VideoResult vr;
-                if (fUseMulti && !finalBindings.isEmpty()) {
+                if (finalUseMultiSource) {
                     vr = engine.processVideoMultiSource(
                             this, selectedVideoUri, finalBindings, useEnhancer, videoKeyFrameMs,
                             (stage, progress) -> mainHandler.post(() -> {
@@ -1026,7 +1196,7 @@ public class MainActivity extends AppCompatActivity {
                             }));
                 } else {
                     vr = engine.processVideo(
-                            this, selectedVideoUri, videoTargetBitmap, useEnhancer, swapAll, videoKeyFrameMs,
+                            this, selectedVideoUri, videoTargetBitmap, useEnhancer, multiMode, videoKeyFrameMs,
                             (stage, progress) -> mainHandler.post(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
@@ -1036,8 +1206,16 @@ public class MainActivity extends AppCompatActivity {
                 mainHandler.post(() -> {
                     if (vr != null && vr.outputPath != null) {
                         cardVideoResult.setVisibility(View.VISIBLE);
-                        tvVideoResultInfo
-                                .setText(getString(R.string.video_swap_done, vr.frameCount) + "\n" + vr.outputPath);
+                        String resultInfo = getString(R.string.video_swap_done, vr.frameCount)
+                                + "\n" + getString(R.string.video_result_frames) + vr.frameCount
+                                + "\n" + getString(R.string.video_result_resolution) + vr.width + "x" + vr.height
+                                + "\n" + getString(R.string.video_result_fps)
+                                + String.format(Locale.getDefault(), "%.2f", vr.fps)
+                                + "\n" + getString(R.string.video_result_duration)
+                                + String.format(Locale.getDefault(), "%.1f", vr.durationMs / 1000.0) + "s"
+                                + "\n" + getString(R.string.video_result_output)
+                                + "\n" + vr.outputPath;
+                        tvVideoResultInfo.setText(resultInfo);
                         setStatus(getString(R.string.video_swap_done, vr.frameCount));
                     } else {
                         setStatus(getString(R.string.video_swap_failed, getString(R.string.swap_result_empty)));
@@ -1112,6 +1290,7 @@ public class MainActivity extends AppCompatActivity {
         entry.itemView = row;
         videoFaceSourceEntries.add(entry);
         layoutVideoFaceBindings.addView(row);
+        updateButtons();
     }
 
     private void removeVideoFaceSourceEntry(FaceSourceEntry entry) {
@@ -1124,6 +1303,7 @@ public class MainActivity extends AppCompatActivity {
             if (e.bindingIndex >= 0)
                 videoFaceOverlay.highlightFace(e.bindingIndex);
         }
+        updateButtons();
     }
 
     private void clearVideoFaceSourceEntries() {
@@ -1163,6 +1343,7 @@ public class MainActivity extends AppCompatActivity {
                 thumb.setImageBitmap(entry.faceImage);
             }
             updateVideoFaceBindingUI(entry);
+            updateButtons();
         } catch (Exception e) {
             Toast.makeText(this, getString(R.string.load_image_failed, e.getMessage()), Toast.LENGTH_SHORT).show();
         }
@@ -1220,6 +1401,30 @@ public class MainActivity extends AppCompatActivity {
         return count;
     }
 
+    private int clearVideoBindingsForRegion(RectF removedRegion) {
+        int count = 0;
+        for (FaceSourceEntry e : videoFaceSourceEntries) {
+            if (e.bindingIndex < 0 && isSameRegion(e.region, removedRegion)) {
+                e.region = null;
+                updateVideoFaceBindingUI(e);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private int clearVideoManualRegionBindings() {
+        int count = 0;
+        for (FaceSourceEntry e : videoFaceSourceEntries) {
+            if (e.bindingIndex < 0 && e.region != null) {
+                e.region = null;
+                updateVideoFaceBindingUI(e);
+                count++;
+            }
+        }
+        return count;
+    }
+
     private boolean isSameRegion(RectF a, RectF b) {
         if (a == b)
             return true;
@@ -1249,12 +1454,44 @@ public class MainActivity extends AppCompatActivity {
         boolean hasVideo = selectedVideoUri != null;
         boolean hasVideoTarget = videoTargetBitmap != null;
 
-        btnSwap.setEnabled(hasSource && hasTarget && engineInitialized && !isProcessing);
+        boolean imageMultiMode = switchSwapAll.isChecked();
+        boolean hasValidImageBindings = false;
+        if (imageMultiMode) {
+            for (FaceSourceEntry e : faceSourceEntries) {
+                if (e.faceImage != null && (e.region != null || e.bindingIndex >= 0)) {
+                    hasValidImageBindings = true;
+                    break;
+                }
+            }
+        }
+        boolean hasSelectedImageRegions = faceOverlay != null && !faceOverlay.getSelectedRegions().isEmpty();
+
+        btnSwap.setEnabled(hasSource && engineInitialized && !isProcessing
+                && ((imageMultiMode && hasValidImageBindings) || (hasTarget && hasSelectedImageRegions)));
         btnSave.setEnabled(resultBitmap != null);
-        boolean hasVideoFaceSources = !videoFaceSourceEntries.isEmpty();
-        btnSwapVideo
-                .setEnabled(hasVideo && (hasVideoTarget || hasVideoFaceSources) && engineInitialized && !isProcessing);
+        btnRegionSelect.setEnabled(hasSource && engineInitialized && !isProcessing);
+        btnClearRegions.setEnabled(hasSource && engineInitialized && !isProcessing);
+        btnAddFaceSource.setEnabled(hasSource && engineInitialized && !isProcessing && imageMultiMode);
+
+        boolean videoMultiMode = switchSwapAll.isChecked();
+        boolean hasValidVideoBindings = false;
+        if (videoMultiMode) {
+            for (FaceSourceEntry e : videoFaceSourceEntries) {
+                if (e.faceImage != null && (e.region != null || e.bindingIndex >= 0)) {
+                    hasValidVideoBindings = true;
+                    break;
+                }
+            }
+        }
+
+        btnSwapVideo.setEnabled(hasVideo && engineInitialized && !isProcessing
+                && (hasVideoTarget || (videoMultiMode && hasValidVideoBindings)));
         btnDetectVideoFaces.setEnabled(hasVideo && engineInitialized && !isProcessing);
+        btnAddVideoFaceSource.setEnabled(hasVideo && engineInitialized && !isProcessing && videoMultiMode);
+        btnVideoRegionSelect.setEnabled(hasVideo && engineInitialized && !isProcessing && videoMultiMode);
+        btnVideoClearRegions.setEnabled(hasVideo && engineInitialized && !isProcessing && videoMultiMode);
+
+        updateVideoMultiFaceControlsVisibility();
     }
 
     private void setProcessing(boolean processing) {
@@ -1264,9 +1501,18 @@ public class MainActivity extends AppCompatActivity {
         btnSelectTarget.setEnabled(!processing);
         btnSelectVideo.setEnabled(!processing);
         btnSelectVideoTarget.setEnabled(!processing);
+        btnRegionSelect.setEnabled(!processing && sourceBitmap != null && engineInitialized);
+        btnClearRegions.setEnabled(!processing && sourceBitmap != null && engineInitialized);
+        btnAddFaceSource
+                .setEnabled(!processing && sourceBitmap != null && engineInitialized && switchSwapAll.isChecked());
+        btnAddVideoFaceSource.setEnabled(!processing && selectedVideoUri != null && switchSwapAll.isChecked());
+        btnVideoRegionSelect.setEnabled(!processing && selectedVideoUri != null && switchSwapAll.isChecked());
+        btnVideoClearRegions.setEnabled(!processing && selectedVideoUri != null && switchSwapAll.isChecked());
         switchGpu.setEnabled(!processing);
         switchEnhancer.setEnabled(!processing);
         switchSwapAll.setEnabled(!processing);
+        btnModeImage.setEnabled(!processing);
+        btnModeVideo.setEnabled(!processing);
     }
 
     private void setStatus(String text) {
