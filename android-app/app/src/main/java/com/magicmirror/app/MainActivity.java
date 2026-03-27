@@ -262,6 +262,7 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     setStatus(getString(R.string.status_region_removed));
                 }
+                updateButtons();
                 return;
             }
 
@@ -275,14 +276,27 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     setStatus(getString(R.string.status_regions_cleared, regionCount));
                 }
+                updateButtons();
             } else {
                 setStatus(getString(R.string.status_no_regions_to_clear));
+                updateButtons();
             }
         });
         btnAddFaceSource.setOnClickListener(v -> addFaceSourceEntry());
 
         // 人脸点击回调
         faceOverlay.setOnFaceClickedListener((index, box) -> {
+            if (!switchSwapAll.isChecked()) {
+                // 单人模式：点击人脸直接作为当前选区
+                faceOverlay.clearSelectedRegions();
+                faceOverlay.addSelectedRegion(new RectF(box));
+                faceOverlay.clearHighlights();
+                faceOverlay.highlightFace(index);
+                setStatus(getString(R.string.status_single_face_selected, index + 1));
+                updateButtons();
+                return;
+            }
+
             int boundSourceIndex = -1;
             for (int i = 0; i < faceSourceEntries.size(); i++) {
                 FaceSourceEntry e = faceSourceEntries.get(i);
@@ -301,10 +315,17 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 setStatus(getString(R.string.status_no_pending_face_source));
             }
+            updateButtons();
         });
 
         // 区域选择回调
         faceOverlay.setOnRegionSelectedListener(region -> {
+            if (!switchSwapAll.isChecked()) {
+                setStatus(getString(R.string.status_single_region_added, faceOverlay.getSelectedRegions().size()));
+                updateButtons();
+                return;
+            }
+
             int boundSourceIndex = -1;
             for (int i = 0; i < faceSourceEntries.size(); i++) {
                 FaceSourceEntry e = faceSourceEntries.get(i);
@@ -321,6 +342,7 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 setStatus(getString(R.string.status_no_pending_face_source));
             }
+            updateButtons();
         });
 
         // 多人脸源图片选择器
@@ -351,6 +373,12 @@ public class MainActivity extends AppCompatActivity {
 
         // 视频人脸点击回调
         videoFaceOverlay.setOnFaceClickedListener((index, box) -> {
+            if (!switchSwapAll.isChecked()) {
+                setStatus(getString(R.string.status_video_multi_mode_off));
+                updateButtons();
+                return;
+            }
+
             int boundSourceIndex = -1;
             if (!videoFaceSourceEntries.isEmpty()) {
                 for (int i = 0; i < videoFaceSourceEntries.size(); i++) {
@@ -371,10 +399,17 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 setStatus(getString(R.string.status_video_no_pending_face_source));
             }
+            updateButtons();
         });
 
         // 视频区域选择回调（用于检测失败时手动画框绑定）
         videoFaceOverlay.setOnRegionSelectedListener(region -> {
+            if (!switchSwapAll.isChecked()) {
+                setStatus(getString(R.string.status_video_multi_mode_off));
+                updateButtons();
+                return;
+            }
+
             int boundSourceIndex = -1;
             for (int i = 0; i < videoFaceSourceEntries.size(); i++) {
                 FaceSourceEntry e = videoFaceSourceEntries.get(i);
@@ -391,6 +426,7 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 setStatus(getString(R.string.status_video_no_pending_face_source));
             }
+            updateButtons();
         });
 
         // 视频模式按钮
@@ -456,14 +492,11 @@ public class MainActivity extends AppCompatActivity {
         switchSwapAll.setOnCheckedChangeListener((btn, checked) -> {
             updateImageSelectionControlsVisibility();
 
-            if (!checked && currentMode == Mode.IMAGE && !detectedFaces.isEmpty()) {
-                List<RectF> autoRegions = new ArrayList<>();
-                for (FaceDetector.DetectedFace face : detectedFaces) {
-                    autoRegions.add(face.box);
-                }
-                applyDetectedFacesAsRegions(autoRegions);
-                setStatus(getString(R.string.status_faces_detected_autoregions, autoRegions.size()));
+            if (!checked && currentMode == Mode.IMAGE && sourceBitmap != null) {
+                setStatus(getString(R.string.status_region_mode_off));
             }
+
+            refreshImageFaceBoxes();
 
             if (!checked) {
                 videoRegionSelectMode = false;
@@ -478,8 +511,11 @@ public class MainActivity extends AppCompatActivity {
                 setStatus(getString(
                         checked ? R.string.status_video_multi_mode_on : R.string.status_video_multi_mode_off));
             }
+            updateOverlayFaceBoxVisibility();
             updateButtons();
         });
+
+        updateOverlayFaceBoxVisibility();
     }
 
     // ==================== 模式切换 ====================
@@ -721,6 +757,7 @@ public class MainActivity extends AppCompatActivity {
             }
 
             updateImageSelectionControlsVisibility();
+            updateOverlayFaceBoxVisibility();
             updateButtons();
         } catch (Exception e) {
             Toast.makeText(this, getString(R.string.load_image_failed, e.getMessage()), Toast.LENGTH_SHORT).show();
@@ -736,20 +773,13 @@ public class MainActivity extends AppCompatActivity {
                 List<FaceDetector.DetectedFace> faces = engine.detectFaces(sourceBitmap);
                 mainHandler.post(() -> {
                     detectedFaces = faces;
-                    List<RectF> boxes = new ArrayList<>();
-                    for (FaceDetector.DetectedFace f : faces) {
-                        boxes.add(f.box);
-                    }
-                    faceOverlay.setFaceBoxes(boxes);
-
-                    if (!switchSwapAll.isChecked()) {
-                        applyDetectedFacesAsRegions(boxes);
-                    }
+                    refreshImageFaceBoxes();
+                    updateOverlayFaceBoxVisibility();
 
                     if (faces.isEmpty()) {
                         setStatus(getString(R.string.status_no_faces));
                     } else if (!switchSwapAll.isChecked()) {
-                        setStatus(getString(R.string.status_faces_detected_autoregions, faces.size()));
+                        setStatus(getString(R.string.status_faces_detected, faces.size()));
                     } else {
                         setStatus(getString(R.string.status_faces_detected, faces.size()));
                     }
@@ -907,13 +937,40 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private boolean ensureGlobalImageRegion(boolean forceReset) {
+        if (sourceBitmap == null || faceOverlay == null) {
+            return false;
+        }
+        if (forceReset) {
+            faceOverlay.clearSelectedRegions();
+        }
+        if (!forceReset && !faceOverlay.getSelectedRegions().isEmpty()) {
+            return false;
+        }
+        faceOverlay.addSelectedRegion(new RectF(0f, 0f, sourceBitmap.getWidth(), sourceBitmap.getHeight()));
+        return true;
+    }
+
     private void toggleRegionSelect() {
         regionSelectMode = !regionSelectMode;
         faceOverlay.setRegionSelectMode(regionSelectMode);
         btnRegionSelect.setText(regionSelectMode ? R.string.btn_region_done : R.string.btn_region_select);
         btnRegionSelect.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
                 regionSelectMode ? 0xFFE94560 : 0xFF533483));
-        setStatus(getString(regionSelectMode ? R.string.status_region_mode_on : R.string.status_region_mode_off));
+
+        if (regionSelectMode) {
+            if (!switchSwapAll.isChecked()) {
+                // 单人模式进入区域选择时，清空旧选区，确保可直接拖拽新建
+                faceOverlay.clearSelectedRegions();
+                faceOverlay.clearHighlights();
+            }
+            setStatus(getString(R.string.status_region_mode_on));
+        } else {
+            setStatus(getString(R.string.status_region_mode_off));
+        }
+
+        updateOverlayFaceBoxVisibility();
+        updateButtons();
     }
 
     private void toggleVideoRegionSelect() {
@@ -937,6 +994,49 @@ public class MainActivity extends AppCompatActivity {
         btnAddFaceSource.setVisibility(showMulti ? View.VISIBLE : View.GONE);
         layoutFaceBindings.setVisibility(showMulti ? View.VISIBLE : View.GONE);
         tvFaceHint.setVisibility(showMulti ? View.VISIBLE : View.GONE);
+    }
+
+    private void updateOverlayFaceBoxVisibility() {
+        boolean showBoxes = switchSwapAll != null && switchSwapAll.isChecked() && !regionSelectMode;
+        if (faceOverlay != null) {
+            faceOverlay.setShowFaceBoxes(showBoxes);
+        }
+        if (videoFaceOverlay != null) {
+            videoFaceOverlay.setShowFaceBoxes(showBoxes);
+        }
+    }
+
+    private void refreshImageFaceBoxes() {
+        if (faceOverlay == null) {
+            return;
+        }
+        boolean showBoxes = switchSwapAll != null && switchSwapAll.isChecked();
+        if (!showBoxes) {
+            faceOverlay.setFaceBoxes(new ArrayList<>());
+            faceOverlay.clearHighlights();
+            return;
+        }
+
+        List<RectF> boxes = new ArrayList<>();
+        if (detectedFaces != null) {
+            for (FaceDetector.DetectedFace f : detectedFaces) {
+                if (f != null && f.box != null) {
+                    boxes.add(new RectF(f.box));
+                }
+            }
+        }
+        faceOverlay.setFaceBoxes(boxes);
+    }
+
+    private boolean isGlobalLikeRegion(RectF region) {
+        if (region == null || sourceBitmap == null) {
+            return false;
+        }
+        float tol = Math.max(2f, Math.min(sourceBitmap.getWidth(), sourceBitmap.getHeight()) * 0.02f);
+        return region.left <= tol
+                && region.top <= tol
+                && Math.abs(region.right - sourceBitmap.getWidth()) <= tol
+                && Math.abs(region.bottom - sourceBitmap.getHeight()) <= tol;
     }
 
     private void updateVideoMultiFaceControlsVisibility() {
@@ -1069,8 +1169,18 @@ public class MainActivity extends AppCompatActivity {
     // ==================== 换脸执行 ====================
 
     private void performImageSwap() {
-        if (sourceBitmap == null || !engineInitialized || isProcessing)
+        if (sourceBitmap == null) {
+            setStatus(getString(R.string.status_select_source_first));
             return;
+        }
+        if (!engineInitialized) {
+            setStatus(getString(R.string.status_initializing));
+            return;
+        }
+        if (isProcessing) {
+            setStatus(getString(R.string.status_processing));
+            return;
+        }
 
         boolean multiMode = switchSwapAll.isChecked();
         boolean useEnhancer = switchEnhancer.isChecked();
@@ -1095,8 +1205,14 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         if (!useMultiSource && selectedRegions.isEmpty()) {
-            setStatus(getString(R.string.status_select_regions_first));
-            return;
+            boolean seeded = ensureGlobalImageRegion(false);
+            selectedRegions = faceOverlay.getSelectedRegions();
+            if (seeded && !selectedRegions.isEmpty()) {
+                setStatus(getString(R.string.status_global_region_auto_applied));
+            } else {
+                setStatus(getString(R.string.status_select_regions_first));
+                return;
+            }
         }
 
         setProcessing(true);
@@ -1467,7 +1583,7 @@ public class MainActivity extends AppCompatActivity {
         boolean hasSelectedImageRegions = faceOverlay != null && !faceOverlay.getSelectedRegions().isEmpty();
 
         btnSwap.setEnabled(hasSource && engineInitialized && !isProcessing
-                && ((imageMultiMode && hasValidImageBindings) || (hasTarget && hasSelectedImageRegions)));
+                && ((imageMultiMode && hasValidImageBindings) || hasTarget));
         btnSave.setEnabled(resultBitmap != null);
         btnRegionSelect.setEnabled(hasSource && engineInitialized && !isProcessing);
         btnClearRegions.setEnabled(hasSource && engineInitialized && !isProcessing);
@@ -1492,6 +1608,7 @@ public class MainActivity extends AppCompatActivity {
         btnVideoClearRegions.setEnabled(hasVideo && engineInitialized && !isProcessing && videoMultiMode);
 
         updateVideoMultiFaceControlsVisibility();
+        updateOverlayFaceBoxVisibility();
     }
 
     private void setProcessing(boolean processing) {

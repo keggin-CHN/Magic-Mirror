@@ -22,6 +22,7 @@
     <string name="status_source_selected">源图已选择 (%1$dx%2$d)</string>
     <string name="status_target_selected">目标人脸已选择</string>
     <string name="status_target_required">请先选择目标人脸</string>
+    <string name="status_select_source_first">请先选择源图</string>
     <string name="status_select_regions_first">请先框选需要替换的区域</string>
     <string name="status_video_selected">视频已选择</string>
     <string name="status_video_target_selected">视频目标人脸已选择</string>
@@ -83,10 +84,16 @@
     <string name="permission_required">需要存储权限才能使用</string>
     <string name="time_seconds">%1$.1fs</string>
     <string name="status_region_mode_on">区域选择已开启：拖拽新增区域，拖动已有区域可调整位置</string>
+    <string name="status_region_mode_on_with_global">区域选择已开启：已默认全图区域，长按可拖动，拖动边缘可调整范围</string>
     <string name="status_region_mode_off">区域选择已关闭</string>
+    <string name="status_global_region_default">已自动使用整张源图作为目标区域，可长按拖动并调整边缘</string>
+    <string name="status_global_region_auto_applied">未选择区域，已自动应用整图区域</string>
+    <string name="status_faces_detected_global_region">检测到 %1$d 张人脸，默认目标区域为整张源图</string>
     <string name="status_bound_face_to_source">已将人脸#%1$d 绑定到人脸源#%2$d</string>
     <string name="status_bound_region_to_source">已将区域绑定到人脸源#%1$d</string>
     <string name="status_no_pending_face_source">请先添加人脸源，再点击人脸或绘制区域</string>
+    <string name="status_single_face_selected">已选择人脸#%1$d，可直接开始换脸</string>
+    <string name="status_single_region_added">已添加区域（共 %1$d 个），可直接开始换脸</string>
     <string name="status_region_removed">已删除当前选中区域</string>
     <string name="status_region_removed_and_unbound">已删除当前选中区域，并解除 %1$d 个人脸源绑定</string>
     <string name="status_regions_cleared">已清除 %1$d 个区域</string>

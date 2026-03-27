@@ -14,6 +14,7 @@ import ai.onnxruntime.OrtSession;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.FloatBuffer;
 
@@ -27,13 +28,13 @@ public class ModelUtils {
     private static final String TAG = "ModelUtils";
 
     // ==================== ArcFace 标准 112x112 对齐模板 ====================
-    // 来源: insightface/utils/face_align.py  arcface_dst
+    // 来源: insightface/utils/face_align.py arcface_dst
     public static final float[][] ARCFACE_TEMPLATE_112 = {
-        {38.2946f, 51.6963f},
-        {73.5318f, 51.5014f},
-        {56.0252f, 71.7366f},
-        {41.5493f, 92.3655f},
-        {70.7299f, 92.2041f}
+            { 38.2946f, 51.6963f },
+            { 73.5318f, 51.5014f },
+            { 56.0252f, 71.7366f },
+            { 41.5493f, 92.3655f },
+            { 70.7299f, 92.2041f }
     };
 
     // ArcFace 模板缩放到 512x512（用于增强器对齐）
@@ -49,38 +50,108 @@ public class ModelUtils {
 
     // ==================== 模型加载 ====================
 
-    /** 统一模型加载入口：优先外部存储，回退 assets */
-    public static byte[] loadModel(Context context, String modelName) throws Exception {
-        return loadModelFromAssets(context, modelName);
+    /**
+     * 获取可供 ONNX Runtime 通过“文件路径”加载的模型文件。
+     * 优先使用外部存储 models 目录；否则将 assets/models 下模型复制到内部 files/models。
+     *
+     * 这样可避免将超大模型整体读入 Java 堆内存导致 OOM。
+     */
+    public static File prepareModelFile(Context context, String modelName) throws Exception {
+        File externalDir = context.getExternalFilesDir("models");
+        if (externalDir != null) {
+            File externalModel = new File(externalDir, modelName);
+            if (externalModel.exists() && externalModel.length() > 0) {
+                Log.i(TAG, "从外部存储加载模型: " + externalModel.getAbsolutePath());
+                return externalModel;
+            }
+        }
+
+        File internalDir = new File(context.getFilesDir(), "models");
+        if (!internalDir.exists() && !internalDir.mkdirs()) {
+            throw new IllegalStateException("无法创建模型目录: " + internalDir.getAbsolutePath());
+        }
+
+        File internalModel = new File(internalDir, modelName);
+        if (internalModel.exists() && internalModel.length() > 0) {
+            Log.i(TAG, "从内部存储加载模型: " + internalModel.getAbsolutePath());
+            return internalModel;
+        }
+
+        Log.i(TAG, "从 assets 复制模型到内部存储: " + modelName);
+        copyAssetModelToInternal(context, modelName, internalModel);
+        return internalModel;
     }
 
-    public static byte[] loadModelFromAssets(Context context, String modelName) throws Exception {
-        // 优先从外部存储的 models 目录加载（方便替换大模型）
-        File externalModel = new File(context.getExternalFilesDir("models"), modelName);
-        if (externalModel.exists()) {
-            Log.i(TAG, "从外部存储加载模型: " + externalModel.getAbsolutePath());
-            return readFileBytes(externalModel);
+    /**
+     * 兼容旧接口（不推荐）：将模型读入 byte[]。
+     * 大模型会造成显著内存占用，建议改用 prepareModelFile + env.createSession(path, opts)。
+     */
+    @Deprecated
+    public static byte[] loadModel(Context context, String modelName) throws Exception {
+        File modelFile = prepareModelFile(context, modelName);
+        long maxInMemoryBytes = 128L * 1024L * 1024L; // 128MB
+        if (modelFile.length() > maxInMemoryBytes) {
+            throw new IllegalStateException("模型过大，不允许以 byte[] 方式加载: " + modelName
+                    + " (" + modelFile.length() + " bytes)");
         }
-        Log.i(TAG, "从 assets 加载模型: " + modelName);
-        InputStream is = context.getAssets().open("models/" + modelName);
-        return readStreamBytes(is);
+        return readFileBytes(modelFile);
+    }
+
+    @Deprecated
+    public static byte[] loadModelFromAssets(Context context, String modelName) throws Exception {
+        return loadModel(context, modelName);
+    }
+
+    public static byte[] readSmallFileBytes(File file, long maxBytes) throws Exception {
+        if (file.length() > maxBytes) {
+            throw new IllegalStateException("文件过大，拒绝读入内存: " + file.getAbsolutePath());
+        }
+        return readFileBytes(file);
+    }
+
+    private static void copyAssetModelToInternal(Context context, String modelName, File targetFile) throws Exception {
+        File parent = targetFile.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new IllegalStateException("无法创建目录: " + parent.getAbsolutePath());
+        }
+
+        File tmpFile = new File(targetFile.getAbsolutePath() + ".tmp");
+        if (tmpFile.exists() && !tmpFile.delete()) {
+            throw new IllegalStateException("无法删除临时文件: " + tmpFile.getAbsolutePath());
+        }
+
+        try (InputStream is = context.getAssets().open("models/" + modelName);
+                FileOutputStream fos = new FileOutputStream(tmpFile)) {
+            byte[] buffer = new byte[1024 * 1024];
+            int len;
+            while ((len = is.read(buffer)) != -1) {
+                fos.write(buffer, 0, len);
+            }
+            fos.getFD().sync();
+        }
+
+        if (targetFile.exists() && !targetFile.delete()) {
+            throw new IllegalStateException("无法覆盖模型文件: " + targetFile.getAbsolutePath());
+        }
+        if (!tmpFile.renameTo(targetFile)) {
+            throw new IllegalStateException("模型文件落盘失败: " + targetFile.getAbsolutePath());
+        }
     }
 
     private static byte[] readFileBytes(File file) throws Exception {
-        FileInputStream fis = new FileInputStream(file);
-        byte[] bytes = readStreamBytes(fis);
-        fis.close();
-        return bytes;
+        try (FileInputStream fis = new FileInputStream(file)) {
+            int initialSize = (int) Math.max(8192L, Math.min(file.length(), 1024L * 1024L));
+            return readStreamBytes(fis, initialSize);
+        }
     }
 
-    private static byte[] readStreamBytes(InputStream is) throws Exception {
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+    private static byte[] readStreamBytes(InputStream is, int initialSize) throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream(initialSize);
         byte[] buffer = new byte[8192];
         int len;
         while ((len = is.read(buffer)) != -1) {
             bos.write(buffer, 0, len);
         }
-        is.close();
         return bos.toByteArray();
     }
 
@@ -117,7 +188,7 @@ public class ModelUtils {
      * 使用 Umeyama 算法，利用全部 5 个点做最小二乘拟合，
      * 比只用 3 个点的 setPolyToPoly 更稳定、更准确。
      *
-     * @param landmarks 检测到的 5 个关键点 [5][2]
+     * @param landmarks  检测到的 5 个关键点 [5][2]
      * @param targetSize 目标图像尺寸（如 112 / 128 / 512）
      * @return Android Matrix（从原图到对齐图的变换）
      */
@@ -134,7 +205,7 @@ public class ModelUtils {
     /**
      * Umeyama 相似变换估计（旋转 + 均匀缩放 + 平移）。
      * 参考: Shinji Umeyama, "Least-Squares Estimation of Transformation Parameters
-     *       Between Two Point Patterns", IEEE TPAMI 1991.
+     * Between Two Point Patterns", IEEE TPAMI 1991.
      *
      * 输入 src[n][2], dst[n][2]，输出 Android Matrix 表示的 2x3 仿射矩阵。
      */
@@ -149,8 +220,10 @@ public class ModelUtils {
             dstMeanX += dst[i][0];
             dstMeanY += dst[i][1];
         }
-        srcMeanX /= n; srcMeanY /= n;
-        dstMeanX /= n; dstMeanY /= n;
+        srcMeanX /= n;
+        srcMeanY /= n;
+        dstMeanX /= n;
+        dstMeanY /= n;
 
         // 2. 去质心
         float[][] srcCentered = new float[n][2];
@@ -170,9 +243,9 @@ public class ModelUtils {
         }
         srcVar /= n;
 
-        // 4. 计算协方差矩阵 H = dst^T * src  (2x2)
-        //    H = [ a  b ]
-        //        [ c  d ]
+        // 4. 计算协方差矩阵 H = dst^T * src (2x2)
+        // H = [ a b ]
+        // [ c d ]
         float a = 0, b = 0, c = 0, d = 0;
         for (int i = 0; i < n; i++) {
             a += dstCentered[i][0] * srcCentered[i][0];
@@ -180,10 +253,13 @@ public class ModelUtils {
             c += dstCentered[i][1] * srcCentered[i][0];
             d += dstCentered[i][1] * srcCentered[i][1];
         }
-        a /= n; b /= n; c /= n; d /= n;
+        a /= n;
+        b /= n;
+        c /= n;
+        d /= n;
 
-        // 5. 2x2 SVD:  H = U * S * V^T
-        //    对于 2x2 矩阵可以解析求解
+        // 5. 2x2 SVD: H = U * S * V^T
+        // 对于 2x2 矩阵可以解析求解
         float[] svdResult = svd2x2(a, b, c, d);
         float u00 = svdResult[0], u01 = svdResult[1], u10 = svdResult[2], u11 = svdResult[3];
         float s0 = svdResult[4], s1 = svdResult[5];
@@ -208,14 +284,14 @@ public class ModelUtils {
         float ty = dstMeanY - sc * (r10 * srcMeanX + r11 * srcMeanY);
 
         // 9. 构建 Android Matrix
-        //    [ sc*r00  sc*r01  tx ]
-        //    [ sc*r10  sc*r11  ty ]
-        //    [   0       0     1  ]
+        // [ sc*r00 sc*r01 tx ]
+        // [ sc*r10 sc*r11 ty ]
+        // [ 0 0 1 ]
         Matrix matrix = new Matrix();
         float[] values = {
-            sc * r00, sc * r01, tx,
-            sc * r10, sc * r11, ty,
-            0, 0, 1
+                sc * r00, sc * r01, tx,
+                sc * r10, sc * r11, ty,
+                0, 0, 1
         };
         matrix.setValues(values);
         return matrix;
@@ -253,9 +329,9 @@ public class ModelUtils {
         // V^T = [[cos(theta), sin(theta)], [-sin(theta), cos(theta)]]
         // V = [[cos(theta), -sin(theta)], [sin(theta), cos(theta)]]
         return new float[] {
-            cosPhi, -sinPhi, sinPhi, cosPhi,     // U
-            s0, s1,                                // S
-            cosTheta, -sinTheta, sinTheta, cosTheta // V
+                cosPhi, -sinPhi, sinPhi, cosPhi, // U
+                s0, s1, // S
+                cosTheta, -sinTheta, sinTheta, cosTheta // V
         };
     }
 
@@ -277,8 +353,8 @@ public class ModelUtils {
      * Umeyama 相似变换，返回 float[2][3] 仿射矩阵（非 Android Matrix）。
      * 用于增强器的 warpAffine / invertAffine 流程。
      *
-     * @param src 源关键点 [n][2]
-     * @param dst 目标模板 [n][2]
+     * @param src           源关键点 [n][2]
+     * @param dst           目标模板 [n][2]
      * @param estimateScale 是否估计缩放
      * @return float[2][3] 仿射矩阵
      */
@@ -286,10 +362,15 @@ public class ModelUtils {
         int n = src.length;
         float srcMx = 0, srcMy = 0, dstMx = 0, dstMy = 0;
         for (int i = 0; i < n; i++) {
-            srcMx += src[i][0]; srcMy += src[i][1];
-            dstMx += dst[i][0]; dstMy += dst[i][1];
+            srcMx += src[i][0];
+            srcMy += src[i][1];
+            dstMx += dst[i][0];
+            dstMy += dst[i][1];
         }
-        srcMx /= n; srcMy /= n; dstMx /= n; dstMy /= n;
+        srcMx /= n;
+        srcMy /= n;
+        dstMx /= n;
+        dstMy /= n;
 
         float srcVar = 0;
         float a = 0, b = 0, c = 0, d = 0;
@@ -297,22 +378,29 @@ public class ModelUtils {
             float sx = src[i][0] - srcMx, sy = src[i][1] - srcMy;
             float dx = dst[i][0] - dstMx, dy = dst[i][1] - dstMy;
             srcVar += sx * sx + sy * sy;
-            a += dx * sx; b += dx * sy; c += dy * sx; d += dy * sy;
+            a += dx * sx;
+            b += dx * sy;
+            c += dy * sx;
+            d += dy * sy;
         }
-        srcVar /= n; a /= n; b /= n; c /= n; d /= n;
+        srcVar /= n;
+        a /= n;
+        b /= n;
+        c /= n;
+        d /= n;
 
         float[] svd = svd2x2Internal(a, b, c, d);
         float u00 = svd[0], u01 = svd[1], u10 = svd[2], u11 = svd[3];
         float s0 = svd[4], s1 = svd[5];
         float v00 = svd[6], v01 = svd[7], v10 = svd[8], v11 = svd[9];
 
-        float detUV = (u00*u11 - u01*u10) * (v00*v11 - v01*v10);
+        float detUV = (u00 * u11 - u01 * u10) * (v00 * v11 - v01 * v10);
         float sign = detUV < 0 ? -1f : 1f;
 
-        float r00 = u00*v00 + u01*v10*sign;
-        float r01 = u00*v01 + u01*v11*sign;
-        float r10 = u10*v00 + u11*v10*sign;
-        float r11 = u10*v01 + u11*v11*sign;
+        float r00 = u00 * v00 + u01 * v10 * sign;
+        float r01 = u00 * v01 + u01 * v11 * sign;
+        float r10 = u10 * v00 + u11 * v10 * sign;
+        float r11 = u10 * v01 + u11 * v11 * sign;
 
         float sc = 1f;
         if (estimateScale && srcVar > 1e-10f) {
@@ -323,8 +411,8 @@ public class ModelUtils {
         float ty = dstMy - sc * (r10 * srcMx + r11 * srcMy);
 
         return new float[][] {
-            { sc * r00, sc * r01, tx },
-            { sc * r10, sc * r11, ty }
+                { sc * r00, sc * r01, tx },
+                { sc * r10, sc * r11, ty }
         };
     }
 
@@ -335,13 +423,14 @@ public class ModelUtils {
         float a = m[0][0], b = m[0][1], tx = m[0][2];
         float c = m[1][0], d = m[1][1], ty = m[1][2];
         float det = a * d - b * c;
-        if (Math.abs(det) < 1e-10f) throw new ArithmeticException("仿射矩阵不可逆");
+        if (Math.abs(det) < 1e-10f)
+            throw new ArithmeticException("仿射矩阵不可逆");
         float invDet = 1f / det;
         float ia = d * invDet, ib = -b * invDet;
         float ic = -c * invDet, id = a * invDet;
         return new float[][] {
-            { ia, ib, -(ia * tx + ib * ty) },
-            { ic, id, -(ic * tx + id * ty) }
+                { ia, ib, -(ia * tx + ib * ty) },
+                { ic, id, -(ic * tx + id * ty) }
         };
     }
 
@@ -353,9 +442,9 @@ public class ModelUtils {
         // 将 float[2][3] 转为 Android Matrix
         Matrix m = new Matrix();
         float[] vals = {
-            mat[0][0], mat[0][1], mat[0][2],
-            mat[1][0], mat[1][1], mat[1][2],
-            0, 0, 1
+                mat[0][0], mat[0][1], mat[0][2],
+                mat[1][0], mat[1][1], mat[1][2],
+                0, 0, 1
         };
         m.setValues(vals);
 
@@ -377,8 +466,8 @@ public class ModelUtils {
     private static float[] svd2x2Internal(float a, float b, float c, float d) {
         float e = (a + d) / 2f, f = (a - d) / 2f;
         float g = (c + b) / 2f, h = (c - b) / 2f;
-        float q = (float) Math.sqrt(e*e + h*h);
-        float r = (float) Math.sqrt(f*f + g*g);
+        float q = (float) Math.sqrt(e * e + h * h);
+        float r = (float) Math.sqrt(f * f + g * g);
         float s0 = q + r, s1 = Math.abs(q - r);
         float a1 = (float) Math.atan2(g, f);
         float a2 = (float) Math.atan2(h, e);
@@ -430,7 +519,8 @@ public class ModelUtils {
                 data[0][2][y][x] = r;
             }
         }
-        if (scaled != bitmap) scaled.recycle();
+        if (scaled != bitmap)
+            scaled.recycle();
         return data;
     }
 
@@ -442,7 +532,7 @@ public class ModelUtils {
      * @param std  BGR 顺序的标准差
      */
     public static float[][][][] bitmapToBgrNormalized(Bitmap bitmap, int size,
-                                                       float[] mean, float[] std) {
+            float[] mean, float[] std) {
         Bitmap scaled = ensureSize(bitmap, size);
         float[][][][] data = new float[1][3][size][size];
         int[] pixels = new int[size * size];
@@ -460,7 +550,8 @@ public class ModelUtils {
                 data[0][2][y][x] = (r - mean[2]) / std[2];
             }
         }
-        if (scaled != bitmap) scaled.recycle();
+        if (scaled != bitmap)
+            scaled.recycle();
         return data;
     }
 
@@ -511,7 +602,7 @@ public class ModelUtils {
 
     /** @deprecated 使用 bitmapToBgrNormalized */
     public static float[][][][] bitmapToFloatArrayNormalized(Bitmap bitmap, int size,
-                                                              float[] mean, float[] std) {
+            float[] mean, float[] std) {
         return bitmapToBgrNormalized(bitmap, size, mean, std);
     }
 
@@ -524,9 +615,11 @@ public class ModelUtils {
 
     public static float[] l2Normalize(float[] vec) {
         float sum = 0;
-        for (float v : vec) sum += v * v;
+        for (float v : vec)
+            sum += v * v;
         float norm = (float) Math.sqrt(sum);
-        if (norm < 1e-10f) return vec;
+        if (norm < 1e-10f)
+            return vec;
         float[] result = new float[vec.length];
         for (int i = 0; i < vec.length; i++) {
             result[i] = vec[i] / norm;
@@ -562,23 +655,26 @@ public class ModelUtils {
 
     /**
      * 将人脸框扩展为正方形（与桌面版 _expand_square_box 一致）
-     * @param box 原始人脸框
-     * @param imgW 图像宽度
-     * @param imgH 图像高度
-     * @param scale 扩展比例（桌面版默认 1.35）
+     * 
+     * @param box     原始人脸框
+     * @param imgW    图像宽度
+     * @param imgH    图像高度
+     * @param scale   扩展比例（桌面版默认 1.35）
      * @param minSize 最小尺寸（桌面版默认 48）
      * @return 扩展后的正方形框，如果太小则返回 null
      */
     public static RectF expandSquareBox(RectF box, int imgW, int imgH, float scale, int minSize) {
         float w = box.width(), h = box.height();
-        if (w < 1 || h < 1) return null;
+        if (w < 1 || h < 1)
+            return null;
 
         // 取较大边作为正方形边长
         float side = Math.max(w, h);
         // 扩展
         side *= scale;
 
-        if (side < minSize) return null;
+        if (side < minSize)
+            return null;
 
         // 以原框中心为中心
         float cx = box.centerX(), cy = box.centerY();
@@ -596,14 +692,16 @@ public class ModelUtils {
         bottom = Math.min(imgH, bottom);
 
         // 再次检查尺寸
-        if (right - left < minSize || bottom - top < minSize) return null;
+        if (right - left < minSize || bottom - top < minSize)
+            return null;
 
         return new RectF(left, top, right, bottom);
     }
 
     /**
      * 去重人脸框（与桌面版 _dedupe_boxes 一致）
-     * @param boxes 人脸框列表
+     * 
+     * @param boxes        人脸框列表
      * @param iouThreshold IoU 阈值（桌面版默认 0.45）
      * @return 去重后的框列表
      */
@@ -611,10 +709,12 @@ public class ModelUtils {
         java.util.List<RectF> result = new java.util.ArrayList<>();
         boolean[] suppressed = new boolean[boxes.size()];
         for (int i = 0; i < boxes.size(); i++) {
-            if (suppressed[i]) continue;
+            if (suppressed[i])
+                continue;
             result.add(boxes.get(i));
             for (int j = i + 1; j < boxes.size(); j++) {
-                if (suppressed[j]) continue;
+                if (suppressed[j])
+                    continue;
                 if (iou(boxes.get(i), boxes.get(j)) > iouThreshold) {
                     suppressed[j] = true;
                 }
@@ -628,18 +728,22 @@ public class ModelUtils {
     /**
      * 健壮的 Bitmap 加载（与桌面版 _read_image 一致）
      * 处理：16-bit 图像、灰度图、BGRA 格式
+     * 
      * @param bitmap 原始 Bitmap
      * @return ARGB_8888 格式的 Bitmap
      */
     public static Bitmap ensureArgb8888(Bitmap bitmap) {
-        if (bitmap == null) return null;
+        if (bitmap == null)
+            return null;
 
         // 如果已经是 ARGB_8888，直接返回
-        if (bitmap.getConfig() == Bitmap.Config.ARGB_8888) return bitmap;
+        if (bitmap.getConfig() == Bitmap.Config.ARGB_8888)
+            return bitmap;
 
         // 转换为 ARGB_8888
         Bitmap converted = bitmap.copy(Bitmap.Config.ARGB_8888, true);
-        if (converted != bitmap) bitmap.recycle();
+        if (converted != bitmap)
+            bitmap.recycle();
         return converted;
     }
 
@@ -647,14 +751,16 @@ public class ModelUtils {
      * 从字节数组健壮加载 Bitmap（处理各种格式）
      */
     public static Bitmap loadBitmapRobust(byte[] data) {
-        if (data == null || data.length == 0) return null;
+        if (data == null || data.length == 0)
+            return null;
 
         android.graphics.BitmapFactory.Options opts = new android.graphics.BitmapFactory.Options();
         opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
         opts.inMutable = true;
 
         Bitmap bmp = android.graphics.BitmapFactory.decodeByteArray(data, 0, data.length, opts);
-        if (bmp == null) return null;
+        if (bmp == null)
+            return null;
 
         return ensureArgb8888(bmp);
     }
@@ -663,14 +769,16 @@ public class ModelUtils {
      * 从文件路径健壮加载 Bitmap
      */
     public static Bitmap loadBitmapRobust(String path) {
-        if (path == null || path.isEmpty()) return null;
+        if (path == null || path.isEmpty())
+            return null;
 
         android.graphics.BitmapFactory.Options opts = new android.graphics.BitmapFactory.Options();
         opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
         opts.inMutable = true;
 
         Bitmap bmp = android.graphics.BitmapFactory.decodeFile(path, opts);
-        if (bmp == null) return null;
+        if (bmp == null)
+            return null;
 
         return ensureArgb8888(bmp);
     }
@@ -679,10 +787,12 @@ public class ModelUtils {
      * 从 Context + Uri 健壮加载 Bitmap
      */
     public static Bitmap loadBitmapRobust(android.content.Context ctx, android.net.Uri uri) {
-        if (ctx == null || uri == null) return null;
+        if (ctx == null || uri == null)
+            return null;
         try {
             java.io.InputStream is = ctx.getContentResolver().openInputStream(uri);
-            if (is == null) return null;
+            if (is == null)
+                return null;
 
             android.graphics.BitmapFactory.Options opts = new android.graphics.BitmapFactory.Options();
             opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
@@ -690,7 +800,8 @@ public class ModelUtils {
 
             Bitmap bmp = android.graphics.BitmapFactory.decodeStream(is, null, opts);
             is.close();
-            if (bmp == null) return null;
+            if (bmp == null)
+                return null;
 
             return ensureArgb8888(bmp);
         } catch (Exception e) {
@@ -704,13 +815,15 @@ public class ModelUtils {
     /**
      * 保存 Bitmap 到文件（与桌面版 _write_image 一致）
      * 尝试原格式，失败则回退到 PNG
-     * @param bitmap 要保存的图片
-     * @param outputPath 输出路径
+     * 
+     * @param bitmap       要保存的图片
+     * @param outputPath   输出路径
      * @param originalPath 原始文件路径（用于推断格式），可为 null
      * @return 实际保存的文件路径
      */
     public static String saveBitmapRobust(Bitmap bitmap, String outputPath, String originalPath) {
-        if (bitmap == null || outputPath == null) return null;
+        if (bitmap == null || outputPath == null)
+            return null;
 
         // 推断原始格式
         Bitmap.CompressFormat format = Bitmap.CompressFormat.PNG;
@@ -730,7 +843,8 @@ public class ModelUtils {
             java.io.FileOutputStream fos = new java.io.FileOutputStream(outputPath);
             boolean ok = bitmap.compress(format, quality, fos);
             fos.close();
-            if (ok) return outputPath;
+            if (ok)
+                return outputPath;
         } catch (Exception e) {
             Log.w(TAG, "用原格式保存失败: " + format, e);
         }
@@ -742,7 +856,8 @@ public class ModelUtils {
                 java.io.FileOutputStream fos = new java.io.FileOutputStream(pngPath);
                 boolean ok = bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
                 fos.close();
-                if (ok) return pngPath;
+                if (ok)
+                    return pngPath;
             } catch (Exception e) {
                 Log.e(TAG, "PNG 回退也失败", e);
             }
@@ -754,7 +869,8 @@ public class ModelUtils {
     // ==================== 工具方法 ====================
 
     private static Bitmap ensureSize(Bitmap bitmap, int size) {
-        if (bitmap.getWidth() == size && bitmap.getHeight() == size) return bitmap;
+        if (bitmap.getWidth() == size && bitmap.getHeight() == size)
+            return bitmap;
         return Bitmap.createScaledBitmap(bitmap, size, size, true);
     }
 

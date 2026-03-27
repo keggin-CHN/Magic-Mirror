@@ -13,6 +13,7 @@ import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtSession;
 
+import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -27,7 +28,7 @@ import java.util.Map;
  * 2. 对 ArcFace embedding 做线性变换 latent = normalize(dot(embedding, emap))
  * 3. 对齐目标人脸到 128x128，运行 InSwapper 推理
  * 4. 将换脸结果通过逆仿射变换贴回原图，使用颜色校正 + 平滑遮罩混合
- *    （对齐桌面版 seamlessClone 的效果）
+ * （对齐桌面版 seamlessClone 的效果）
  */
 public class FaceSwapper {
     private static final String TAG = "FaceSwapper";
@@ -46,9 +47,11 @@ public class FaceSwapper {
     }
 
     public void loadModel(Context context, boolean useGpu) throws Exception {
-        byte[] modelBytes = ModelUtils.loadModel(context, MODEL_NAME);
+        File modelFile = ModelUtils.prepareModelFile(context, MODEL_NAME);
 
+        // emap 提取仅在可控内存范围内执行，避免大模型触发 OOM
         try {
+            byte[] modelBytes = ModelUtils.readSmallFileBytes(modelFile, 128L * 1024L * 1024L);
             emap = extractEmapFromOnnx(modelBytes);
             if (emap != null) {
                 emapExtracted = true;
@@ -57,12 +60,12 @@ public class FaceSwapper {
                 Log.i(TAG, "模型中未找到 emap initializer，假设模型内部已处理");
             }
         } catch (Exception e) {
-            Log.w(TAG, "提取 emap 失败: " + e.getMessage() + "，将直接传 embedding");
+            Log.w(TAG, "跳过 emap 提取（不影响基本换脸）: " + e.getMessage());
         }
 
         OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
         ModelUtils.configureSessionOptions(opts, useGpu, TAG);
-        session = env.createSession(modelBytes, opts);
+        session = env.createSession(modelFile.getAbsolutePath(), opts);
         Log.i(TAG, "人脸交换模型加载成功, 输入: " + session.getInputNames());
     }
 
@@ -82,22 +85,27 @@ public class FaceSwapper {
         int expectedRawSize = EMBEDDING_DIM * EMBEDDING_DIM * 4;
 
         for (int i = 0; i < data.length - emapBytes.length; i++) {
-            if (!bytesMatch(data, i, emapBytes)) continue;
-            if (i < 2) continue;
+            if (!bytesMatch(data, i, emapBytes))
+                continue;
+            if (i < 2)
+                continue;
             int lenByte = data[i - 1] & 0xFF;
             int tagByte = data[i - 2] & 0xFF;
-            if (tagByte != 0x0A || lenByte != emapBytes.length) continue;
+            if (tagByte != 0x0A || lenByte != emapBytes.length)
+                continue;
 
             Log.d(TAG, "找到候选 'emap' 在位置: " + i);
             int searchEnd = Math.min(i + expectedRawSize + 4096, data.length);
 
             // 优先 raw_data (field 13, wire type 2 = tag 0x6A)
             float[][] result = searchFieldData(data, i, searchEnd, 0x6A, expectedRawSize);
-            if (result != null && validateEmap(result)) return result;
+            if (result != null && validateEmap(result))
+                return result;
 
             // 回退 float_data packed (field 5, wire type 2 = tag 0x2A)
             result = searchFieldData(data, i, searchEnd, 0x2A, expectedRawSize);
-            if (result != null && validateEmap(result)) return result;
+            if (result != null && validateEmap(result))
+                return result;
         }
 
         Log.d(TAG, "未在模型中找到 'emap' initializer");
@@ -106,9 +114,11 @@ public class FaceSwapper {
 
     private float[][] searchFieldData(byte[] data, int start, int end, int targetTag, int expectedSize) {
         for (int i = start; i < end - 5; i++) {
-            if ((data[i] & 0xFF) != targetTag) continue;
+            if ((data[i] & 0xFF) != targetTag)
+                continue;
             int[] varintResult = readVarint(data, i + 1);
-            if (varintResult == null) continue;
+            if (varintResult == null)
+                continue;
             int length = varintResult[0];
             int dataStart = varintResult[1];
             if (length == expectedSize && dataStart + length <= data.length) {
@@ -119,13 +129,15 @@ public class FaceSwapper {
     }
 
     private boolean validateEmap(float[][] emap) {
-        if (emap == null || emap.length != EMBEDDING_DIM || emap[0].length != EMBEDDING_DIM) return false;
+        if (emap == null || emap.length != EMBEDDING_DIM || emap[0].length != EMBEDDING_DIM)
+            return false;
         int sampleCount = 0;
         float sumAbs = 0;
         for (int i = 0; i < EMBEDDING_DIM; i += 32) {
             for (int j = 0; j < EMBEDDING_DIM; j += 32) {
                 float v = emap[i][j];
-                if (Float.isNaN(v) || Float.isInfinite(v)) return false;
+                if (Float.isNaN(v) || Float.isInfinite(v))
+                    return false;
                 sumAbs += Math.abs(v);
                 sampleCount++;
             }
@@ -140,7 +152,8 @@ public class FaceSwapper {
 
     private boolean bytesMatch(byte[] data, int offset, byte[] pattern) {
         for (int j = 0; j < pattern.length; j++) {
-            if (data[offset + j] != pattern[j]) return false;
+            if (data[offset + j] != pattern[j])
+                return false;
         }
         return true;
     }
@@ -154,10 +167,12 @@ public class FaceSwapper {
                 byte b = data[pos];
                 result |= (long) (b & 0x7F) << shift;
                 pos++;
-                if ((b & 0x80) == 0) return new int[]{(int) result, pos};
+                if ((b & 0x80) == 0)
+                    return new int[] { (int) result, pos };
                 shift += 7;
             }
-        } catch (Exception e) { /* ignore */ }
+        } catch (Exception e) {
+            /* ignore */ }
         return null;
     }
 
@@ -174,7 +189,8 @@ public class FaceSwapper {
     }
 
     private float[] applyEmapTransform(float[] embedding) {
-        if (emap == null) return embedding;
+        if (emap == null)
+            return embedding;
         float[] latent = new float[EMBEDDING_DIM];
         for (int j = 0; j < EMBEDDING_DIM; j++) {
             float sum = 0;
@@ -189,8 +205,9 @@ public class FaceSwapper {
     // ==================== 换脸推理 ====================
 
     public Bitmap swapFace(Bitmap sourceImage, FaceDetector.DetectedFace targetFace,
-                           float[] srcEmbedding) throws Exception {
-        if (session == null) throw new IllegalStateException("模型未加载");
+            float[] srcEmbedding) throws Exception {
+        if (session == null)
+            throw new IllegalStateException("模型未加载");
 
         // 1. 对齐目标人脸到 128x128
         Bitmap alignedTarget = ModelUtils.alignFace(sourceImage, targetFace.landmarks, INPUT_SIZE);
@@ -200,7 +217,8 @@ public class FaceSwapper {
 
         // 3. 准备源特征向量，应用 emap 变换
         float[] transformedEmbedding = (emapExtracted && emap != null)
-                ? applyEmapTransform(srcEmbedding) : srcEmbedding;
+                ? applyEmapTransform(srcEmbedding)
+                : srcEmbedding;
 
         float[][] embeddingData = new float[1][transformedEmbedding.length];
         System.arraycopy(transformedEmbedding, 0, embeddingData[0], 0, transformedEmbedding.length);
@@ -245,7 +263,7 @@ public class FaceSwapper {
      * 4. alpha 混合
      */
     private Bitmap pasteBack(Bitmap original, Bitmap swappedFace, Bitmap alignedOriginal,
-                             float[][] landmarks) {
+            float[][] landmarks) {
         Matrix alignMatrix = ModelUtils.getAlignMatrix(landmarks, INPUT_SIZE);
         Matrix inverseMatrix = new Matrix();
         if (!alignMatrix.invert(inverseMatrix)) {
@@ -404,15 +422,17 @@ public class FaceSwapper {
     }
 
     private float transferChannel(float value, float tgtMean, float tgtStd,
-                                  float srcMean, float srcStd, float blend) {
-        if (tgtStd < 1f) tgtStd = 1f;
-        if (srcStd < 1f) srcStd = 1f;
+            float srcMean, float srcStd, float blend) {
+        if (tgtStd < 1f)
+            tgtStd = 1f;
+        if (srcStd < 1f)
+            srcStd = 1f;
         float transferred = (value - tgtMean) * (srcStd / tgtStd) + srcMean;
         return value * (1f - blend) + transferred * blend;
     }
 
     private void computeRegionStats(int[] pixels, int size, int margin,
-                                    float[] mean, float[] std) {
+            float[] mean, float[] std) {
         float sumR = 0, sumG = 0, sumB = 0;
         int count = 0;
         for (int y = margin; y < size - margin; y++) {
@@ -424,7 +444,8 @@ public class FaceSwapper {
                 count++;
             }
         }
-        if (count == 0) count = 1;
+        if (count == 0)
+            count = 1;
         mean[0] = sumR / count;
         mean[1] = sumG / count;
         mean[2] = sumB / count;
@@ -467,8 +488,7 @@ public class FaceSwapper {
 
         RectF destRect = new RectF(
                 minX - expand, minY - expand,
-                maxX + expand, maxY + expand
-        );
+                maxX + expand, maxY + expand);
 
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         canvas.drawBitmap(swappedFace, null, destRect, paint);
@@ -482,7 +502,8 @@ public class FaceSwapper {
 
     public void close() {
         try {
-            if (session != null) session.close();
+            if (session != null)
+                session.close();
         } catch (Exception e) {
             Log.e(TAG, "关闭session失败", e);
         }

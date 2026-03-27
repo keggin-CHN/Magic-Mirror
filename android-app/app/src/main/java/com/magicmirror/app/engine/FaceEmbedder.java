@@ -8,6 +8,7 @@ import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtSession;
 
+import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -29,27 +30,29 @@ public class FaceEmbedder {
     }
 
     public void loadModel(Context context, boolean useGpu) throws Exception {
-        byte[] modelBytes = ModelUtils.loadModel(context, MODEL_NAME);
+        File modelFile = ModelUtils.prepareModelFile(context, MODEL_NAME);
         OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
         ModelUtils.configureSessionOptions(opts, useGpu, TAG);
-        session = env.createSession(modelBytes, opts);
+        session = env.createSession(modelFile.getAbsolutePath(), opts);
         Log.i(TAG, "人脸特征提取模型加载成功");
     }
 
     /**
      * 提取人脸特征向量
+     * 
      * @param alignedFace 对齐后的 112x112 人脸图像
      * @return 512 维 L2 归一化特征向量
      */
     public float[] extractEmbedding(Bitmap alignedFace) throws Exception {
-        if (session == null) throw new IllegalStateException("模型未加载");
+        if (session == null)
+            throw new IllegalStateException("模型未加载");
 
         // ArcFace 预处理: BGR 通道，(pixel/255 - 0.5) / 0.5 = pixel/127.5 - 1
         // 等价于归一化到 [-1, 1]
         float[][][][] inputData = ModelUtils.bitmapToBgrNormalized(
                 alignedFace, INPUT_SIZE,
-                new float[]{127.5f, 127.5f, 127.5f},  // mean (BGR)
-                new float[]{127.5f, 127.5f, 127.5f}   // std (BGR)
+                new float[] { 127.5f, 127.5f, 127.5f }, // mean (BGR)
+                new float[] { 127.5f, 127.5f, 127.5f } // std (BGR)
         );
 
         OnnxTensor inputTensor = OnnxTensor.createTensor(env, inputData);
@@ -80,7 +83,8 @@ public class FaceEmbedder {
 
     public void close() {
         try {
-            if (session != null) session.close();
+            if (session != null)
+                session.close();
         } catch (Exception e) {
             Log.e(TAG, "关闭session失败", e);
         }

@@ -8,6 +8,8 @@ import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
+import android.view.ViewParent;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -49,11 +51,27 @@ public class FaceOverlayView extends View {
 
     // 区域选择状态
     private boolean regionSelectMode = false;
+    private boolean showFaceBoxes = true;
     private float dragStartX, dragStartY, dragEndX, dragEndY;
     private boolean isDragging = false;
     private boolean isMovingRegion = false;
     private float lastTouchX, lastTouchY;
     private int selectedRegionIndex = -1;
+    private boolean pendingRegionMove = false;
+    private boolean isResizingRegion = false;
+    private int resizeHandle = HANDLE_NONE;
+    private long downEventTime = 0L;
+
+    private static final int HANDLE_NONE = 0;
+    private static final int HANDLE_MOVE = 1;
+    private static final int HANDLE_LEFT = 2;
+    private static final int HANDLE_TOP = 3;
+    private static final int HANDLE_RIGHT = 4;
+    private static final int HANDLE_BOTTOM = 5;
+    private static final int HANDLE_TOP_LEFT = 6;
+    private static final int HANDLE_TOP_RIGHT = 7;
+    private static final int HANDLE_BOTTOM_LEFT = 8;
+    private static final int HANDLE_BOTTOM_RIGHT = 9;
 
     private OnRegionSelectedListener regionListener;
     private OnFaceClickedListener faceClickListener;
@@ -157,6 +175,9 @@ public class FaceOverlayView extends View {
         selectedRegionIndex = -1;
         isDragging = false;
         isMovingRegion = false;
+        pendingRegionMove = false;
+        isResizingRegion = false;
+        resizeHandle = HANDLE_NONE;
         invalidate();
     }
 
@@ -167,6 +188,9 @@ public class FaceOverlayView extends View {
         selectedRegionIndex = -1;
         isDragging = false;
         isMovingRegion = false;
+        pendingRegionMove = false;
+        isResizingRegion = false;
+        resizeHandle = HANDLE_NONE;
         invalidate();
     }
 
@@ -174,10 +198,24 @@ public class FaceOverlayView extends View {
         regionSelectMode = enabled;
         isDragging = false;
         isMovingRegion = false;
+        pendingRegionMove = false;
+        isResizingRegion = false;
+        resizeHandle = HANDLE_NONE;
     }
 
     public boolean isRegionSelectMode() {
         return regionSelectMode;
+    }
+
+    public void setShowFaceBoxes(boolean show) {
+        if (showFaceBoxes != show) {
+            showFaceBoxes = show;
+            invalidate();
+        }
+    }
+
+    public boolean isShowFaceBoxes() {
+        return showFaceBoxes;
     }
 
     public void setOnRegionSelectedListener(OnRegionSelectedListener l) {
@@ -251,17 +289,19 @@ public class FaceOverlayView extends View {
         super.onDraw(canvas);
 
         // 绘制检测到的人脸框
-        for (int i = 0; i < faceBoxes.size(); i++) {
-            RectF vr = imageToView(faceBoxes.get(i));
-            boolean hl = highlightedFaces.contains(i);
-            canvas.drawRect(vr, hl ? faceBoxHighlightPaint : faceBoxPaint);
+        if (showFaceBoxes) {
+            for (int i = 0; i < faceBoxes.size(); i++) {
+                RectF vr = imageToView(faceBoxes.get(i));
+                boolean hl = highlightedFaces.contains(i);
+                canvas.drawRect(vr, hl ? faceBoxHighlightPaint : faceBoxPaint);
 
-            // 标签
-            String label = "#" + (i + 1);
-            float tw = labelPaint.measureText(label);
-            float lx = vr.left, ly = vr.top - 6;
-            canvas.drawRect(lx, ly - 30, lx + tw + 12, ly + 4, labelBgPaint);
-            canvas.drawText(label, lx + 6, ly, labelPaint);
+                // 标签
+                String label = "#" + (i + 1);
+                float tw = labelPaint.measureText(label);
+                float lx = vr.left, ly = vr.top - 6;
+                canvas.drawRect(lx, ly - 30, lx + tw + 12, ly + 4, labelBgPaint);
+                canvas.drawText(label, lx + 6, ly, labelPaint);
+            }
         }
 
         // 绘制已选区域
@@ -300,11 +340,26 @@ public class FaceOverlayView extends View {
     private boolean handleRegionDrag(MotionEvent event) {
         switch (event.getAction()) {
             case MotionEvent.ACTION_DOWN:
+                ViewParent parent = getParent();
+                if (parent != null) {
+                    parent.requestDisallowInterceptTouchEvent(true);
+                }
+
                 int hit = findRegionAtViewPoint(event.getX(), event.getY());
                 if (hit >= 0) {
                     selectedRegionIndex = hit;
                     isDragging = false;
-                    isMovingRegion = true;
+                    isMovingRegion = false;
+                    pendingRegionMove = false;
+                    isResizingRegion = false;
+                    resizeHandle = findResizeHandleAtViewPoint(hit, event.getX(), event.getY());
+                    if (resizeHandle != HANDLE_NONE) {
+                        isResizingRegion = true;
+                    } else {
+                        pendingRegionMove = true;
+                        resizeHandle = HANDLE_MOVE;
+                    }
+                    downEventTime = event.getEventTime();
                     lastTouchX = event.getX();
                     lastTouchY = event.getY();
                     invalidate();
@@ -312,6 +367,9 @@ public class FaceOverlayView extends View {
                 }
 
                 isMovingRegion = false;
+                pendingRegionMove = false;
+                isResizingRegion = false;
+                resizeHandle = HANDLE_NONE;
                 dragStartX = event.getX();
                 dragStartY = event.getY();
                 dragEndX = dragStartX;
@@ -321,13 +379,31 @@ public class FaceOverlayView extends View {
                 return true;
 
             case MotionEvent.ACTION_MOVE:
-                if (isMovingRegion && selectedRegionIndex >= 0) {
-                    float x = event.getX();
-                    float y = event.getY();
-                    moveRegionByViewDelta(selectedRegionIndex, x - lastTouchX, y - lastTouchY);
-                    lastTouchX = x;
-                    lastTouchY = y;
+                ViewParent moveParent = getParent();
+                if (moveParent != null) {
+                    moveParent.requestDisallowInterceptTouchEvent(true);
+                }
+
+                if (isResizingRegion && selectedRegionIndex >= 0) {
+                    resizeRegionByViewPoint(selectedRegionIndex, resizeHandle, event.getX(), event.getY());
+                    lastTouchX = event.getX();
+                    lastTouchY = event.getY();
                     invalidate();
+                } else if ((pendingRegionMove || isMovingRegion) && selectedRegionIndex >= 0) {
+                    long pressElapsed = event.getEventTime() - downEventTime;
+                    if (!isMovingRegion && pendingRegionMove
+                            && pressElapsed >= ViewConfiguration.getLongPressTimeout()) {
+                        isMovingRegion = true;
+                        pendingRegionMove = false;
+                    }
+                    if (isMovingRegion) {
+                        float x = event.getX();
+                        float y = event.getY();
+                        moveRegionByViewDelta(selectedRegionIndex, x - lastTouchX, y - lastTouchY);
+                        lastTouchX = x;
+                        lastTouchY = y;
+                        invalidate();
+                    }
                 } else if (isDragging) {
                     dragEndX = event.getX();
                     dragEndY = event.getY();
@@ -336,8 +412,21 @@ public class FaceOverlayView extends View {
                 return true;
 
             case MotionEvent.ACTION_UP:
-                if (isMovingRegion) {
+                ViewParent upParent = getParent();
+                if (upParent != null) {
+                    upParent.requestDisallowInterceptTouchEvent(false);
+                }
+
+                if (isResizingRegion) {
+                    isResizingRegion = false;
+                    resizeHandle = HANDLE_NONE;
+                    return true;
+                }
+
+                if (isMovingRegion || pendingRegionMove) {
                     isMovingRegion = false;
+                    pendingRegionMove = false;
+                    resizeHandle = HANDLE_NONE;
                     return true;
                 }
 
@@ -366,17 +455,45 @@ public class FaceOverlayView extends View {
                 return true;
 
             case MotionEvent.ACTION_CANCEL:
+                ViewParent cancelParent = getParent();
+                if (cancelParent != null) {
+                    cancelParent.requestDisallowInterceptTouchEvent(false);
+                }
                 isDragging = false;
                 isMovingRegion = false;
+                pendingRegionMove = false;
+                isResizingRegion = false;
+                resizeHandle = HANDLE_NONE;
                 return true;
         }
         return false;
     }
 
     private boolean handleFaceClick(MotionEvent event) {
-        if (event.getAction() != MotionEvent.ACTION_UP) {
+        int action = event.getAction();
+        if (action == MotionEvent.ACTION_DOWN) {
+            ViewParent parent = getParent();
+            if (parent != null) {
+                parent.requestDisallowInterceptTouchEvent(true);
+            }
             return true;
         }
+        if (action == MotionEvent.ACTION_CANCEL) {
+            ViewParent parent = getParent();
+            if (parent != null) {
+                parent.requestDisallowInterceptTouchEvent(false);
+            }
+            return true;
+        }
+        if (action != MotionEvent.ACTION_UP) {
+            return true;
+        }
+
+        ViewParent parent = getParent();
+        if (parent != null) {
+            parent.requestDisallowInterceptTouchEvent(false);
+        }
+
         float x = event.getX(), y = event.getY();
 
         int hitRegion = findRegionAtViewPoint(x, y);
@@ -387,6 +504,11 @@ public class FaceOverlayView extends View {
         }
 
         selectedRegionIndex = -1;
+        if (!showFaceBoxes) {
+            invalidate();
+            return true;
+        }
+
         for (int i = 0; i < faceBoxes.size(); i++) {
             RectF vr = imageToView(faceBoxes.get(i));
             if (vr.contains(x, y)) {
@@ -445,5 +567,185 @@ public class FaceOverlayView extends View {
             }
         }
         return -1;
+    }
+
+    private int findResizeHandleAtViewPoint(int regionIndex, float x, float y) {
+        if (regionIndex < 0 || regionIndex >= selectedRegions.size()) {
+            return HANDLE_NONE;
+        }
+
+        RectF vr = imageToView(selectedRegions.get(regionIndex));
+        float r = dpToPx(18f);
+
+        if (distance(x, y, vr.left, vr.top) <= r) {
+            return HANDLE_TOP_LEFT;
+        }
+        if (distance(x, y, vr.right, vr.top) <= r) {
+            return HANDLE_TOP_RIGHT;
+        }
+        if (distance(x, y, vr.left, vr.bottom) <= r) {
+            return HANDLE_BOTTOM_LEFT;
+        }
+        if (distance(x, y, vr.right, vr.bottom) <= r) {
+            return HANDLE_BOTTOM_RIGHT;
+        }
+
+        if (Math.abs(x - vr.left) <= r && y >= vr.top - r && y <= vr.bottom + r) {
+            return HANDLE_LEFT;
+        }
+        if (Math.abs(x - vr.right) <= r && y >= vr.top - r && y <= vr.bottom + r) {
+            return HANDLE_RIGHT;
+        }
+        if (Math.abs(y - vr.top) <= r && x >= vr.left - r && x <= vr.right + r) {
+            return HANDLE_TOP;
+        }
+        if (Math.abs(y - vr.bottom) <= r && x >= vr.left - r && x <= vr.right + r) {
+            return HANDLE_BOTTOM;
+        }
+        return HANDLE_NONE;
+    }
+
+    private void resizeRegionByViewPoint(int regionIndex, int handle, float viewX, float viewY) {
+        if (regionIndex < 0 || regionIndex >= selectedRegions.size()) {
+            return;
+        }
+        if (imageWidth <= 0 || imageHeight <= 0 || getWidth() <= 0 || getHeight() <= 0) {
+            return;
+        }
+
+        RectF region = selectedRegions.get(regionIndex);
+        float ix = viewToImageX(viewX);
+        float iy = viewToImageY(viewY);
+
+        float oldLeft = region.left;
+        float oldTop = region.top;
+        float oldRight = region.right;
+        float oldBottom = region.bottom;
+
+        switch (handle) {
+            case HANDLE_LEFT:
+                region.left = ix;
+                break;
+            case HANDLE_TOP:
+                region.top = iy;
+                break;
+            case HANDLE_RIGHT:
+                region.right = ix;
+                break;
+            case HANDLE_BOTTOM:
+                region.bottom = iy;
+                break;
+            case HANDLE_TOP_LEFT:
+                region.left = ix;
+                region.top = iy;
+                break;
+            case HANDLE_TOP_RIGHT:
+                region.right = ix;
+                region.top = iy;
+                break;
+            case HANDLE_BOTTOM_LEFT:
+                region.left = ix;
+                region.bottom = iy;
+                break;
+            case HANDLE_BOTTOM_RIGHT:
+                region.right = ix;
+                region.bottom = iy;
+                break;
+            default:
+                return;
+        }
+
+        float scale = Math.max((float) getWidth() / imageWidth, (float) getHeight() / imageHeight);
+        float minSize = Math.max(8f, dpToPx(28f) / Math.max(0.01f, scale));
+
+        if (region.left < 0f)
+            region.left = 0f;
+        if (region.top < 0f)
+            region.top = 0f;
+        if (region.right > imageWidth)
+            region.right = imageWidth;
+        if (region.bottom > imageHeight)
+            region.bottom = imageHeight;
+
+        if (region.width() < minSize) {
+            if (isLeftSideHandle(handle)) {
+                region.left = region.right - minSize;
+            } else if (isRightSideHandle(handle)) {
+                region.right = region.left + minSize;
+            } else {
+                region.left = oldLeft;
+                region.right = oldRight;
+            }
+        }
+
+        if (region.height() < minSize) {
+            if (isTopSideHandle(handle)) {
+                region.top = region.bottom - minSize;
+            } else if (isBottomSideHandle(handle)) {
+                region.bottom = region.top + minSize;
+            } else {
+                region.top = oldTop;
+                region.bottom = oldBottom;
+            }
+        }
+
+        if (region.left < 0f) {
+            region.left = 0f;
+            if (region.right < minSize)
+                region.right = minSize;
+        }
+        if (region.top < 0f) {
+            region.top = 0f;
+            if (region.bottom < minSize)
+                region.bottom = minSize;
+        }
+        if (region.right > imageWidth) {
+            region.right = imageWidth;
+            if (region.left > imageWidth - minSize)
+                region.left = imageWidth - minSize;
+        }
+        if (region.bottom > imageHeight) {
+            region.bottom = imageHeight;
+            if (region.top > imageHeight - minSize)
+                region.top = imageHeight - minSize;
+        }
+    }
+
+    private boolean isLeftSideHandle(int handle) {
+        return handle == HANDLE_LEFT || handle == HANDLE_TOP_LEFT || handle == HANDLE_BOTTOM_LEFT;
+    }
+
+    private boolean isRightSideHandle(int handle) {
+        return handle == HANDLE_RIGHT || handle == HANDLE_TOP_RIGHT || handle == HANDLE_BOTTOM_RIGHT;
+    }
+
+    private boolean isTopSideHandle(int handle) {
+        return handle == HANDLE_TOP || handle == HANDLE_TOP_LEFT || handle == HANDLE_TOP_RIGHT;
+    }
+
+    private boolean isBottomSideHandle(int handle) {
+        return handle == HANDLE_BOTTOM || handle == HANDLE_BOTTOM_LEFT || handle == HANDLE_BOTTOM_RIGHT;
+    }
+
+    private float viewToImageX(float vx) {
+        float scale = Math.max((float) getWidth() / imageWidth, (float) getHeight() / imageHeight);
+        float dx = (getWidth() - imageWidth * scale) / 2f;
+        return (vx - dx) / scale;
+    }
+
+    private float viewToImageY(float vy) {
+        float scale = Math.max((float) getWidth() / imageWidth, (float) getHeight() / imageHeight);
+        float dy = (getHeight() - imageHeight * scale) / 2f;
+        return (vy - dy) / scale;
+    }
+
+    private float dpToPx(float dp) {
+        return dp * getResources().getDisplayMetrics().density;
+    }
+
+    private float distance(float x1, float y1, float x2, float y2) {
+        float dx = x1 - x2;
+        float dy = y1 - y2;
+        return (float) Math.sqrt(dx * dx + dy * dy);
     }
 }

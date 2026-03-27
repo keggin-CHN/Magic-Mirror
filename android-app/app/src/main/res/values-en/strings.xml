@@ -22,6 +22,7 @@
     <string name="status_source_selected">Source selected (%1$dx%2$d)</string>
     <string name="status_target_selected">Target face selected</string>
     <string name="status_target_required">Please select a target face first</string>
+    <string name="status_select_source_first">Please select a source image first</string>
     <string name="status_select_regions_first">Please select at least one region first</string>
     <string name="status_video_selected">Video selected</string>
     <string name="status_video_target_selected">Video target face selected</string>
@@ -83,10 +84,16 @@
     <string name="permission_required">Storage permission is required</string>
     <string name="time_seconds">%1$.1fs</string>
     <string name="status_region_mode_on">Region mode on: drag to create, drag a selected region to move</string>
+    <string name="status_region_mode_on_with_global">Region mode on: full-image region is set by default, long-press to move, drag edges to resize</string>
     <string name="status_region_mode_off">Region mode off</string>
+    <string name="status_global_region_default">Full-image region applied by default, long-press to move and drag edges to resize</string>
+    <string name="status_global_region_auto_applied">No region selected, full-image region has been auto-applied</string>
+    <string name="status_faces_detected_global_region">%1$d face(s) detected, full-image region is used by default</string>
     <string name="status_bound_face_to_source">Bound Face #%1$d to Face Source #%2$d</string>
     <string name="status_bound_region_to_source">Bound region to Face Source #%1$d</string>
     <string name="status_no_pending_face_source">Add a face source first, then tap a face or draw a region</string>
+    <string name="status_single_face_selected">Face #%1$d selected, ready to swap</string>
+    <string name="status_single_region_added">Region added (%1$d total), ready to swap</string>
     <string name="status_region_removed">Removed selected region</string>
     <string name="status_region_removed_and_unbound">Removed selected region and unbound %1$d face source(s)</string>
     <string name="status_regions_cleared">Cleared %1$d region(s)</string>

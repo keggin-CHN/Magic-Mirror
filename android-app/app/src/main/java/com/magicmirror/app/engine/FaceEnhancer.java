@@ -11,6 +11,7 @@ import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtSession;
 
+import java.io.File;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -19,11 +20,11 @@ import java.util.Map;
  * GFPGAN 人脸增强器 — 使用 gfpgan_1.4.onnx 模型
  *
  * 完整流程（与桌面版 _enhance_face 对齐）：
- *   1. 检测人脸关键点
- *   2. Umeyama 对齐到 512x512
- *   3. GFPGAN 推理增强
- *   4. 逆仿射变换增强结果到原图空间
- *   5. 在原图空间用矩形渐变 mask 混合（与桌面版一致）
+ * 1. 检测人脸关键点
+ * 2. Umeyama 对齐到 512x512
+ * 3. GFPGAN 推理增强
+ * 4. 逆仿射变换增强结果到原图空间
+ * 5. 在原图空间用矩形渐变 mask 混合（与桌面版一致）
  *
  * 关键改进（对齐桌面版）：
  * - 在原图空间做融合（先逆变换增强结果，再用遮罩混合），避免额外插值模糊
@@ -43,10 +44,10 @@ public class FaceEnhancer {
     }
 
     public void loadModel(Context context, boolean useGpu) throws Exception {
-        byte[] modelBytes = ModelUtils.loadModel(context, MODEL_NAME);
+        File modelFile = ModelUtils.prepareModelFile(context, MODEL_NAME);
         OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
         ModelUtils.configureSessionOptions(opts, useGpu, TAG);
-        session = env.createSession(modelBytes, opts);
+        session = env.createSession(modelFile.getAbsolutePath(), opts);
         loaded = true;
         Log.i(TAG, "人脸增强模型加载成功");
     }
@@ -59,14 +60,14 @@ public class FaceEnhancer {
      * 增强单张对齐后的 512x512 人脸图像（底层推理）
      */
     public Bitmap enhanceAligned(Bitmap faceBitmap) throws Exception {
-        if (session == null) throw new IllegalStateException("模型未加载");
+        if (session == null)
+            throw new IllegalStateException("模型未加载");
 
         // 预处理: BGR 通道，归一化到 [-1, 1]
         float[][][][] inputData = ModelUtils.bitmapToBgrNormalized(
                 faceBitmap, INPUT_SIZE,
-                new float[]{127.5f, 127.5f, 127.5f},
-                new float[]{127.5f, 127.5f, 127.5f}
-        );
+                new float[] { 127.5f, 127.5f, 127.5f },
+                new float[] { 127.5f, 127.5f, 127.5f });
 
         OnnxTensor inputTensor = OnnxTensor.createTensor(env, inputData);
         Map<String, OnnxTensor> inputs = new HashMap<>();
@@ -89,11 +90,12 @@ public class FaceEnhancer {
      * 与桌面版 _enhance_face 流程对齐。
      *
      * @param image 原始完整图像
-     * @param face 检测到的人脸（含关键点）
+     * @param face  检测到的人脸（含关键点）
      * @return 增强后的完整图像
      */
     public Bitmap enhance(Bitmap image, FaceDetector.DetectedFace face) throws Exception {
-        if (session == null) throw new IllegalStateException("模型未加载");
+        if (session == null)
+            throw new IllegalStateException("模型未加载");
         if (face.landmarks == null || face.landmarks.length < 5) {
             Log.w(TAG, "人脸关键点不足，跳过增强");
             return image;
@@ -128,7 +130,7 @@ public class FaceEnhancer {
         enhanced.recycle();
 
         // 6. 在原图空间做融合（与桌面版一致）
-        //    创建矩形渐变遮罩（512x512 空间），逆变换到原图空间，然后 alpha 混合
+        // 创建矩形渐变遮罩（512x512 空间），逆变换到原图空间，然后 alpha 混合
         Bitmap mask512 = createRectGradientMask(INPUT_SIZE, INPUT_SIZE);
         Bitmap warpedMask = ModelUtils.warpAffine(mask512, invMatrix, imgW, imgH);
         mask512.recycle();
@@ -238,6 +240,7 @@ public class FaceEnhancer {
 
     /**
      * 旧接口兼容 — 仅增强裁剪的人脸图（不推荐使用）
+     * 
      * @deprecated 使用 enhance(Bitmap, DetectedFace) 代替
      */
     @Deprecated
@@ -251,7 +254,8 @@ public class FaceEnhancer {
 
     public void close() {
         try {
-            if (session != null) session.close();
+            if (session != null)
+                session.close();
         } catch (Exception e) {
             Log.e(TAG, "关闭session失败", e);
         }
