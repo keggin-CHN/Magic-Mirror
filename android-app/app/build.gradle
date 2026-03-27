@@ -1,0 +1,69 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.magicmirror.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.magicmirror.app"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+
+        // 只保留 arm64-v8a（华为麒麟9000S / 高通骁龙 等主流 64 位 ARM）
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    signingConfigs {
+        // 通过环境变量配置签名（CI 中自动设置）
+        // 本地开发不设环境变量时，release 构建会使用 debug 签名
+        release {
+            def ksPath = System.getenv("KEYSTORE_FILE")
+            if (ksPath != null) {
+                storeFile file(ksPath)
+                storePassword System.getenv("KEYSTORE_PASSWORD") ?: ""
+                keyAlias System.getenv("KEY_ALIAS") ?: ""
+                keyPassword System.getenv("KEY_PASSWORD") ?: ""
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // 有签名配置时使用，否则 Gradle 默认用 debug 签名
+            def ksPath = System.getenv("KEYSTORE_FILE")
+            if (ksPath != null) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    buildFeatures {
+        viewBinding true
+    }
+}
+
+dependencies {
+    // AndroidX
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'androidx.cardview:cardview:1.0.0'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.activity:activity:1.8.2'
+
+    // ONNX Runtime Mobile (CPU + NNAPI + XNNPACK)
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.17.0'
+    implementation 'com.microsoft.onnxruntime:onnxruntime-extensions-android:0.10.0'
+}
