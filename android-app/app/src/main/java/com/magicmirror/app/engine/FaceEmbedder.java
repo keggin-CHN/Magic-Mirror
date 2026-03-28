@@ -14,7 +14,7 @@ import java.util.Map;
 
 /**
  * ArcFace 人脸特征提取器 — 使用 arcface_w600k_r50.onnx 模型
- * 输入: 对齐后的 112x112 人脸图像，BGR 通道，归一化到 [-1, 1]
+ * 输入: 对齐后的 112x112 人脸图像，RGB 通道，归一化到 [-1, 1]
  * 输出: 512 维特征向量（L2 归一化）
  */
 public class FaceEmbedder {
@@ -47,12 +47,13 @@ public class FaceEmbedder {
         if (session == null)
             throw new IllegalStateException("模型未加载");
 
-        // ArcFace 预处理: BGR 通道，(pixel/255 - 0.5) / 0.5 = pixel/127.5 - 1
+        // ArcFace 预处理（与 insightface 对齐）:
+        // RGB 通道，(pixel/255 - 0.5) / 0.5 = pixel/127.5 - 1
         // 等价于归一化到 [-1, 1]
-        float[][][][] inputData = ModelUtils.bitmapToBgrNormalized(
+        float[][][][] inputData = ModelUtils.bitmapToRgbNormalized(
                 alignedFace, INPUT_SIZE,
-                new float[] { 127.5f, 127.5f, 127.5f }, // mean (BGR)
-                new float[] { 127.5f, 127.5f, 127.5f } // std (BGR)
+                new float[] { 127.5f, 127.5f, 127.5f }, // mean (RGB)
+                new float[] { 127.5f, 127.5f, 127.5f } // std (RGB)
         );
 
         OnnxTensor inputTensor = OnnxTensor.createTensor(env, inputData);

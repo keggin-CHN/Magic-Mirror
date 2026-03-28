@@ -40,12 +40,7 @@ public class ModelUtils {
     // ArcFace 模板缩放到 512x512（用于增强器对齐）
     public static final float[][] ARCFACE_TEMPLATE_512;
     static {
-        float scale = 512.0f / 112.0f;
-        ARCFACE_TEMPLATE_512 = new float[5][2];
-        for (int i = 0; i < 5; i++) {
-            ARCFACE_TEMPLATE_512[i][0] = ARCFACE_TEMPLATE_112[i][0] * scale;
-            ARCFACE_TEMPLATE_512[i][1] = ARCFACE_TEMPLATE_112[i][1] * scale;
-        }
+        ARCFACE_TEMPLATE_512 = getArcfaceTemplateForSize(512);
     }
 
     // ==================== 模型加载 ====================
@@ -193,13 +188,35 @@ public class ModelUtils {
      * @return Android Matrix（从原图到对齐图的变换）
      */
     public static Matrix getAlignMatrix(float[][] landmarks, int targetSize) {
-        float scale = targetSize / 112.0f;
+        float[][] dst = getArcfaceTemplateForSize(targetSize);
+        return estimateSimilarityTransform(landmarks, dst);
+    }
+
+    /**
+     * 获取与 insightface face_align.py 一致的 ArcFace 模板。
+     *
+     * 规则（与桌面版一致）：
+     * - 若 image_size % 112 == 0: ratio = image_size / 112, diff_x = 0
+     * - 否则: ratio = image_size / 128, diff_x = 8 * ratio
+     * - dst = arcface_src * ratio; dst[:,0] += diff_x
+     */
+    public static float[][] getArcfaceTemplateForSize(int targetSize) {
+        float ratio;
+        float diffX;
+        if (targetSize % 112 == 0) {
+            ratio = targetSize / 112.0f;
+            diffX = 0.0f;
+        } else {
+            ratio = targetSize / 128.0f;
+            diffX = 8.0f * ratio;
+        }
+
         float[][] dst = new float[5][2];
         for (int i = 0; i < 5; i++) {
-            dst[i][0] = ARCFACE_TEMPLATE_112[i][0] * scale;
-            dst[i][1] = ARCFACE_TEMPLATE_112[i][1] * scale;
+            dst[i][0] = ARCFACE_TEMPLATE_112[i][0] * ratio + diffX;
+            dst[i][1] = ARCFACE_TEMPLATE_112[i][1] * ratio;
         }
-        return estimateSimilarityTransform(landmarks, dst);
+        return dst;
     }
 
     /**
@@ -556,6 +573,58 @@ public class ModelUtils {
     }
 
     /**
+     * Bitmap → float[1][3][H][W]，RGB 顺序，像素值范围 [0, 255]（不归一化）。
+     */
+    public static float[][][][] bitmapToRgbFloat(Bitmap bitmap, int size) {
+        Bitmap scaled = ensureSize(bitmap, size);
+        float[][][][] data = new float[1][3][size][size];
+        int[] pixels = new int[size * size];
+        scaled.getPixels(pixels, 0, size, 0, 0, size, size);
+
+        for (int y = 0; y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                int pixel = pixels[y * size + x];
+                int r = (pixel >> 16) & 0xFF;
+                int g = (pixel >> 8) & 0xFF;
+                int b = pixel & 0xFF;
+                data[0][0][y][x] = r;
+                data[0][1][y][x] = g;
+                data[0][2][y][x] = b;
+            }
+        }
+        if (scaled != bitmap)
+            scaled.recycle();
+        return data;
+    }
+
+    /**
+     * Bitmap → float[1][3][H][W]，RGB 顺序，带均值/标准差归一化。
+     * 公式: channel[i] = (pixel_rgb[i] - mean[i]) / std[i]
+     */
+    public static float[][][][] bitmapToRgbNormalized(Bitmap bitmap, int size,
+            float[] mean, float[] std) {
+        Bitmap scaled = ensureSize(bitmap, size);
+        float[][][][] data = new float[1][3][size][size];
+        int[] pixels = new int[size * size];
+        scaled.getPixels(pixels, 0, size, 0, 0, size, size);
+
+        for (int y = 0; y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                int pixel = pixels[y * size + x];
+                int r = (pixel >> 16) & 0xFF;
+                int g = (pixel >> 8) & 0xFF;
+                int b = pixel & 0xFF;
+                data[0][0][y][x] = (r - mean[0]) / std[0];
+                data[0][1][y][x] = (g - mean[1]) / std[1];
+                data[0][2][y][x] = (b - mean[2]) / std[2];
+            }
+        }
+        if (scaled != bitmap)
+            scaled.recycle();
+        return data;
+    }
+
+    /**
      * float[1][3][H][W] (BGR) → Bitmap。
      * 像素值范围 [0, 255]。
      */
@@ -586,6 +655,44 @@ public class ModelUtils {
                 int b = clamp((int) ((data[0][0][y][x] * 0.5f + 0.5f) * 255), 0, 255);
                 int g = clamp((int) ((data[0][1][y][x] * 0.5f + 0.5f) * 255), 0, 255);
                 int r = clamp((int) ((data[0][2][y][x] * 0.5f + 0.5f) * 255), 0, 255);
+                pixels[y * width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            }
+        }
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
+        return bitmap;
+    }
+
+    /**
+     * float[1][3][H][W] (RGB) → Bitmap。
+     * 像素值范围 [0, 255]。
+     */
+    public static Bitmap rgbFloatToBitmap(float[][][][] data, int width, int height) {
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        int[] pixels = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int r = clamp((int) data[0][0][y][x], 0, 255);
+                int g = clamp((int) data[0][1][y][x], 0, 255);
+                int b = clamp((int) data[0][2][y][x], 0, 255);
+                pixels[y * width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            }
+        }
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
+        return bitmap;
+    }
+
+    /**
+     * float[1][3][H][W] (RGB, [-1,1]) → Bitmap。
+     * 反归一化: pixel = (value * 0.5 + 0.5) * 255
+     */
+    public static Bitmap rgbNormalizedToBitmap(float[][][][] data, int width, int height) {
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        int[] pixels = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int r = clamp((int) ((data[0][0][y][x] * 0.5f + 0.5f) * 255), 0, 255);
+                int g = clamp((int) ((data[0][1][y][x] * 0.5f + 0.5f) * 255), 0, 255);
+                int b = clamp((int) ((data[0][2][y][x] * 0.5f + 0.5f) * 255), 0, 255);
                 pixels[y * width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
             }
         }

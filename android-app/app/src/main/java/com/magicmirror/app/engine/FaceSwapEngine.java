@@ -11,18 +11,24 @@ import android.util.Log;
 import ai.onnxruntime.OrtEnvironment;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class FaceSwapEngine {
     private static final String TAG = "FaceSwapEngine";
     private static final int MAX_DETECT_SIZE = 1920;
-    private static final int TRACK_EXPIRE_FRAMES = 45;
+    private static final int TRACK_EXPIRE_FRAMES = 300;
     private static final float PSEUDO_FACE_BOX_SCALE = 0.22f;
     private static final float PSEUDO_FACE_CENTER_Y_RATIO = 0.32f;
     private static final float PSEUDO_FACE_MIN_SIDE_PX = 20f;
     private static final float PSEUDO_FACE_MAX_SIDE_PX = 220f;
+    private static final float MIN_SWAP_FACE_SCORE = 0.56f;
+    private static final float MIN_EMBED_FACE_SCORE = 0.52f;
     private final OrtEnvironment env;
     private FaceDetector detector;
     private FaceEmbedder embedder;
@@ -167,10 +173,9 @@ public class FaceSwapEngine {
             cb.onProgress("检测源图人脸...", 10);
 
         List<FaceDetector.DetectedFace> srcFaces = safeDetectFaces(src);
-        FaceDetector.DetectedFace sourceFace = findBestFace(srcFaces, src.getWidth(), src.getHeight());
-        if (sourceFace == null) {
-            sourceFace = createPseudoFaceForImage(src);
-            Log.w(TAG, "源图未检测到人脸，使用中心伪人脸框继续换脸");
+        FaceDetector.DetectedFace sourceFace = getOneFaceLikeDesktop(srcFaces);
+        if (sourceFace == null || sourceFace.landmarks == null || sourceFace.landmarks.length < 5) {
+            throw new RuntimeException("源图未检测到可用人脸");
         }
 
         if (cb != null)
@@ -206,7 +211,10 @@ public class FaceSwapEngine {
             if (cb != null)
                 cb.onProgress("区域换脸 " + cnt + "/" + regions.size(), 50 + cnt * 40 / Math.max(1, regions.size()));
         }
-        if (enableEnhancer && enhancer != null && enhancer.isLoaded() && cnt > 0)
+        if (cnt == 0) {
+            Log.w(TAG, "所选区域未检测到可用人脸，按桌面版行为返回原图");
+        }
+        if (enableEnhancer && enhancer != null && enhancer.isLoaded())
             result = enhanceFaceRegion(result);
         if (cb != null)
             cb.onProgress("完成", 100);
@@ -220,13 +228,19 @@ public class FaceSwapEngine {
         if (embs.isEmpty())
             throw new RuntimeException("无法提取任何人脸特征");
         Bitmap result = src.copy(Bitmap.Config.ARGB_8888, true);
+        int swappedCount = 0;
         for (FaceSourceBinding b : bindings) {
             float[] emb = embs.get(b.sourceId);
             if (emb == null || b.region == null)
                 continue;
             Bitmap swapped = swapInRegion(result, b.region, emb);
-            if (swapped != null)
+            if (swapped != null) {
                 result = swapped;
+                swappedCount++;
+            }
+        }
+        if (swappedCount == 0) {
+            Log.w(TAG, "所有绑定区域均未检测到可用人脸，按桌面版行为返回原图");
         }
         if (enableEnhancer && enhancer != null && enhancer.isLoaded())
             result = enhanceFaceRegion(result);
@@ -252,16 +266,22 @@ public class FaceSwapEngine {
         if (embs.isEmpty())
             throw new RuntimeException("无法提取任何人脸特征");
         Bitmap result = src.copy(Bitmap.Config.ARGB_8888, true);
+        int swappedCount = 0;
         for (FaceSourceBinding b : bindings) {
             float[] emb = embs.get(b.sourceId);
             if (emb == null)
                 continue;
             FaceDetector.DetectedFace matched = findBestFace(allFaces, result.getWidth(), result.getHeight());
-            if (matched == null) {
-                matched = createPseudoFaceForImage(result);
+            if (!isQualifiedForSwap(matched, result.getWidth(), result.getHeight(), MIN_SWAP_FACE_SCORE)) {
+                Log.w(TAG, "多人全局模式：未找到可用目标脸，跳过 sourceId=" + b.sourceId);
+                continue;
             }
             result = swapper.swapFace(result, matched, emb);
+            swappedCount++;
             allFaces = safeDetectFaces(result);
+        }
+        if (swappedCount == 0) {
+            throw new RuntimeException("未检测到可用目标脸，未执行换脸");
         }
         if (enableEnhancer && enhancer != null && enhancer.isLoaded())
             result = enhanceFaceRegion(result);
@@ -274,22 +294,27 @@ public class FaceSwapEngine {
         checkInit();
         List<FaceDetector.DetectedFace> srcFaces = safeDetectFaces(src);
         if (srcFaces.isEmpty()) {
-            srcFaces = new ArrayList<>();
-            srcFaces.add(createPseudoFaceForImage(src));
+            throw new RuntimeException("源图未检测到人脸，无法执行全脸换脸");
         }
         float[] emb = extractEmbeddingWithFallback(target);
 
         Bitmap result = src.copy(Bitmap.Config.ARGB_8888, true);
+        int swappedCount = 0;
         for (int i = 0; i < srcFaces.size(); i++) {
             List<FaceDetector.DetectedFace> cur = safeDetectFaces(result);
             FaceDetector.DetectedFace face = findBestFace(cur, result.getWidth(), result.getHeight());
-            if (face == null) {
-                face = createPseudoFaceForImage(result);
+            if (!isQualifiedForSwap(face, result.getWidth(), result.getHeight(), MIN_SWAP_FACE_SCORE)) {
+                Log.w(TAG, "全脸换脸：第 " + (i + 1) + " 次未找到可用目标脸，跳过");
+                continue;
             }
             Bitmap nr = swapper.swapFace(result, face, emb);
             if (nr != result)
                 result.recycle();
             result = nr;
+            swappedCount++;
+        }
+        if (swappedCount == 0) {
+            throw new RuntimeException("未检测到可用目标脸，未执行换脸");
         }
         if (enableEnhancer && enhancer != null && enhancer.isLoaded())
             result = enhanceFaceRegion(result);
@@ -401,6 +426,18 @@ public class FaceSwapEngine {
         }
     }
 
+    private static class TrackMatchCandidate {
+        FaceTrack track;
+        int detIdx;
+        float iou;
+
+        TrackMatchCandidate(FaceTrack track, int detIdx, float iou) {
+            this.track = track;
+            this.detIdx = detIdx;
+            this.iou = iou;
+        }
+    }
+
     public VideoResult swapFaceVideo(Context ctx, Uri uri, Bitmap target, ProgressCallback cb) throws Exception {
         checkInit();
         Map<String, float[]> embs = new HashMap<>();
@@ -417,8 +454,12 @@ public class FaceSwapEngine {
             if (b == null || b.faceImage == null) {
                 continue;
             }
-            embs.put(b.sourceId, extractEmbeddingWithFallback(b.faceImage));
-            valid.add(b);
+            try {
+                embs.put(b.sourceId, extractEmbeddingWithFallback(b.faceImage));
+                valid.add(b);
+            } catch (Exception e) {
+                Log.w(TAG, "跳过低质量视频人脸源 sourceId=" + b.sourceId + ": " + e.getMessage());
+            }
         }
         if (embs.isEmpty())
             throw new RuntimeException("无法提取任何人脸特征");
@@ -467,12 +508,19 @@ public class FaceSwapEngine {
         File videoOnly = new File(outDir, "swap_v_" + System.currentTimeMillis() + ".mp4");
         File finalOut = new File(outDir, "swap_" + System.currentTimeMillis() + ".mp4");
 
-        // Fix #6: CPU max 6, GPU 2
-        int nw = useGpu ? 2 : Math.max(1, Math.min(Runtime.getRuntime().availableProcessors() - 1, 6));
-
         final boolean fUseTrack = useTrack;
         final Map<String, float[]> fEmbs = embs;
         final List<FaceSourceBinding> fBindings = bindings;
+
+        // 与桌面版 _swap_face_video_by_sources 对齐：
+        // 多人追踪模式依赖 tracks 的时序更新，必须避免多 worker 乱序更新导致错配。
+        int nw;
+        if (fUseTrack) {
+            nw = 1;
+        } else {
+            // 非追踪模式保持并行策略：GPU=2，CPU<=6
+            nw = useGpu ? 2 : Math.max(1, Math.min(Runtime.getRuntime().availableProcessors() - 1, 6));
+        }
 
         // 使用 VideoProcessor 处理（Fix #1 MediaCodec解码, Fix #2 直接Bitmap→YUV编码）
         int frameCount = VideoProcessor.process(ctx, uri, videoOnly, nw, (frame, frameIndex) -> {
@@ -504,9 +552,9 @@ public class FaceSwapEngine {
     /** 单人视频帧处理 */
     private Bitmap processSingleFrame(Bitmap frame, float[] emb) throws Exception {
         List<FaceDetector.DetectedFace> faces = safeDetectFaces(frame);
-        FaceDetector.DetectedFace face = findBestFace(faces, frame.getWidth(), frame.getHeight());
-        if (face == null) {
-            face = createPseudoFaceForImage(frame);
+        FaceDetector.DetectedFace face = getOneFaceLikeDesktop(faces);
+        if (face == null || face.landmarks == null || face.landmarks.length < 5) {
+            return frame;
         }
         Bitmap result = swapper.swapFace(frame, face, emb);
         if (enableEnhancer && enhancer != null && enhancer.isLoaded())
@@ -514,36 +562,43 @@ public class FaceSwapEngine {
         return result;
     }
 
-    /** 多人追踪视频帧处理 Fix #5：换脸后不重新检测 */
+    /** 多人追踪视频帧处理（与桌面版 _swap_face_video_by_sources 对齐） */
     private Bitmap processTrackingFrame(Bitmap frame, int frameIndex, Map<String, float[]> embs,
             List<FaceSourceBinding> bindings, List<FaceTrack> tracks,
             Object trackLock) throws Exception {
         List<FaceDetector.DetectedFace> faces = safeDetectFaces(frame);
-        if (faces.isEmpty()) {
-            Log.w(TAG, "追踪帧未检测到人脸，回退到多源顺序换脸");
-            return processMultiFrame(frame, embs);
-        }
 
         Bitmap result = frame;
         synchronized (trackLock) {
             // 匹配检测结果到追踪（与桌面版 _match_tracks_to_detections 一致）
-            matchDetectionsToTracks(faces, tracks, frame.getWidth(), frame.getHeight());
+            Map<FaceTrack, Integer> matches = matchDetectionsToTracks(faces, tracks);
 
-            // 对每个有匹配的追踪执行换脸
-            for (FaceTrack track : tracks) {
-                if (track.missed > 0)
+            // 对每个匹配到的追踪执行换脸（不重新检测）
+            for (Map.Entry<FaceTrack, Integer> entry : matches.entrySet()) {
+                FaceTrack track = entry.getKey();
+                if (track == null) {
                     continue;
+                }
+                Integer detIdxObj = entry.getValue();
+                int detIdx = detIdxObj == null ? -1 : detIdxObj;
+                if (detIdx < 0 || detIdx >= faces.size()) {
+                    continue;
+                }
+
                 float[] emb = embs.get(track.faceSourceId);
-                if (emb == null)
+                if (emb == null) {
                     continue;
-                FaceDetector.DetectedFace matched = findFaceByBox(faces, track.box);
-                if (matched == null)
+                }
+
+                FaceDetector.DetectedFace matched = faces.get(detIdx);
+                if (matched == null || matched.landmarks == null || matched.landmarks.length < 5) {
                     continue;
+                }
+
                 result = swapper.swapFace(result, matched, emb);
-                // Fix #5: 不重新检测！直接继续下一个追踪
             }
 
-            // 清理过期追踪
+            // 清理过期追踪（与桌面版 missed > 300 对齐）
             tracks.removeIf(t -> t.missed > TRACK_EXPIRE_FRAMES);
         }
 
@@ -557,9 +612,9 @@ public class FaceSwapEngine {
         Bitmap result = frame;
         for (float[] emb : embs.values()) {
             List<FaceDetector.DetectedFace> faces = safeDetectFaces(result);
-            FaceDetector.DetectedFace face = findBestFace(faces, result.getWidth(), result.getHeight());
-            if (face == null) {
-                face = createPseudoFaceForImage(result);
+            FaceDetector.DetectedFace face = getOneFaceLikeDesktop(faces);
+            if (face == null || face.landmarks == null || face.landmarks.length < 5) {
+                continue;
             }
             result = swapper.swapFace(result, face, emb);
         }
@@ -573,89 +628,163 @@ public class FaceSwapEngine {
     /** 从 bindings 建立初始追踪（与桌面版 _build_tracks_from_seed_regions 一致） */
     private void buildTracksFromBindings(List<FaceDetector.DetectedFace> faces, List<FaceSourceBinding> bindings,
             List<FaceTrack> tracks) {
-        int nextId = 0;
-        java.util.Set<Integer> usedDet = new java.util.HashSet<>();
+        int nextId = 1;
+        Set<Integer> usedDet = new HashSet<>();
+        List<FaceDetector.DetectedFace> dets = faces != null ? faces : new ArrayList<>();
+
         for (FaceSourceBinding b : bindings) {
-            if (b.region == null)
+            if (b == null || b.region == null) {
                 continue;
-            // 找到与 binding 区域 IoU 最大的人脸（阈值 0.0，与桌面版一致）
+            }
+
+            // 先按 IoU 匹配，失败再按中心距离匹配（与桌面版一致）
             FaceDetector.DetectedFace best = null;
-            float bestIou = 0.0f;
             int bestIdx = -1;
-            for (int i = 0; i < faces.size(); i++) {
-                if (usedDet.contains(i))
+            float bestIou = 0.0f;
+
+            for (int i = 0; i < dets.size(); i++) {
+                if (usedDet.contains(i) || dets.get(i) == null || dets.get(i).box == null) {
                     continue;
-                float iou = ModelUtils.calculateIoU(faces.get(i).box, b.region);
+                }
+                float iou = ModelUtils.calculateIoU(dets.get(i).box, b.region);
                 if (iou > bestIou) {
                     bestIou = iou;
-                    best = faces.get(i);
+                    best = dets.get(i);
                     bestIdx = i;
                 }
             }
+
             if (best == null) {
-                // IoU 失败，尝试中心距离（与桌面版一致，无阈值限制）
                 float bestDist = Float.MAX_VALUE;
-                for (int i = 0; i < faces.size(); i++) {
-                    if (usedDet.contains(i))
+                for (int i = 0; i < dets.size(); i++) {
+                    if (usedDet.contains(i) || dets.get(i) == null || dets.get(i).box == null) {
                         continue;
-                    float dist = ModelUtils.centerDistance(faces.get(i).box, b.region);
+                    }
+                    float dist = ModelUtils.centerDistance(dets.get(i).box, b.region);
                     if (dist < bestDist) {
                         bestDist = dist;
-                        best = faces.get(i);
+                        best = dets.get(i);
                         bestIdx = i;
                     }
                 }
             }
+
+            RectF initBox;
             if (best != null && bestIdx >= 0) {
                 usedDet.add(bestIdx);
-                tracks.add(new FaceTrack(nextId++, b.sourceId, new RectF(best.box)));
+                initBox = new RectF(best.box);
+            } else {
+                // 关键对齐点：即使关键帧未检测到人脸，也要为每个用户选区创建轨迹
+                // 避免“只初始化了部分轨迹，后续只换一张脸”的问题
+                initBox = new RectF(b.region);
             }
+
+            String sid = (b.sourceId == null || b.sourceId.isEmpty()) ? ("src_" + nextId) : b.sourceId;
+            tracks.add(new FaceTrack(nextId++, sid, initBox));
         }
     }
 
     /** 匹配检测到追踪（与桌面版 _match_tracks_to_detections 一致） */
-    private void matchDetectionsToTracks(List<FaceDetector.DetectedFace> faces, List<FaceTrack> tracks, int imgW,
-            int imgH) {
-        boolean[] used = new boolean[faces.size()];
+    private Map<FaceTrack, Integer> matchDetectionsToTracks(List<FaceDetector.DetectedFace> faces,
+            List<FaceTrack> tracks) {
+        Map<FaceTrack, Integer> matches = new LinkedHashMap<>();
+        if (tracks == null || tracks.isEmpty()) {
+            return matches;
+        }
 
+        List<FaceDetector.DetectedFace> dets = faces != null ? faces : new ArrayList<>();
+        if (dets.isEmpty()) {
+            for (FaceTrack track : tracks) {
+                track.missed++;
+            }
+            return matches;
+        }
+
+        // 1) 基于 IoU 的全局候选匹配（不是按 track 顺序贪心）
+        List<TrackMatchCandidate> candidatePairs = new ArrayList<>();
         for (FaceTrack track : tracks) {
-            int bestIdx = -1;
-            float bestIou = 0.05f;
-            // 先尝试 IoU 匹配
-            for (int i = 0; i < faces.size(); i++) {
-                if (used[i])
+            if (track == null || track.box == null) {
+                continue;
+            }
+            for (int detIdx = 0; detIdx < dets.size(); detIdx++) {
+                FaceDetector.DetectedFace det = dets.get(detIdx);
+                if (det == null || det.box == null) {
                     continue;
-                float iou = ModelUtils.calculateIoU(faces.get(i).box, track.box);
-                if (iou > bestIou) {
-                    bestIou = iou;
-                    bestIdx = i;
+                }
+                float iou = ModelUtils.calculateIoU(track.box, det.box);
+                if (iou > 0.05f) {
+                    candidatePairs.add(new TrackMatchCandidate(track, detIdx, iou));
                 }
             }
-            // IoU 失败则尝试中心距离（使用 track box 对角线 × 0.65 作为阈值，与桌面版一致）
-            if (bestIdx < 0) {
+        }
+        Collections.sort(candidatePairs, (a, b) -> Float.compare(b.iou, a.iou));
+
+        Set<FaceTrack> matchedTracks = new HashSet<>();
+        Set<Integer> matchedDets = new HashSet<>();
+
+        for (TrackMatchCandidate candidate : candidatePairs) {
+            if (candidate == null || candidate.track == null) {
+                continue;
+            }
+            if (matchedTracks.contains(candidate.track) || matchedDets.contains(candidate.detIdx)) {
+                continue;
+            }
+            matchedTracks.add(candidate.track);
+            matchedDets.add(candidate.detIdx);
+            matches.put(candidate.track, candidate.detIdx);
+        }
+
+        // 2) 对未匹配轨迹做一次中心点兜底匹配（阈值=轨迹框对角线*0.65）
+        for (FaceTrack track : tracks) {
+            if (track == null || track.box == null || matchedTracks.contains(track)) {
+                continue;
+            }
+
+            int bestIdx = -1;
+            float bestDist = Float.MAX_VALUE;
+            for (int detIdx = 0; detIdx < dets.size(); detIdx++) {
+                if (matchedDets.contains(detIdx)) {
+                    continue;
+                }
+                FaceDetector.DetectedFace det = dets.get(detIdx);
+                if (det == null || det.box == null) {
+                    continue;
+                }
+                float dist = ModelUtils.centerDistance(track.box, det.box);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestIdx = detIdx;
+                }
+            }
+
+            if (bestIdx >= 0) {
                 float tw = Math.max(1f, track.box.width());
                 float th = Math.max(1f, track.box.height());
-                float trackDiag = (float) Math.sqrt(tw * tw + th * th);
-                float threshold = trackDiag * 0.65f;
-                float bestDist = threshold;
-                for (int i = 0; i < faces.size(); i++) {
-                    if (used[i])
-                        continue;
-                    float dist = ModelUtils.centerDistance(faces.get(i).box, track.box);
-                    if (dist < bestDist) {
-                        bestDist = dist;
-                        bestIdx = i;
-                    }
+                float maxDist = (float) Math.sqrt(tw * tw + th * th) * 0.65f;
+                if (bestDist <= maxDist) {
+                    matchedTracks.add(track);
+                    matchedDets.add(bestIdx);
+                    matches.put(track, bestIdx);
                 }
             }
-            if (bestIdx >= 0) {
-                used[bestIdx] = true;
-                track.box = new RectF(faces.get(bestIdx).box);
+        }
+
+        // 3) 更新轨迹状态
+        for (FaceTrack track : tracks) {
+            if (track == null) {
+                continue;
+            }
+            Integer detIdxObj = matches.get(track);
+            int detIdx = detIdxObj == null ? -1 : detIdxObj;
+            if (detIdx >= 0 && detIdx < dets.size() && dets.get(detIdx) != null && dets.get(detIdx).box != null) {
+                track.box = new RectF(dets.get(detIdx).box);
                 track.missed = 0;
             } else {
                 track.missed++;
             }
         }
+
+        return matches;
     }
 
     private FaceDetector.DetectedFace findFaceByBox(List<FaceDetector.DetectedFace> faces, RectF box) {
@@ -668,7 +797,7 @@ public class FaceSwapEngine {
                 best = f;
             }
         }
-        return best;
+        return bestIou >= 0.08f ? best : null;
     }
 
     // ==================== 工具方法 ====================
@@ -708,9 +837,11 @@ public class FaceSwapEngine {
             cropFaces = new ArrayList<>();
         }
 
-        FaceDetector.DetectedFace cropFace = findBestFace(cropFaces, crop.getWidth(), crop.getHeight());
-        if (cropFace == null) {
-            cropFace = createPseudoFaceForImage(crop);
+        FaceDetector.DetectedFace cropFace = getOneFaceLikeDesktop(cropFaces);
+        if (cropFace == null || cropFace.landmarks == null || cropFace.landmarks.length < 5) {
+            crop.recycle();
+            Log.w(TAG, "区域内未检测到可用人脸，跳过该区域: " + region);
+            return null;
         }
 
         Bitmap swappedCrop = swapper.swapFace(crop, cropFace, emb);
@@ -727,7 +858,11 @@ public class FaceSwapEngine {
         for (FaceSourceBinding b : bindings) {
             if (b == null || b.faceImage == null || b.sourceId == null || embs.containsKey(b.sourceId))
                 continue;
-            embs.put(b.sourceId, extractEmbeddingWithFallback(b.faceImage));
+            try {
+                embs.put(b.sourceId, extractEmbeddingWithFallback(b.faceImage));
+            } catch (Exception e) {
+                Log.w(TAG, "跳过低质量人脸源 sourceId=" + b.sourceId + ": " + e.getMessage());
+            }
         }
         return embs;
     }
@@ -738,10 +873,9 @@ public class FaceSwapEngine {
         }
 
         List<FaceDetector.DetectedFace> faces = safeDetectFaces(image);
-        FaceDetector.DetectedFace face = findBestFace(faces, image.getWidth(), image.getHeight());
-        if (face == null) {
-            face = createPseudoFaceForImage(image);
-            Log.w(TAG, "未检测到人脸，使用中心伪人脸框提取特征");
+        FaceDetector.DetectedFace face = getOneFaceLikeDesktop(faces);
+        if (face == null || face.landmarks == null || face.landmarks.length < 5) {
+            throw new RuntimeException("目标图未检测到可用人脸");
         }
         return embedder.extractFromLandmarks(image, face.landmarks);
     }
@@ -750,9 +884,31 @@ public class FaceSwapEngine {
         try {
             return detectFacesInternal(image);
         } catch (Exception e) {
-            Log.w(TAG, "人脸检测失败，回退伪人脸框: " + e.getMessage());
+            Log.w(TAG, "人脸检测失败: " + e.getMessage());
             return new ArrayList<>();
         }
+    }
+
+    private static FaceDetector.DetectedFace getOneFaceLikeDesktop(List<FaceDetector.DetectedFace> faces) {
+        if (faces == null || faces.isEmpty()) {
+            return null;
+        }
+
+        // 对齐桌面版 get_one_face 语义：优先返回检测列表中的第一张可用人脸
+        // （检测器输出一般已按置信度排序）
+        for (FaceDetector.DetectedFace f : faces) {
+            if (f != null && f.box != null && f.landmarks != null && f.landmarks.length >= 5) {
+                return f;
+            }
+        }
+
+        // 兜底：只要有框也返回首个，后续流程再做关键点校验
+        for (FaceDetector.DetectedFace f : faces) {
+            if (f != null && f.box != null) {
+                return f;
+            }
+        }
+        return null;
     }
 
     private FaceDetector.DetectedFace createPseudoFaceForImage(Bitmap image) {
@@ -904,6 +1060,62 @@ public class FaceSwapEngine {
 
     private static float clamp01(float v) {
         return Math.max(0f, Math.min(1f, v));
+    }
+
+    private static boolean isQualifiedForSwap(FaceDetector.DetectedFace face, int imgW, int imgH, float minScore) {
+        if (face == null || face.box == null || face.landmarks == null || face.landmarks.length < 5) {
+            return false;
+        }
+
+        float w = Math.max(1f, face.box.width());
+        float h = Math.max(1f, face.box.height());
+        float minSide = Math.min(imgW, imgH) * 0.03f;
+        if (w < minSide || h < minSide) {
+            return false;
+        }
+
+        float areaRatio = (w * h) / Math.max(1f, imgW * (float) imgH);
+        if (areaRatio < 0.0008f || areaRatio > 0.65f) {
+            return false;
+        }
+
+        float score = normalizeScore(face.score);
+        if (score < minScore) {
+            return false;
+        }
+
+        float[] le = face.landmarks[0];
+        float[] re = face.landmarks[1];
+        float[] nose = face.landmarks[2];
+        float[] lm = face.landmarks[3];
+        float[] rm = face.landmarks[4];
+        if (le == null || re == null || nose == null || lm == null || rm == null) {
+            return false;
+        }
+
+        float eyeDx = re[0] - le[0];
+        float eyeDy = re[1] - le[1];
+        float eyeDist = (float) Math.sqrt(eyeDx * eyeDx + eyeDy * eyeDy);
+        float eyeRatio = eyeDist / Math.max(1f, w);
+        if (eyeRatio < 0.12f || eyeRatio > 0.72f) {
+            return false;
+        }
+
+        float mouthY = (lm[1] + rm[1]) * 0.5f;
+        if (mouthY <= nose[1]) {
+            return false;
+        }
+
+        float centerX = face.box.centerX();
+        float centerY = face.box.centerY();
+        float yawAbs = Math.abs((le[0] + re[0]) * 0.5f - nose[0]) / Math.max(1f, w);
+        float centerOffset = Math.abs(nose[0] - centerX) / Math.max(1f, w)
+                + Math.abs(nose[1] - centerY) / Math.max(1f, h) * 0.5f;
+        if (yawAbs > 0.22f || centerOffset > 0.55f) {
+            return false;
+        }
+
+        return true;
     }
 
     private Bitmap enhanceFaceRegion(Bitmap image) throws Exception {
