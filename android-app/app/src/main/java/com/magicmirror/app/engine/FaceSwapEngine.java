@@ -29,6 +29,9 @@ public class FaceSwapEngine {
     private static final float PSEUDO_FACE_MAX_SIDE_PX = 220f;
     private static final float MIN_SWAP_FACE_SCORE = 0.56f;
     private static final float MIN_EMBED_FACE_SCORE = 0.52f;
+    private static final boolean DEFAULT_ENABLE_ENHANCER = false;
+    // 临时诊断开关：true 时跳过检测链路，使用伪框继续换脸流程（仅用于 A/B 诊断）
+    private static final boolean DIAG_SKIP_DETECTION_ENABLED = false;
     private final OrtEnvironment env;
     private FaceDetector detector;
     private FaceEmbedder embedder;
@@ -36,7 +39,7 @@ public class FaceSwapEngine {
     private FaceEnhancer enhancer;
     private boolean initialized = false;
     private boolean useGpu = true;
-    private boolean enableEnhancer = false;
+    private boolean enableEnhancer = DEFAULT_ENABLE_ENHANCER;
 
     public interface ProgressCallback {
         void onProgress(String stage, int progress);
@@ -212,7 +215,7 @@ public class FaceSwapEngine {
                 cb.onProgress("区域换脸 " + cnt + "/" + regions.size(), 50 + cnt * 40 / Math.max(1, regions.size()));
         }
         if (cnt == 0) {
-            Log.w(TAG, "所选区域未检测到可用人脸，按桌面版行为返回原图");
+            Log.w(TAG, "REGION_SWAP_NO_PASTEBACK: no region produced output");
         }
         if (enableEnhancer && enhancer != null && enhancer.isLoaded())
             result = enhanceFaceRegion(result);
@@ -240,7 +243,7 @@ public class FaceSwapEngine {
             }
         }
         if (swappedCount == 0) {
-            Log.w(TAG, "所有绑定区域均未检测到可用人脸，按桌面版行为返回原图");
+            Log.w(TAG, "REGION_SWAP_NO_PASTEBACK_MULTI: no bound region produced output");
         }
         if (enableEnhancer && enhancer != null && enhancer.isLoaded())
             result = enhanceFaceRegion(result);
@@ -566,10 +569,12 @@ public class FaceSwapEngine {
     private Bitmap processTrackingFrame(Bitmap frame, int frameIndex, Map<String, float[]> embs,
             List<FaceSourceBinding> bindings, List<FaceTrack> tracks,
             Object trackLock) throws Exception {
-        List<FaceDetector.DetectedFace> faces = safeDetectFaces(frame);
-
         Bitmap result = frame;
         synchronized (trackLock) {
+            // 在同一共享状态锁内完成检测+匹配+轨迹更新+交换决策，
+            // 保证 tracked multi-face 在并发场景下也保持时序一致提交。
+            List<FaceDetector.DetectedFace> faces = safeDetectFaces(frame);
+
             // 匹配检测结果到追踪（与桌面版 _match_tracks_to_detections 一致）
             Map<FaceTrack, Integer> matches = matchDetectionsToTracks(faces, tracks);
 
@@ -807,6 +812,12 @@ public class FaceSwapEngine {
             throw new IllegalStateException("引擎未初始化");
     }
 
+    private void logDiagSkipDetectionEnabled(String stage) {
+        if (DIAG_SKIP_DETECTION_ENABLED) {
+            Log.w(TAG, "DIAG_SKIP_DETECTION_ENABLED: stage=" + stage);
+        }
+    }
+
     /** 检测人脸（内部用，自动缩放） */
     private List<FaceDetector.DetectedFace> detectFacesInternal(Bitmap image) throws Exception {
         Bitmap det = limitForDetection(image);
@@ -829,27 +840,94 @@ public class FaceSwapEngine {
         int h = clamp((int) region.height(), 1, imgH - y);
 
         Bitmap crop = Bitmap.createBitmap(image, x, y, w, h);
+        Log.i(TAG,
+                "REGION_FORCE_MODE_ENTER: region=" + region + ", cropRect=(" + x + "," + y + "," + w + "x" + h + ")");
+
         List<FaceDetector.DetectedFace> cropFaces;
-        try {
-            cropFaces = detector.detect(crop);
-        } catch (Exception e) {
-            Log.w(TAG, "区域内检测失败，使用伪人脸框继续: " + e.getMessage());
+        if (DIAG_SKIP_DETECTION_ENABLED) {
+            logDiagSkipDetectionEnabled("swapInRegion");
+            Log.w(TAG, "DIAG_SKIP_DETECTION_TARGET: stage=swapInRegion_crop"
+                    + ", useRegionAsPseudoBox=true"
+                    + ", region=" + region
+                    + ", cropRect=(" + x + "," + y + "," + w + "x" + h + ")");
             cropFaces = new ArrayList<>();
+        } else {
+            try {
+                cropFaces = detector.detect(crop);
+            } catch (Exception e) {
+                Log.w(TAG, "区域内检测失败，启用区域兜底继续: " + e.getMessage());
+                cropFaces = new ArrayList<>();
+            }
         }
 
         FaceDetector.DetectedFace cropFace = getOneFaceLikeDesktop(cropFaces);
+        boolean forceRegionFallback = false;
         if (cropFace == null || cropFace.landmarks == null || cropFace.landmarks.length < 5) {
+            forceRegionFallback = true;
+            cropFace = createPseudoFaceForBox(new RectF(0f, 0f, w, h));
+            Log.w(TAG, "REGION_FORCE_FALLBACK_NO_FACE: use region box pseudo face"
+                    + ", region=" + region
+                    + ", cropRect=(" + x + "," + y + "," + w + "x" + h + ")");
+        }
+
+        boolean qualified = isQualifiedForSwap(cropFace, w, h, MIN_SWAP_FACE_SCORE);
+        int lmCount = cropFace.landmarks == null ? 0 : cropFace.landmarks.length;
+        float score = normalizeScore(cropFace.score);
+        float faceAreaRatio = cropFace.box == null ? 0f
+                : (Math.max(1f, cropFace.box.width()) * Math.max(1f, cropFace.box.height()))
+                        / Math.max(1f, w * (float) h);
+
+        if (!qualified && !forceRegionFallback) {
+            Log.w(TAG, "REGION_SWAP_QUALIFIED=false"
+                    + ", areaRatio=" + faceAreaRatio
+                    + ", score=" + score
+                    + ", landmarks=" + lmCount
+                    + ", box=" + cropFace.box
+                    + ", region=" + region);
             crop.recycle();
-            Log.w(TAG, "区域内未检测到可用人脸，跳过该区域: " + region);
             return null;
         }
 
-        Bitmap swappedCrop = swapper.swapFace(crop, cropFace, emb);
+        if (!qualified) {
+            Log.w(TAG, "REGION_FORCE_MODE_RELAX_QUALITY: continue despite unqualified face"
+                    + ", areaRatio=" + faceAreaRatio
+                    + ", score=" + score
+                    + ", landmarks=" + lmCount
+                    + ", box=" + cropFace.box
+                    + ", region=" + region);
+        } else {
+            Log.i(TAG, "swapInRegion: REGION_SWAP_QUALIFIED=true"
+                    + ", areaRatio=" + faceAreaRatio
+                    + ", score=" + score
+                    + ", landmarks=" + lmCount
+                    + ", box=" + cropFace.box);
+        }
+
+        Bitmap swappedCrop;
+        try {
+            swappedCrop = swapper.swapFace(crop, cropFace, emb);
+        } catch (Exception e) {
+            Log.w(TAG, "REGION_FORCE_SWAP_EXCEPTION: use safe passthrough fallback, reason=" + e.getMessage()
+                    + ", region=" + region);
+            swappedCrop = null;
+        }
+
+        if (swappedCrop == null || swappedCrop == crop) {
+            Log.w(TAG, "REGION_FALLBACK_SAFE_PASSTHROUGH"
+                    + ", reason=" + (swappedCrop == null ? "null_result" : "same_crop_reference")
+                    + ", region=" + region);
+            swappedCrop = applySafeRegionFallbackPassthrough(crop);
+        }
+
         Bitmap result = image.copy(Bitmap.Config.ARGB_8888, true);
         Canvas canvas = new Canvas(result);
         canvas.drawBitmap(swappedCrop, x, y, new Paint(Paint.FILTER_BITMAP_FLAG));
+        Log.i(TAG, "REGION_PASTE_BACK_SUCCESS: x=" + x + ", y=" + y + ", w=" + w + ", h=" + h);
+
+        if (swappedCrop != crop) {
+            swappedCrop.recycle();
+        }
         crop.recycle();
-        swappedCrop.recycle();
         return result;
     }
 
@@ -872,15 +950,34 @@ public class FaceSwapEngine {
             throw new IllegalArgumentException("人脸特征提取输入为空");
         }
 
-        List<FaceDetector.DetectedFace> faces = safeDetectFaces(image);
-        FaceDetector.DetectedFace face = getOneFaceLikeDesktop(faces);
-        if (face == null || face.landmarks == null || face.landmarks.length < 5) {
-            throw new RuntimeException("目标图未检测到可用人脸");
+        FaceDetector.DetectedFace face;
+        if (DIAG_SKIP_DETECTION_ENABLED) {
+            logDiagSkipDetectionEnabled("extractEmbeddingWithFallback");
+            face = createPseudoFaceForImage(image);
+            Log.w(TAG, "DIAG_SKIP_DETECTION_SOURCE: stage=extractEmbeddingWithFallback"
+                    + ", box=" + face.box
+                    + ", image=" + image.getWidth() + "x" + image.getHeight());
+        } else {
+            List<FaceDetector.DetectedFace> faces = safeDetectFaces(image);
+            face = getOneFaceLikeDesktop(faces);
+            if (face == null || face.landmarks == null || face.landmarks.length < 5) {
+                throw new RuntimeException("目标图未检测到可用人脸");
+            }
         }
         return embedder.extractFromLandmarks(image, face.landmarks);
     }
 
     private List<FaceDetector.DetectedFace> safeDetectFaces(Bitmap image) {
+        if (DIAG_SKIP_DETECTION_ENABLED) {
+            logDiagSkipDetectionEnabled("safeDetectFaces");
+            FaceDetector.DetectedFace pseudo = createPseudoFaceForImage(image);
+            Log.w(TAG, "DIAG_SKIP_DETECTION_TARGET: stage=safeDetectFaces"
+                    + ", box=" + pseudo.box
+                    + ", image=" + image.getWidth() + "x" + image.getHeight());
+            List<FaceDetector.DetectedFace> faces = new ArrayList<>(1);
+            faces.add(pseudo);
+            return faces;
+        }
         try {
             return detectFacesInternal(image);
         } catch (Exception e) {
@@ -982,6 +1079,11 @@ public class FaceSwapEngine {
         };
     }
 
+    private Bitmap applySafeRegionFallbackPassthrough(Bitmap crop) {
+        // 区域路径安全兜底：保持贴回链路，但不做任何可见着色变换，避免色偏/糊块伪影。
+        return crop.copy(Bitmap.Config.ARGB_8888, true);
+    }
+
     private Bitmap limitForDetection(Bitmap bmp) {
         int w = bmp.getWidth(), h = bmp.getHeight();
         if (w <= MAX_DETECT_SIZE && h <= MAX_DETECT_SIZE)
@@ -1063,24 +1165,34 @@ public class FaceSwapEngine {
     }
 
     private static boolean isQualifiedForSwap(FaceDetector.DetectedFace face, int imgW, int imgH, float minScore) {
+        // 召回优先：保留最基本安全约束，放宽姿态/关键点几何约束，减少“桌面能换安卓不换”。
         if (face == null || face.box == null || face.landmarks == null || face.landmarks.length < 5) {
             return false;
         }
 
-        float w = Math.max(1f, face.box.width());
-        float h = Math.max(1f, face.box.height());
-        float minSide = Math.min(imgW, imgH) * 0.03f;
+        float w = face.box.width();
+        float h = face.box.height();
+        if (Float.isNaN(w) || Float.isNaN(h) || Float.isInfinite(w) || Float.isInfinite(h)
+                || w <= 1f || h <= 1f || face.box.right <= face.box.left || face.box.bottom <= face.box.top) {
+            return false;
+        }
+
+        // 基础安全约束：过滤极小脸
+        float minSide = Math.max(12f, Math.min(imgW, imgH) * 0.02f);
         if (w < minSide || h < minSide) {
             return false;
         }
 
+        // 基础有效性约束：过滤明显非法框（过小/过大）
         float areaRatio = (w * h) / Math.max(1f, imgW * (float) imgH);
-        if (areaRatio < 0.0008f || areaRatio > 0.65f) {
+        if (areaRatio < 0.00035f || areaRatio > 0.80f) {
             return false;
         }
 
+        // 放宽分数门槛：在调用方阈值基础上给召回裕量
         float score = normalizeScore(face.score);
-        if (score < minScore) {
+        float requiredScore = Math.max(0.40f, minScore - 0.14f);
+        if (score < requiredScore) {
             return false;
         }
 
@@ -1097,21 +1209,23 @@ public class FaceSwapEngine {
         float eyeDy = re[1] - le[1];
         float eyeDist = (float) Math.sqrt(eyeDx * eyeDx + eyeDy * eyeDy);
         float eyeRatio = eyeDist / Math.max(1f, w);
-        if (eyeRatio < 0.12f || eyeRatio > 0.72f) {
+        if (Float.isNaN(eyeRatio) || Float.isInfinite(eyeRatio) || eyeRatio < 0.06f || eyeRatio > 0.86f) {
             return false;
         }
 
+        // 保留最小几何合理性：嘴部应大致在鼻子下方（放宽容差）
         float mouthY = (lm[1] + rm[1]) * 0.5f;
-        if (mouthY <= nose[1]) {
+        if (mouthY + h * 0.02f < nose[1]) {
             return false;
         }
 
+        // 放宽姿态约束，减少侧脸误杀
         float centerX = face.box.centerX();
         float centerY = face.box.centerY();
         float yawAbs = Math.abs((le[0] + re[0]) * 0.5f - nose[0]) / Math.max(1f, w);
         float centerOffset = Math.abs(nose[0] - centerX) / Math.max(1f, w)
                 + Math.abs(nose[1] - centerY) / Math.max(1f, h) * 0.5f;
-        if (yawAbs > 0.22f || centerOffset > 0.55f) {
+        if (yawAbs > 0.38f || centerOffset > 0.90f) {
             return false;
         }
 

@@ -29,12 +29,12 @@ public class FaceDetector {
     private static final float CONF_THRESHOLD = 0.5f;
     private static final float NMS_THRESHOLD = 0.4f;
     private static final int MAX_OUTPUT_FACES = 20;
-    private static final float MIN_FACE_SIDE_RATIO = 0.02f;
-    private static final float MIN_FACE_SIDE_PX = 18f;
-    private static final float MIN_FACE_AREA_RATIO = 0.00035f;
-    private static final float MAX_FACE_AREA_RATIO = 0.60f;
-    private static final float MIN_FACE_ASPECT = 0.55f;
-    private static final float MAX_FACE_ASPECT = 1.85f;
+    private static final float MIN_FACE_SIDE_RATIO = 0.016f;
+    private static final float MIN_FACE_SIDE_PX = 12f;
+    private static final float MIN_FACE_AREA_RATIO = 0.00020f;
+    private static final float MAX_FACE_AREA_RATIO = 0.72f;
+    private static final float MIN_FACE_ASPECT = 0.45f;
+    private static final float MAX_FACE_ASPECT = 2.20f;
 
     private OrtSession session;
     private final OrtEnvironment env;
@@ -481,9 +481,21 @@ public class FaceDetector {
             if (face == null || face.box == null) {
                 continue;
             }
+
+            float left = face.box.left;
+            float top = face.box.top;
+            float right = face.box.right;
+            float bottom = face.box.bottom;
+            if (Float.isNaN(left) || Float.isNaN(top) || Float.isNaN(right) || Float.isNaN(bottom)
+                    || Float.isInfinite(left) || Float.isInfinite(top)
+                    || Float.isInfinite(right) || Float.isInfinite(bottom)) {
+                continue;
+            }
+
             float w = face.box.width();
             float h = face.box.height();
-            if (Float.isNaN(w) || Float.isNaN(h) || w <= 1f || h <= 1f) {
+            if (Float.isNaN(w) || Float.isNaN(h) || Float.isInfinite(w) || Float.isInfinite(h)
+                    || w <= 1f || h <= 1f || right <= left || bottom <= top) {
                 continue;
             }
 

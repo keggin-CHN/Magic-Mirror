@@ -78,6 +78,57 @@ public class ModelUtils {
     }
 
     /**
+     * 仅用于“模型是否存在”的运行时检查结果（不触发复制，不加载模型）。
+     * 检查顺序对齐运行时策略：externalFilesDir/models -> assets/models fallback。
+     */
+    public static final class ModelExistenceCheck {
+        public final boolean exists;
+        public final String resolvedAt;
+        public final String externalExpectedPath;
+        public final String assetsExpectedPath;
+
+        public ModelExistenceCheck(boolean exists, String resolvedAt, String externalExpectedPath,
+                String assetsExpectedPath) {
+            this.exists = exists;
+            this.resolvedAt = resolvedAt;
+            this.externalExpectedPath = externalExpectedPath;
+            this.assetsExpectedPath = assetsExpectedPath;
+        }
+    }
+
+    /**
+     * 仅检查模型是否可在运行时策略中命中：
+     * 1) externalFilesDir/models/{model}
+     * 2) assets/models/{model}（fallback）
+     */
+    public static ModelExistenceCheck checkModelExistsForRuntime(Context context, String modelName) {
+        File externalDir = context.getExternalFilesDir("models");
+        File externalModel = externalDir != null ? new File(externalDir, modelName) : null;
+        String externalExpectedPath = externalModel != null
+                ? externalModel.getAbsolutePath()
+                : "<externalFilesDir/models unavailable>/" + modelName;
+        String assetsExpectedPath = "assets/models/" + modelName;
+
+        if (externalModel != null && externalModel.exists() && externalModel.length() > 0) {
+            return new ModelExistenceCheck(true,
+                    "externalFilesDir/models: " + externalExpectedPath,
+                    externalExpectedPath,
+                    assetsExpectedPath);
+        }
+
+        try (InputStream ignored = context.getAssets().open("models/" + modelName)) {
+            return new ModelExistenceCheck(true,
+                    assetsExpectedPath,
+                    externalExpectedPath,
+                    assetsExpectedPath);
+        } catch (Exception ignored) {
+            // 仅存在性检查：忽略并返回缺失
+        }
+
+        return new ModelExistenceCheck(false, null, externalExpectedPath, assetsExpectedPath);
+    }
+
+    /**
      * 兼容旧接口（不推荐）：将模型读入 byte[]。
      * 大模型会造成显著内存占用，建议改用 prepareModelFile + env.createSession(path, opts)。
      */

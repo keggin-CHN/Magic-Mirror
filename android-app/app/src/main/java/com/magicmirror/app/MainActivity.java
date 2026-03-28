@@ -47,13 +47,16 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
+    private static final int VIDEO_MULTI_FACE_SOURCE_MAX_DIM = 3072;
 
     private enum Mode {
         IMAGE, VIDEO
@@ -305,7 +308,6 @@ public class MainActivity extends AppCompatActivity {
                 FaceSourceEntry e = faceSourceEntries.get(i);
                 if (e.bindingIndex < 0 && e.region == null) {
                     e.bindingIndex = index;
-                    e.region = box;
                     faceOverlay.highlightFace(index);
                     updateFaceBindingUI(e);
                     boundSourceIndex = i + 1;
@@ -587,48 +589,80 @@ public class MainActivity extends AppCompatActivity {
     private static final String[] OPTIONAL_MODELS = { "gfpgan_1.4.onnx" };
     private static final String MODEL_BASE_URL = "https://huggingface.co/magicmirror/models/resolve/main/";
 
-    private void checkModelsAndInit() {
-        // 检查模型是否存在
-        List<String> missing = new ArrayList<>();
-        for (String m : REQUIRED_MODELS) {
-            if (!modelExists(m))
-                missing.add(m);
+    private static class ModelCheckResult {
+        final boolean exists;
+        final String resolvedAt;
+        final String externalExpectedPath;
+        final String assetsExpectedPath;
+
+        ModelCheckResult(boolean exists, String resolvedAt, String externalExpectedPath, String assetsExpectedPath) {
+            this.exists = exists;
+            this.resolvedAt = resolvedAt;
+            this.externalExpectedPath = externalExpectedPath;
+            this.assetsExpectedPath = assetsExpectedPath;
         }
+    }
+
+    private void checkModelsAndInit() {
+        List<String> missing = new ArrayList<>();
+        Map<String, ModelCheckResult> missingDetails = new LinkedHashMap<>();
+
+        for (String m : REQUIRED_MODELS) {
+            ModelCheckResult result = checkModelByRuntimeStrategy(m);
+            if (!result.exists) {
+                missing.add(m);
+                missingDetails.put(m, result);
+                Log.w(TAG, "模型缺失: " + m
+                        + "；external 预期路径: " + result.externalExpectedPath
+                        + "；assets 预期路径: " + result.assetsExpectedPath);
+            } else {
+                Log.i(TAG, "模型可用: " + m + "；来源: " + result.resolvedAt);
+            }
+        }
+
         if (switchEnhancer.isChecked()) {
             for (String m : OPTIONAL_MODELS) {
-                if (!modelExists(m))
+                ModelCheckResult result = checkModelByRuntimeStrategy(m);
+                if (!result.exists) {
                     missing.add(m);
+                    missingDetails.put(m, result);
+                    Log.w(TAG, "可选增强模型缺失: " + m
+                            + "；external 预期路径: " + result.externalExpectedPath
+                            + "；assets 预期路径: " + result.assetsExpectedPath);
+                } else {
+                    Log.i(TAG, "可选增强模型可用: " + m + "；来源: " + result.resolvedAt);
+                }
             }
         }
 
         if (missing.isEmpty()) {
             initEngine();
         } else {
-            // 提示下载
-            showModelDownloadDialog(missing);
+            showModelDownloadDialog(missing, missingDetails);
         }
     }
 
-    private boolean modelExists(String name) {
-        // 检查外部存储
-        File ext = new File(getExternalFilesDir("models"), name);
-        if (ext.exists() && ext.length() > 0)
-            return true;
-        // 检查 assets
-        try {
-            InputStream is = getAssets().open("models/" + name);
-            is.close();
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
+    private ModelCheckResult checkModelByRuntimeStrategy(String name) {
+        ModelUtils.ModelExistenceCheck check = ModelUtils.checkModelExistsForRuntime(this, name);
+        return new ModelCheckResult(check.exists, check.resolvedAt, check.externalExpectedPath,
+                check.assetsExpectedPath);
     }
 
-    private void showModelDownloadDialog(List<String> missing) {
+    private void showModelDownloadDialog(List<String> missing, Map<String, ModelCheckResult> missingDetails) {
         StringBuilder sb = new StringBuilder();
-        sb.append(getString(R.string.model_check_assets)).append("\n\n");
-        for (String m : missing)
-            sb.append("• ").append(m).append("\n");
+        sb.append("检测到缺失模型，按运行时顺序已查找：externalFilesDir/models → assets/models（fallback）。")
+                .append("\n\n");
+        for (String m : missing) {
+            ModelCheckResult detail = missingDetails.get(m);
+            sb.append("• 模型: ").append(m).append("\n");
+            if (detail != null) {
+                sb.append("  external 预期路径: ").append(detail.externalExpectedPath).append("\n");
+                sb.append("  assets 预期路径: ").append(detail.assetsExpectedPath).append("\n");
+            } else {
+                sb.append("  external 预期路径: ").append("<unknown>").append("\n");
+                sb.append("  assets 预期路径: ").append("assets/models/").append(m).append("\n");
+            }
+        }
 
         new AlertDialog.Builder(this)
                 .setTitle(R.string.model_download_title)
@@ -1288,6 +1322,11 @@ public class MainActivity extends AppCompatActivity {
         }
         boolean useRegionMode = !useMultiSource && !selectedRegions.isEmpty();
         int regionCount = selectedRegions.size();
+        Log.i(TAG, "performImageSwap: multiMode=" + multiMode
+                + ", useMultiSource=" + useMultiSource
+                + ", selectedRegions=" + regionCount
+                + ", useRegionMode=" + useRegionMode
+                + ", hasTarget=" + (targetBitmap != null));
         if (!useMultiSource) {
             if (useRegionMode) {
                 setStatus(getString(R.string.status_swap_mode_selected_regions, regionCount));

@@ -20,7 +20,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -38,10 +40,29 @@ public class FaceSwapper {
     private static final String MODEL_NAME = "inswapper_128_fp16.onnx";
     private static final int INPUT_SIZE = 128;
     private static final int EMBEDDING_DIM = 512;
+    private static final float LOW_VARIANCE_RANGE_THRESHOLD = 0.015f;
+    private static final float LOW_VARIANCE_STD_THRESHOLD = 0.006f;
+    private static final float LOW_VARIANCE_RANGE_BYTE_THRESHOLD = 4.0f;
+    private static final float LOW_VARIANCE_STD_BYTE_THRESHOLD = 1.2f;
+    private static final float INVALID_UNIT_MEAN_MIN = -0.20f;
+    private static final float INVALID_UNIT_MEAN_MAX = 1.20f;
+    private static final float INVALID_UNIT_STD_MAX = 0.85f;
+    private static final float INVALID_UNIT_RANGE_MAX = 2.30f;
+    private static final float INVALID_BYTE_MEAN_MIN = 1.0f;
+    private static final float INVALID_BYTE_MEAN_MAX = 254.0f;
+    private static final float INVALID_BYTE_STD_MAX = 110.0f;
 
     private static final int EMB_STRATEGY_EMAP = 0;
     private static final int EMB_STRATEGY_EMAP_TRANSPOSE = 1;
     private static final int EMB_STRATEGY_RAW = 2;
+    private static final String ERR_EMAP_REQUIRED = "EMAP_REQUIRED";
+    private static final long EMAP_IN_MEMORY_PARSE_LIMIT_BYTES = 192L * 1024L * 1024L;
+    private static final byte[][] EMAP_NAME_TOKEN_BYTES = new byte[][] {
+            "emap".getBytes(StandardCharsets.US_ASCII),
+            "e_map".getBytes(StandardCharsets.US_ASCII),
+            "embedding_map".getBytes(StandardCharsets.US_ASCII),
+            "latent_map".getBytes(StandardCharsets.US_ASCII)
+    };
 
     private OrtSession session;
     private final OrtEnvironment env;
@@ -55,6 +76,8 @@ public class FaceSwapper {
 
     private boolean embeddingStrategyResolved = false;
     private int embeddingStrategy = EMB_STRATEGY_EMAP;
+    private boolean strictEmapMode = true; // 默认开启：桌面兼容模式
+    private String emapFailureReason = null;
 
     public FaceSwapper(OrtEnvironment env) {
         this.env = env;
@@ -63,17 +86,36 @@ public class FaceSwapper {
     public void loadModel(Context context, boolean useGpu) throws Exception {
         File modelFile = ModelUtils.prepareModelFile(context, MODEL_NAME);
 
-        // emap 提取：优先走低内存文件扫描，避免大模型触发 OOM
+        emap = null;
+        emapExtracted = false;
+        emapFailureReason = null;
+        embeddingStrategyResolved = false;
+        embeddingStrategy = EMB_STRATEGY_EMAP;
+
+        // emap 提取：优先使用兼容解析，失败后回退为流式扫描，避免“仅因模型较大”而误降级
         try {
             emap = extractEmapFromOnnxFile(modelFile);
             if (emap != null) {
                 emapExtracted = true;
                 Log.i(TAG, "成功从模型中提取 emap 矩阵 [" + emap.length + "x" + emap[0].length + "]");
             } else {
-                Log.i(TAG, "模型中未找到 emap initializer，假设模型内部已处理");
+                emapFailureReason = buildEmapCompatibilityDetail("未找到可用 emap initializer");
+                if (strictEmapMode) {
+                    throw buildEmapRequiredException(emapFailureReason);
+                }
+                Log.w(TAG, emapFailureReason + "，已降级为 raw embedding（strictEmapMode=false）");
             }
         } catch (Exception e) {
-            Log.w(TAG, "跳过 emap 提取（不影响基本换脸）: " + e.getMessage());
+            if (e instanceof IllegalStateException && e.getMessage() != null
+                    && e.getMessage().startsWith(ERR_EMAP_REQUIRED)) {
+                throw e;
+            }
+            String detail = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            emapFailureReason = buildEmapCompatibilityDetail("emap 提取失败: " + detail);
+            if (strictEmapMode) {
+                throw buildEmapRequiredException(emapFailureReason);
+            }
+            Log.w(TAG, emapFailureReason + "，已降级为 raw embedding（strictEmapMode=false）");
         }
 
         OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
@@ -89,27 +131,48 @@ public class FaceSwapper {
                 + ", outputIndex=" + outputImageIndex);
     }
 
+    public void setStrictEmapMode(boolean strictEmapMode) {
+        this.strictEmapMode = strictEmapMode;
+    }
+
+    private String buildEmapCompatibilityDetail(String reason) {
+        String base = "模型不兼容或缺少 emap";
+        if (reason != null && !reason.isEmpty()) {
+            base += "（" + reason + "）";
+        }
+        return base + "，请替换为包含 emap 的 InSwapper 模型（推荐 inswapper_128_fp16.onnx）";
+    }
+
+    private IllegalStateException buildEmapRequiredException(String detail) {
+        return new IllegalStateException(ERR_EMAP_REQUIRED + ": " + detail);
+    }
+
     // ==================== emap 提取（带数据验证，低内存） ====================
 
     private float[][] extractEmapFromOnnxFile(File modelFile) {
         final int expectedRawSize = EMBEDDING_DIM * EMBEDDING_DIM * 4;
-        final byte[] emapBytes = "emap".getBytes(StandardCharsets.US_ASCII);
+        final long fileSize = modelFile.length();
 
-        // 小模型直接内存解析
+        // 优先尝试内存解析（上限放宽），减少“仅因文件较大”导致的提取失败
         try {
-            if (modelFile.length() <= 64L * 1024L * 1024L) {
-                byte[] modelBytes = ModelUtils.readSmallFileBytes(modelFile, 64L * 1024L * 1024L);
-                return parseEmapFromProtobuf(modelBytes);
+            if (fileSize <= EMAP_IN_MEMORY_PARSE_LIMIT_BYTES) {
+                byte[] modelBytes = ModelUtils.readSmallFileBytes(modelFile, EMAP_IN_MEMORY_PARSE_LIMIT_BYTES);
+                float[][] parsed = parseEmapFromProtobuf(modelBytes);
+                if (parsed != null && validateEmap(parsed)) {
+                    return parsed;
+                }
+            } else {
+                Log.i(TAG, "模型较大(" + fileSize + " bytes)，使用流式扫描提取 emap，避免整文件读入内存");
             }
         } catch (Exception e) {
-            Log.w(TAG, "小模型内存解析 emap 失败，回退文件扫描: " + e.getMessage());
+            Log.w(TAG, "内存解析 emap 失败，回退文件扫描: " + e.getMessage());
         }
 
-        // 大模型：按块扫描，避免整体读入内存
+        // 流式扫描：优先基于 emap 名称 token（如 e_map / embedding_map / 带前后缀路径）
         try (RandomAccessFile raf = new RandomAccessFile(modelFile, "r")) {
             long fileLen = raf.length();
             final int chunkSize = 4 * 1024 * 1024;
-            final int overlap = Math.max(32, emapBytes.length + 16);
+            final int overlap = 4096;
 
             byte[] chunk = new byte[chunkSize];
             byte[] tail = new byte[overlap];
@@ -130,26 +193,20 @@ public class FaceSwapper {
                 }
                 System.arraycopy(chunk, 0, window, tailLen, read);
 
-                for (int i = 0; i <= window.length - emapBytes.length; i++) {
-                    if (!bytesMatch(window, i, emapBytes)) {
+                for (int i = 0; i < window.length; i++) {
+                    if (!containsEmapNameToken(window, i)) {
                         continue;
                     }
 
                     long absPos = offset - tailLen + i;
-                    if (absPos < 2) {
+                    if (absPos < 0) {
                         continue;
                     }
 
-                    raf.seek(absPos - 2);
-                    int tagByte = raf.read();
-                    int lenByte = raf.read();
-                    if (tagByte != 0x0A || lenByte != emapBytes.length) {
-                        continue;
-                    }
-
-                    float[][] parsed = parseEmapNearPosition(raf, absPos, expectedRawSize, fileLen);
+                    long parseStart = Math.max(0L, absPos - 1024L);
+                    float[][] parsed = parseEmapNearPosition(raf, parseStart, expectedRawSize, fileLen);
                     if (parsed != null && validateEmap(parsed)) {
-                        Log.d(TAG, "通过文件扫描提取 emap 成功，位置: " + absPos);
+                        Log.i(TAG, "通过 token 命中流式扫描提取 emap 成功，命中位置: " + absPos);
                         return parsed;
                     }
                 }
@@ -159,7 +216,17 @@ public class FaceSwapper {
                 offset += read;
             }
         } catch (Exception e) {
-            Log.w(TAG, "文件扫描 emap 失败: " + e.getMessage());
+            Log.w(TAG, "token 流式扫描 emap 失败: " + e.getMessage());
+        }
+
+        // token 未命中时，按字段尺寸做流式兜底扫描（不整文件入内存）
+        try (RandomAccessFile raf = new RandomAccessFile(modelFile, "r")) {
+            float[][] fallback = extractEmapByFieldSizeStreaming(raf, expectedRawSize, raf.length());
+            if (fallback != null) {
+                return fallback;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "字段尺寸流式兜底扫描 emap 失败: " + e.getMessage());
         }
 
         return null;
@@ -188,47 +255,179 @@ public class FaceSwapper {
         return searchFieldData(data, 0, data.length, 0x22, expectedRawSize);
     }
 
-    private float[][] parseEmapFromProtobuf(byte[] data) {
-        byte[] emapBytes = "emap".getBytes(StandardCharsets.US_ASCII);
-        int expectedRawSize = EMBEDDING_DIM * EMBEDDING_DIM * 4;
+    private float[][] extractEmapByFieldSizeStreaming(RandomAccessFile raf, int expectedRawSize, long fileLen)
+            throws Exception {
+        final int chunkSize = 4 * 1024 * 1024;
+        final int overlap = 64; // 覆盖 tag + varint 跨块边界
 
-        for (int i = 0; i < data.length - emapBytes.length; i++) {
-            if (!bytesMatch(data, i, emapBytes))
-                continue;
-            if (i < 2)
-                continue;
-            int lenByte = data[i - 1] & 0xFF;
-            int tagByte = data[i - 2] & 0xFF;
-            if (tagByte != 0x0A || lenByte != emapBytes.length)
-                continue;
+        byte[] chunk = new byte[chunkSize];
+        byte[] tail = new byte[overlap];
+        int tailLen = 0;
+        long offset = 0L;
 
-            int searchEnd = Math.min(i + expectedRawSize + 4096, data.length);
+        while (offset < fileLen) {
+            int toRead = (int) Math.min(chunkSize, fileLen - offset);
+            raf.seek(offset);
+            int read = raf.read(chunk, 0, toRead);
+            if (read <= 0) {
+                break;
+            }
 
-            // 优先 raw_data (TensorProto field 9, wire type 2 = tag 0x4A)
-            float[][] result = searchFieldData(data, i, searchEnd, 0x4A, expectedRawSize);
-            if (result != null && validateEmap(result))
-                return result;
+            byte[] window = new byte[tailLen + read];
+            if (tailLen > 0) {
+                System.arraycopy(tail, 0, window, 0, tailLen);
+            }
+            System.arraycopy(chunk, 0, window, tailLen, read);
+            long windowBase = offset - tailLen;
 
-            // 回退 float_data packed (TensorProto field 4, wire type 2 = tag 0x22)
-            result = searchFieldData(data, i, searchEnd, 0x22, expectedRawSize);
-            if (result != null && validateEmap(result))
-                return result;
+            for (int i = 0; i < window.length; i++) {
+                int tag = window[i] & 0xFF;
+                if (tag != 0x4A && tag != 0x22) {
+                    continue;
+                }
+
+                long absTagPos = windowBase + i;
+                if (absTagPos < 0 || absTagPos >= fileLen) {
+                    continue;
+                }
+
+                int length;
+                long absDataStart;
+
+                // 先尝试窗口内解码 varint，失败则从文件定点解码（处理 varint 跨块）
+                int[] localVarint = readVarint(window, i + 1, window.length);
+                if (localVarint != null) {
+                    length = localVarint[0];
+                    absDataStart = windowBase + localVarint[1];
+                } else {
+                    long[] fileVarint = readVarintFromFile(raf, absTagPos + 1, fileLen);
+                    if (fileVarint == null || fileVarint[0] > Integer.MAX_VALUE) {
+                        continue;
+                    }
+                    length = (int) fileVarint[0];
+                    absDataStart = fileVarint[1];
+                }
+
+                if (length != expectedRawSize) {
+                    continue;
+                }
+                if (absDataStart < 0 || absDataStart + length > fileLen) {
+                    continue;
+                }
+
+                // payload 统一按绝对位置从文件补读（处理 payload 跨块）
+                float[][] parsed = parseEmapFromFilePayload(raf, absDataStart, length);
+                if (parsed != null && validateEmap(parsed)) {
+                    Log.i(TAG, "通过字段尺寸兜底提取 emap 成功，tag=0x"
+                            + Integer.toHexString(tag).toUpperCase()
+                            + ", payloadPos=" + absDataStart
+                            + ", payloadLen=" + length);
+                    return parsed;
+                }
+            }
+
+            tailLen = Math.min(overlap, window.length);
+            System.arraycopy(window, window.length - tailLen, tail, 0, tailLen);
+            offset += read;
         }
 
-        Log.d(TAG, "未在模型中找到 'emap' initializer");
+        return null;
+    }
+
+    private long[] readVarintFromFile(RandomAccessFile raf, long offset, long fileLen) throws Exception {
+        if (offset < 0 || offset >= fileLen) {
+            return null;
+        }
+        long result = 0L;
+        int shift = 0;
+        long pos = offset;
+
+        while (pos < fileLen && shift < 35) {
+            raf.seek(pos);
+            int b = raf.read();
+            if (b < 0) {
+                return null;
+            }
+            result |= (long) (b & 0x7F) << shift;
+            pos++;
+            if ((b & 0x80) == 0) {
+                return new long[] { result, pos };
+            }
+            shift += 7;
+        }
+
+        return null;
+    }
+
+    private float[][] parseEmapFromFilePayload(RandomAccessFile raf, long payloadPos, int length) throws Exception {
+        if (length <= 0) {
+            return null;
+        }
+        byte[] payload = new byte[length];
+        raf.seek(payloadPos);
+        raf.readFully(payload);
+        return parseRawDataToEmap(payload, 0, length);
+    }
+
+    private float[][] parseEmapFromProtobuf(byte[] data) {
+        int expectedRawSize = EMBEDDING_DIM * EMBEDDING_DIM * 4;
+
+        // 1) 基于 emap 名称 token 的优先匹配（兼容名称/路径前后缀差异）
+        for (byte[] token : EMAP_NAME_TOKEN_BYTES) {
+            int from = 0;
+            while (from < data.length) {
+                int idx = indexOfIgnoreCase(data, token, from);
+                if (idx < 0) {
+                    break;
+                }
+
+                int searchStart = Math.max(0, idx - 1024);
+                int searchEnd = Math.min(data.length, idx + expectedRawSize + 12288);
+
+                float[][] result = searchFieldData(data, searchStart, searchEnd, 0x4A, expectedRawSize);
+                if (result != null && validateEmap(result))
+                    return result;
+
+                result = searchFieldData(data, searchStart, searchEnd, 0x22, expectedRawSize);
+                if (result != null && validateEmap(result))
+                    return result;
+
+                from = idx + token.length;
+            }
+        }
+
+        // 2) 兜底：无显式 token 时尝试按张量尺寸特征检索
+        float[][] fallback = searchFieldData(data, 0, data.length, 0x4A, expectedRawSize);
+        if (fallback != null && validateEmap(fallback)) {
+            Log.w(TAG, "emap 名称 token 未命中，已按张量尺寸特征提取 emap");
+            return fallback;
+        }
+        fallback = searchFieldData(data, 0, data.length, 0x22, expectedRawSize);
+        if (fallback != null && validateEmap(fallback)) {
+            Log.w(TAG, "emap 名称 token 未命中，已按 float_data 尺寸特征提取 emap");
+            return fallback;
+        }
+
+        Log.d(TAG, "未在模型中找到可用 emap initializer");
         return null;
     }
 
     private float[][] searchFieldData(byte[] data, int start, int end, int targetTag, int expectedSize) {
-        for (int i = start; i < end - 5; i++) {
+        int safeStart = Math.max(0, start);
+        int safeEnd = Math.min(end, data.length);
+        if (safeEnd - safeStart < 2) {
+            return null;
+        }
+
+        for (int i = safeStart; i < safeEnd - 1; i++) {
             if ((data[i] & 0xFF) != targetTag)
                 continue;
-            int[] varintResult = readVarint(data, i + 1);
+            int[] varintResult = readVarint(data, i + 1, safeEnd);
             if (varintResult == null)
                 continue;
             int length = varintResult[0];
             int dataStart = varintResult[1];
-            if (length == expectedSize && dataStart + length <= data.length) {
+            if (length == expectedSize && dataStart >= 0 && dataStart + length <= safeEnd) {
                 return parseRawDataToEmap(data, dataStart, length);
             }
         }
@@ -265,17 +464,70 @@ public class FaceSwapper {
         return true;
     }
 
+    private boolean containsEmapNameToken(byte[] data, int offset) {
+        for (byte[] token : EMAP_NAME_TOKEN_BYTES) {
+            if (bytesMatchIgnoreCase(data, offset, token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean bytesMatchIgnoreCase(byte[] data, int offset, byte[] pattern) {
+        if (offset < 0 || offset + pattern.length > data.length) {
+            return false;
+        }
+        for (int i = 0; i < pattern.length; i++) {
+            int a = toLowerAscii(data[offset + i] & 0xFF);
+            int b = toLowerAscii(pattern[i] & 0xFF);
+            if (a != b) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private int indexOfIgnoreCase(byte[] data, byte[] pattern, int fromIndex) {
+        if (pattern == null || pattern.length == 0) {
+            return -1;
+        }
+        int start = Math.max(0, fromIndex);
+        int max = data.length - pattern.length;
+        for (int i = start; i <= max; i++) {
+            if (bytesMatchIgnoreCase(data, i, pattern)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private int toLowerAscii(int c) {
+        if (c >= 'A' && c <= 'Z') {
+            return c + ('a' - 'A');
+        }
+        return c;
+    }
+
     private int[] readVarint(byte[] data, int offset) {
+        return readVarint(data, offset, data.length);
+    }
+
+    private int[] readVarint(byte[] data, int offset, int endExclusive) {
         try {
             long result = 0;
             int shift = 0;
             int pos = offset;
-            while (pos < data.length && shift < 35) {
+            int limit = Math.min(endExclusive, data.length);
+            while (pos < limit && shift < 35) {
                 byte b = data[pos];
                 result |= (long) (b & 0x7F) << shift;
                 pos++;
-                if ((b & 0x80) == 0)
+                if ((b & 0x80) == 0) {
+                    if (result < 0 || result > Integer.MAX_VALUE) {
+                        return null;
+                    }
                     return new int[] { (int) result, pos };
+                }
                 shift += 7;
             }
         } catch (Exception e) {
@@ -369,11 +621,17 @@ public class FaceSwapper {
     }
 
     private int resolveEmbeddingStrategy(Bitmap alignedTarget, float[] srcEmbedding) {
-        // 对齐桌面版行为：优先固定使用 emap 线性变换；仅当 emap 不可用时回退 raw。
-        // 避免运行时策略探测导致同一设备/素材间结果漂移。
+        // 对齐桌面版行为：优先固定使用 emap 线性变换，避免运行时漂移。
         if (emapExtracted && emap != null) {
             return EMB_STRATEGY_EMAP;
         }
+        if (strictEmapMode) {
+            String reason = (emapFailureReason != null && !emapFailureReason.isEmpty())
+                    ? emapFailureReason
+                    : "emap 不可用";
+            throw buildEmapRequiredException(reason);
+        }
+        Log.w(TAG, "InSwapper 使用 raw embedding（strictEmapMode=false）");
         return EMB_STRATEGY_RAW;
     }
 
@@ -395,7 +653,8 @@ public class FaceSwapper {
         if (!embeddingStrategyResolved) {
             embeddingStrategy = resolveEmbeddingStrategy(alignedTarget, srcEmbedding);
             embeddingStrategyResolved = true;
-            Log.w(TAG, "InSwapper embedding策略已锁定(桌面对齐): " + embeddingStrategyName(embeddingStrategy));
+            Log.i(TAG, "InSwapper embedding策略: " + embeddingStrategyName(embeddingStrategy)
+                    + ", strictEmapMode=" + strictEmapMode);
         }
 
         float[] chosenEmbedding = applyEmbeddingStrategy(srcEmbedding, embeddingStrategy);
@@ -408,6 +667,12 @@ public class FaceSwapper {
 
         // 4. 转换为 Bitmap
         Bitmap swappedFace = decodeSwapOutput(output, stats);
+        if (swappedFace == null) {
+            Log.w(TAG, "SWAP_SKIPPED_INVALID_OUTPUT: decodeSwapOutput returned null, skip paste-back");
+            Log.w(TAG, "SWAP_NOOP_FALLBACK: return original source image without paste-back");
+            alignedTarget.recycle();
+            return sourceImage;
+        }
 
         // 5. 颜色校正 + 贴回原图
         Bitmap harmonizedFace = colorTransfer(alignedTarget, swappedFace, INPUT_SIZE);
@@ -955,21 +1220,106 @@ public class FaceSwapper {
         return s;
     }
 
+    private boolean isInvalidDistribution(OutputStats stats, boolean unitScale, boolean byteScale) {
+        if (stats == null || stats.count <= 0) {
+            return true;
+        }
+        if (Float.isNaN(stats.min) || Float.isInfinite(stats.min)
+                || Float.isNaN(stats.max) || Float.isInfinite(stats.max)
+                || Float.isNaN(stats.range) || Float.isInfinite(stats.range)
+                || Float.isNaN(stats.mean) || Float.isInfinite(stats.mean)
+                || Float.isNaN(stats.std) || Float.isInfinite(stats.std)) {
+            return true;
+        }
+
+        if (unitScale) {
+            return stats.mean < INVALID_UNIT_MEAN_MIN
+                    || stats.mean > INVALID_UNIT_MEAN_MAX
+                    || stats.std > INVALID_UNIT_STD_MAX
+                    || stats.range > INVALID_UNIT_RANGE_MAX;
+        }
+
+        if (byteScale) {
+            return stats.mean < INVALID_BYTE_MEAN_MIN
+                    || stats.mean > INVALID_BYTE_MEAN_MAX
+                    || stats.std > INVALID_BYTE_STD_MAX;
+        }
+
+        return true;
+    }
+
+    private void logSwapOutputDecision(OutputStats stats, boolean unitScale, boolean byteScale,
+            String branch, boolean warn) {
+        String msg = "SWAP_OUTPUT_DECISION: unitScale=" + unitScale
+                + ", byteScale=" + byteScale
+                + ", min=" + stats.min
+                + ", max=" + stats.max
+                + ", range=" + stats.range
+                + ", mean=" + stats.mean
+                + ", std=" + stats.std
+                + ", branch=" + branch;
+        if (warn) {
+            Log.w(TAG, msg);
+        } else {
+            Log.i(TAG, msg);
+        }
+    }
+
     private Bitmap decodeSwapOutput(float[][][][] output, OutputStats stats) {
-        if (stats.max <= 1.25f && stats.min >= -1.25f) {
+        boolean unitScale = stats.max <= 1.25f && stats.min >= -1.25f;
+        boolean byteScale = stats.max <= 255.5f && stats.min >= -0.5f;
+        boolean lowVariance = (unitScale
+                && stats.range < LOW_VARIANCE_RANGE_THRESHOLD
+                && stats.std < LOW_VARIANCE_STD_THRESHOLD)
+                || (byteScale
+                        && stats.range < LOW_VARIANCE_RANGE_BYTE_THRESHOLD
+                        && stats.std < LOW_VARIANCE_STD_BYTE_THRESHOLD);
+
+        if (lowVariance) {
+            String branch = "reject_low_variance";
+            logSwapOutputDecision(stats, unitScale, byteScale, branch, true);
+            Log.w(TAG, "SWAP_OUTPUT_LOW_VARIANCE: min=" + stats.min
+                    + ", max=" + stats.max
+                    + ", range=" + stats.range
+                    + ", mean=" + stats.mean
+                    + ", std=" + stats.std);
+            return null;
+        }
+
+        boolean invalidDistribution = isInvalidDistribution(stats, unitScale, byteScale);
+        if (invalidDistribution) {
+            String branch = unitScale
+                    ? "reject_invalid_distribution_unit"
+                    : (byteScale ? "reject_invalid_distribution_byte" : "reject_invalid_distribution_unknown_scale");
+            logSwapOutputDecision(stats, unitScale, byteScale, branch, true);
+            Log.w(TAG, "SWAP_OUTPUT_INVALID_DISTRIBUTION: min=" + stats.min
+                    + ", max=" + stats.max
+                    + ", range=" + stats.range
+                    + ", mean=" + stats.mean
+                    + ", std=" + stats.std
+                    + ", unitScale=" + unitScale
+                    + ", byteScale=" + byteScale);
+            return null;
+        }
+
+        if (unitScale) {
             // 常见情况：输出在 [-1,1] 或 [0,1]
             if (stats.min < -0.05f) {
+                logSwapOutputDecision(stats, unitScale, byteScale, "decode_unit_minus1_1", false);
                 return ModelUtils.rgbNormalizedToBitmap(output, INPUT_SIZE, INPUT_SIZE);
             }
+            logSwapOutputDecision(stats, unitScale, byteScale, "decode_unit_0_1", false);
             return rgbUnitToBitmap(output, INPUT_SIZE, INPUT_SIZE);
         }
 
-        if (stats.max <= 255.5f && stats.min >= -0.5f) {
+        if (byteScale) {
+            logSwapOutputDecision(stats, unitScale, byteScale, "decode_byte_0_255", false);
             return ModelUtils.rgbFloatToBitmap(output, INPUT_SIZE, INPUT_SIZE);
         }
 
-        // 极端异常输出：避免 min-max 拉伸导致整体“怪异偏色”，改为直接裁剪到合法范围
-        return rgbClampedToBitmap(output, INPUT_SIZE, INPUT_SIZE);
+        logSwapOutputDecision(stats, unitScale, byteScale, "reject_invalid_distribution_fallback", true);
+        Log.w(TAG, "SWAP_OUTPUT_INVALID_DISTRIBUTION: fallback reject unknown output branch");
+        return null;
     }
 
     private Bitmap rgbUnitToBitmap(float[][][][] data, int width, int height) {
