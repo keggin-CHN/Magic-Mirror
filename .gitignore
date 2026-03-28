@@ -12,3 +12,17 @@ dist-web
 out
 temp
 test.*
+
+# IDE metadata
+.idea/
+.vscode/
+android-app/.idea/
+
+# Android/Gradle build artifacts
+android-app/.gradle/
+android-app/app/build/
+*.apk
+*.aab
+
+# Local model files (too large for normal git push)
+*.onnx
