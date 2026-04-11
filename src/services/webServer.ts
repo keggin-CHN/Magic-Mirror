@@ -347,6 +347,9 @@ class WebServer {
           keyFrameMs: task.keyFrameMs,
           useGpu: task.useGpu,
           gpuProvider: task.gpuProvider,
+          configId: task.configId,
+          generateConfigId: task.generateConfigId,
+          dryRunConfigOnly: task.dryRunConfigOnly,
         }),
       });
 
@@ -369,9 +372,18 @@ class WebServer {
 
       const data = await res.json();
       if (data.error) {
-        return { result: null, error: data.error } as TaskResult;
+        return {
+          result: null,
+          error: data.error,
+          configId: data.configId ?? null,
+          status: data.status ?? null,
+        } as TaskResult;
       }
-      return { result: data.resultFileId || null } as TaskResult;
+      return {
+        result: data.resultFileId || null,
+        configId: data.configId ?? null,
+        status: data.status ?? null,
+      } as TaskResult;
     } catch {
       return { result: null, error: "network" } as TaskResult;
     }

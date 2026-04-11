@@ -83,6 +83,7 @@ export function MirrorPage() {
     videoProgress,
     videoEtaSeconds,
     videoStage,
+    videoTaskConfigId,
   } = useSwapFace();
   const [success, setSuccess] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
@@ -127,6 +128,9 @@ export function MirrorPage() {
   const [isDetectingFaces, setIsDetectingFaces] = useState(false);
   const [selectionZoom, setSelectionZoom] = useState(1);
   const [activeFaceSourceId, setActiveFaceSourceId] = useState<string | null>(null);
+  const [generateTaskConfigId, setGenerateTaskConfigId] = useState(false);
+  const [viewTaskIdOnly, setViewTaskIdOnly] = useState(false);
+  const [taskConfigIdInput, setTaskConfigIdInput] = useState("");
 
   const refreshLibrary = useCallback(async () => {
     if (!isWeb || !webClient.isAuthed) {
@@ -1306,6 +1310,8 @@ export function MirrorPage() {
         return;
       }
       const useGpu = selectedGpuProvider !== "cpu";
+      const normalizedTaskConfigId = taskConfigIdInput.trim();
+      const shouldGenerateTaskConfigId = generateTaskConfigId || viewTaskIdOnly;
       if (isMultiFaceMode) {
         if (!regions.length) {
           setNotice(t("Please select at least one area."));
@@ -1330,7 +1336,7 @@ export function MirrorPage() {
 
         beginSwap();
 
-        const result = await swapVideo(
+        const videoTaskResult = await swapVideo(
           isWeb
             ? {
               inputFileId: input.path,
@@ -1342,6 +1348,9 @@ export function MirrorPage() {
               keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
               useGpu: useGpu,
               gpuProvider: selectedGpuProvider,
+              configId: normalizedTaskConfigId || undefined,
+              generateConfigId: shouldGenerateTaskConfigId,
+              dryRunConfigOnly: viewTaskIdOnly,
             }
             : {
               inputVideo: input.path,
@@ -1353,16 +1362,40 @@ export function MirrorPage() {
               keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
               useGpu: useGpu,
               gpuProvider: selectedGpuProvider,
+              configId: normalizedTaskConfigId || undefined,
+              generateConfigId: shouldGenerateTaskConfigId,
+              dryRunConfigOnly: viewTaskIdOnly,
             }
         );
 
-        setSuccess(result != null);
-        if (result) {
+        if (videoTaskResult.configId) {
+          setTaskConfigIdInput(videoTaskResult.configId);
+        }
+
+        if (viewTaskIdOnly) {
+          if (videoTaskResult.error) {
+            setSuccess(false);
+            setIsEditingRegions(true);
+          } else {
+            setSuccess(true);
+            setIsEditingRegions(true);
+            setNotice(
+              videoTaskResult.configId
+                ? t("Task config ID generated. Submit this ID to your server for execution.")
+                : t("Task config generated, but no config ID was returned.")
+            );
+          }
+          rebuild.current();
+          return;
+        }
+
+        setSuccess(videoTaskResult.result != null);
+        if (videoTaskResult.result) {
           kMirrorStates.result = {
             src: isWeb
-              ? `${webClient.buildFileUrl(result)}?t=${Date.now()}`
-              : `${convertFileSrcSafe(result)}?t=${Date.now()}`,
-            path: result,
+              ? `${webClient.buildFileUrl(videoTaskResult.result)}?t=${Date.now()}`
+              : `${convertFileSrcSafe(videoTaskResult.result)}?t=${Date.now()}`,
+            path: videoTaskResult.result,
             type: "video",
             name: buildResultName(input, "video"),
           };
@@ -1375,29 +1408,61 @@ export function MirrorPage() {
 
       beginSwap();
 
-      const result = await swapVideo(
+      const singleVideoRegions = regions.length > 0 ? toImageRegions() : undefined;
+      const videoTaskResult = await swapVideo(
         isWeb
           ? {
             inputFileId: input.path,
             targetFaceId: me.path,
+            regions: singleVideoRegions,
+            keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
             useGpu: useGpu,
             gpuProvider: selectedGpuProvider,
+            configId: normalizedTaskConfigId || undefined,
+            generateConfigId: shouldGenerateTaskConfigId,
+            dryRunConfigOnly: viewTaskIdOnly,
           }
           : {
             inputVideo: input.path,
             targetFace: me.path,
+            regions: singleVideoRegions,
+            keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
             useGpu: useGpu,
             gpuProvider: selectedGpuProvider,
+            configId: normalizedTaskConfigId || undefined,
+            generateConfigId: shouldGenerateTaskConfigId,
+            dryRunConfigOnly: viewTaskIdOnly,
           }
       );
 
-      setSuccess(result != null);
-      if (result) {
+      if (videoTaskResult.configId) {
+        setTaskConfigIdInput(videoTaskResult.configId);
+      }
+
+      if (viewTaskIdOnly) {
+        if (videoTaskResult.error) {
+          setSuccess(false);
+          setIsEditingRegions(true);
+        } else {
+          setSuccess(true);
+          setIsEditingRegions(true);
+          setNotice(
+            videoTaskResult.configId
+              ? t("Task config ID generated. Submit this ID to your server for execution.")
+              : t("Task config generated, but no config ID was returned.")
+          );
+        }
+        rebuild.current();
+        return;
+      }
+
+      setSuccess(videoTaskResult.result != null);
+      if (videoTaskResult.result) {
         kMirrorStates.result = {
           src: isWeb
-            ? `${webClient.buildFileUrl(result)}?t=${Date.now()}`
-            : `${convertFileSrcSafe(result)}?t=${Date.now()}`,
-          path: result,
+            ? `${webClient.buildFileUrl(videoTaskResult.result)}?t=${Date.now()}`
+            : `${convertFileSrcSafe(videoTaskResult.result)}?t=${Date.now()}`,
+          path: videoTaskResult.result,
           type: "video",
           name: buildResultName(input, "video"),
         };
@@ -1488,14 +1553,17 @@ export function MirrorPage() {
     buildResultName,
     chooseVideoGpuProvider,
     faceSources,
+    generateTaskConfigId,
     isMultiFaceMode,
     isWeb,
     regions,
     swapFace,
     swapVideo,
     t,
+    taskConfigIdInput,
     toImageRegions,
     videoKeyFrameMs,
+    viewTaskIdOnly,
     webClient,
   ]);
 
@@ -1550,6 +1618,9 @@ export function MirrorPage() {
     setVideoKeyFrameMs(0);
     setIsDetectingFaces(false);
     setSelectionZoom(1);
+    setGenerateTaskConfigId(false);
+    setViewTaskIdOnly(false);
+    setTaskConfigIdInput("");
     selectingRef.current = false;
     startPointRef.current = null;
     resizeRef.current = null;
@@ -1667,6 +1738,7 @@ export function MirrorPage() {
       "video-open-failed": t("Failed to open video file."),
       "video-write-failed": t("Failed to write output video file."),
       "video-output-missing": t("Video swap failed. Output file missing."),
+      "audio-mux-failed": t("Failed to merge original audio into output video."),
       "missing-face-sources": t("Please add at least one face source."),
       "invalid-face-source-binding": t(
         "Please assign a face source to each selected area."
@@ -1674,6 +1746,9 @@ export function MirrorPage() {
       "face-source-not-found": t(
         "Please assign a face source to each selected area."
       ),
+      "config-not-found": t("Task config ID not found. Please verify and try again."),
+      "invalid-regions": t("Invalid selected regions. Please reselect areas."),
+      "polling-timeout": t("Video swapping... This may take a while, please wait."),
     };
     return errorMap[error] || null;
   };
@@ -1714,6 +1789,7 @@ export function MirrorPage() {
         done: "Completed",
         failed: "Failed",
         cancelled: "Cancelled",
+        "config-only": "Config prepared (not executed locally)",
       };
       const key = stageKeyMap[stage];
       return key ? t(key) : stage;
@@ -1895,7 +1971,8 @@ export function MirrorPage() {
                     }}
                     autoPlay={!showSelection}
                     loop={!showSelection}
-                    muted
+                    controls={!showSelection}
+                    muted={showSelection}
                     playsInline
                     onLoadedMetadata={(event) => {
                       const media = event.currentTarget;
@@ -2011,6 +2088,56 @@ export function MirrorPage() {
                       : t("Detect Faces")}
                   </div>
                 </div>
+              </div>
+            )}
+            {showSelection && isVideoInput && (
+              <div
+                className="video-timeline-panel"
+                style={{ bottom: isMultiFaceMode ? "-168px" : "-156px" }}
+                onPointerDown={(
+                  event: PointerEvent<HTMLDivElement>
+                ) => event.stopPropagation()}
+              >
+                <div className="video-config-row">
+                  <label className="video-config-check">
+                    <input
+                      type="checkbox"
+                      checked={generateTaskConfigId}
+                      onChange={(event) => setGenerateTaskConfigId(event.target.checked)}
+                    />
+                    <span>{t("Generate Task Config ID")}</span>
+                  </label>
+                  <label className="video-config-check">
+                    <input
+                      type="checkbox"
+                      checked={viewTaskIdOnly}
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        setViewTaskIdOnly(checked);
+                        if (checked) {
+                          setGenerateTaskConfigId(true);
+                        }
+                      }}
+                    />
+                    <span>{t("View Task ID Only (Do not run locally)")}</span>
+                  </label>
+                </div>
+                <div className="video-config-row">
+                  <span className="video-config-label">{t("Reuse Task Config ID")}</span>
+                  <input
+                    className="video-config-input"
+                    type="text"
+                    value={taskConfigIdInput}
+                    placeholder={t("Optional: enter existing config ID")}
+                    onChange={(event) => setTaskConfigIdInput(event.target.value)}
+                  />
+                </div>
+                {(videoTaskConfigId || taskConfigIdInput.trim()) && (
+                  <div className="video-config-id-tip">
+                    {t("Current Task Config ID")}:{" "}
+                    <code>{videoTaskConfigId || taskConfigIdInput.trim()}</code>
+                  </div>
+                )}
               </div>
             )}
             {showToolbar && (

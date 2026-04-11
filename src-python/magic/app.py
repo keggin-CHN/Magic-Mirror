@@ -1,7 +1,12 @@
+import base64
+import hashlib
+import hmac
 import json
 import os
 import threading
+import time
 import traceback
+import uuid
 
 from async_tasks import AsyncTask
 from bottle import Bottle, request, response
@@ -44,6 +49,14 @@ VIDEO_TASK_PROGRESS = {}
 VIDEO_TASK_PROGRESS_LOCK = threading.RLock()
 VIDEO_TASK_CANCELLED = set()
 VIDEO_TASK_CANCELLED_LOCK = threading.RLock()
+
+VIDEO_TASK_CONFIGS = {}
+VIDEO_TASK_CONFIGS_LOCK = threading.RLock()
+VIDEO_TASK_CONFIG_TTL_SECONDS = 7 * 24 * 3600
+VIDEO_TASK_CONFIG_TOKEN_PREFIX = "cfg1"
+VIDEO_TASK_CONFIG_SECRET = os.environ.get(
+    "VIDEO_TASK_CONFIG_SECRET", "magic-mirror-config-secret"
+)
 
 
 def _set_video_task_progress(task_id: str, **updates):
@@ -95,6 +108,123 @@ def _run_video_task_async(task_id: str, task_callable, on_completion):
     thread.start()
 
 
+def _clone_json_payload(payload):
+    return json.loads(json.dumps(payload, ensure_ascii=False))
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(encoded: str) -> bytes:
+    padding = "=" * (-len(encoded) % 4)
+    return base64.urlsafe_b64decode((encoded + padding).encode("ascii"))
+
+
+def _sign_video_task_config_payload(payload_b64: str) -> str:
+    return hmac.new(
+        VIDEO_TASK_CONFIG_SECRET.encode("utf-8"),
+        payload_b64.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _build_video_task_config_token(payload: dict) -> str:
+    body = {
+        "v": 1,
+        "iat": int(time.time()),
+        "config": _clone_json_payload(payload),
+    }
+    raw = json.dumps(
+        body, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    payload_b64 = _b64url_encode(raw)
+    signature = _sign_video_task_config_payload(payload_b64)
+    return f"{VIDEO_TASK_CONFIG_TOKEN_PREFIX}.{payload_b64}.{signature}"
+
+
+def _parse_video_task_config_token(config_id: str):
+    if not isinstance(config_id, str):
+        return None
+    prefix = f"{VIDEO_TASK_CONFIG_TOKEN_PREFIX}."
+    if not config_id.startswith(prefix):
+        return None
+    parts = config_id.split(".", 2)
+    if len(parts) != 3:
+        return None
+
+    _, payload_b64, signature = parts
+    expected_signature = _sign_video_task_config_payload(payload_b64)
+    if not hmac.compare_digest(signature, expected_signature):
+        return None
+
+    try:
+        raw = _b64url_decode(payload_b64)
+        body = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+
+    if not isinstance(body, dict):
+        return None
+
+    issued_at = body.get("iat")
+    try:
+        issued_at = float(issued_at)
+    except (TypeError, ValueError):
+        return None
+
+    if issued_at <= 0:
+        return None
+    if time.time() - issued_at > VIDEO_TASK_CONFIG_TTL_SECONDS:
+        return None
+
+    config = body.get("config")
+    if not isinstance(config, dict):
+        return None
+    return _clone_json_payload(config)
+
+
+def _cleanup_video_task_configs():
+    now = time.time()
+    with VIDEO_TASK_CONFIGS_LOCK:
+        expired = [
+            config_id
+            for config_id, item in VIDEO_TASK_CONFIGS.items()
+            if now - float(item.get("createdAt", 0)) > VIDEO_TASK_CONFIG_TTL_SECONDS
+        ]
+        for config_id in expired:
+            VIDEO_TASK_CONFIGS.pop(config_id, None)
+
+
+def _store_video_task_config(payload: dict, config_id: str | None = None) -> str:
+    _cleanup_video_task_configs()
+    if not isinstance(payload, dict):
+        raise RuntimeError("missing-params")
+
+    next_id = str(config_id or _build_video_task_config_token(payload))
+    with VIDEO_TASK_CONFIGS_LOCK:
+        VIDEO_TASK_CONFIGS[next_id] = {
+            "createdAt": time.time(),
+            "config": _clone_json_payload(payload),
+        }
+    return next_id
+
+
+def _get_video_task_config(config_id: str):
+    if not config_id:
+        return None
+    _cleanup_video_task_configs()
+    with VIDEO_TASK_CONFIGS_LOCK:
+        item = VIDEO_TASK_CONFIGS.get(str(config_id))
+        if item:
+            item["createdAt"] = time.time()
+            config = item.get("config")
+            if isinstance(config, dict):
+                return _clone_json_payload(config)
+
+    return _parse_video_task_config_token(str(config_id))
+
+
 def _ext(path: str) -> str:
     return os.path.splitext(path)[1].lower()
 
@@ -117,8 +247,11 @@ def _simplify_task_error(err: object) -> str:
         "video-open-failed",
         "video-write-failed",
         "video-output-missing",
+        "audio-mux-failed",
         "video-frame-read-failed",
         "output-write-failed",
+        "invalid-regions",
+        "config-not-found",
     ]
     for code in codes:
         if code in msg:
@@ -397,9 +530,34 @@ def create_video_task():
         target_face = body.get("targetFace")
         regions = body.get("regions")
         face_sources = body.get("faceSources")
+        config_id = body.get("configId")
+        generate_config_id = bool(body.get("generateConfigId", False))
+        dry_run_config_only = bool(body.get("dryRunConfigOnly", False))
         key_frame_ms = body.get("keyFrameMs", 0)
         use_gpu = body.get("useGpu", False)
         gpu_provider = str(body.get("gpuProvider", "auto") or "auto").strip().lower()
+
+        if config_id:
+            stored_config = _get_video_task_config(str(config_id))
+            if not isinstance(stored_config, dict):
+                response.status = 400
+                return {"error": "config-not-found"}
+
+            if target_face is None:
+                target_face = stored_config.get("targetFace")
+            if face_sources is None and "faceSources" in stored_config:
+                face_sources = stored_config.get("faceSources")
+            if regions is None and "regions" in stored_config:
+                regions = stored_config.get("regions")
+            if "keyFrameMs" not in body:
+                key_frame_ms = stored_config.get("keyFrameMs", key_frame_ms)
+            if "useGpu" not in body:
+                use_gpu = bool(stored_config.get("useGpu", use_gpu))
+            if "gpuProvider" not in body:
+                gpu_provider = str(
+                    stored_config.get("gpuProvider", gpu_provider) or gpu_provider
+                ).strip().lower()
+
         if gpu_provider in ("dml", "directml"):
             gpu_provider = "directml"
         elif gpu_provider == "cuda":
@@ -414,7 +572,13 @@ def create_video_task():
         elif gpu_provider in ("directml", "cuda"):
             use_gpu = True
 
-        has_face_sources = "faceSources" in body
+        try:
+            key_frame_ms = int(float(key_frame_ms or 0))
+        except (TypeError, ValueError):
+            key_frame_ms = 0
+        key_frame_ms = max(0, key_frame_ms)
+
+        has_face_sources = face_sources is not None
 
         print("[API] 收到视频换脸请求:")
         print(f"  - task_id: {task_id}")
@@ -478,11 +642,29 @@ def create_video_task():
                     response.status = 400
                     return {"error": "invalid-face-source-binding"}
 
-            try:
-                key_frame_ms = int(float(key_frame_ms or 0))
-            except (TypeError, ValueError):
-                key_frame_ms = 0
-            key_frame_ms = max(0, key_frame_ms)
+        config_payload = {
+            "regions": regions if isinstance(regions, list) else None,
+            "keyFrameMs": key_frame_ms,
+            "useGpu": bool(use_gpu),
+            "gpuProvider": gpu_provider,
+        }
+        if has_face_sources:
+            config_payload["faceSources"] = face_sources
+        else:
+            config_payload["targetFace"] = target_face
+
+        active_config_id = None
+        if config_id:
+            active_config_id = _store_video_task_config(
+                config_payload, config_id=str(config_id)
+            )
+        elif generate_config_id:
+            active_config_id = _store_video_task_config(config_payload)
+
+        if dry_run_config_only:
+            if not active_config_id:
+                active_config_id = _store_video_task_config(config_payload)
+            return {"task_id": task_id, "status": "config-only", "configId": active_config_id}
 
         # 先设置初始状态
         _set_video_task_progress(
@@ -563,6 +745,7 @@ def create_video_task():
             task_callable = lambda: swap_face_video(
                 input_video,
                 target_face,
+                regions=regions,
                 progress_callback=_on_progress,
                 stage_callback=_on_stage,
                 use_gpu=use_gpu,
@@ -612,7 +795,10 @@ def create_video_task():
             response.status = 500
             return {"error": _simplify_task_error(e)}
         
-        return {"task_id": task_id, "status": "queued"}
+        payload = {"task_id": task_id, "status": "queued"}
+        if active_config_id:
+            payload["configId"] = active_config_id
+        return payload
 
     except Exception as e:
         print("[ERROR] create_video_task failed:", str(e), "\n", traceback.format_exc())

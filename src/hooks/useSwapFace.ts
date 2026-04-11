@@ -34,6 +34,9 @@ type WebVideoTask = {
   keyFrameMs?: number;
   useGpu?: boolean;
   gpuProvider?: "auto" | "cpu" | "directml" | "cuda";
+  configId?: string;
+  generateConfigId?: boolean;
+  dryRunConfigOnly?: boolean;
 };
 
 type AnyImageTask = Omit<Task, "id"> | WebImageTask;
@@ -50,6 +53,10 @@ export function useSwapFace() {
     null
   );
   const [videoStage, setVideoStage] = useXState<string | null>("videoSwapStage", null);
+  const [videoTaskConfigId, setVideoTaskConfigId] = useXState<string | null>(
+    "videoTaskConfigId",
+    null
+  );
   const runTask = useCallback(
     async (create: (taskId: string) => Promise<TaskResult>) => {
       await kSwapFaceRefs.cancel?.();
@@ -78,6 +85,7 @@ export function useSwapFace() {
       setVideoProgress(0);
       setVideoEtaSeconds(null);
       setVideoStage(null);
+      setVideoTaskConfigId(null);
       return runTask((taskId: string) =>
         client.createTask({
           id: taskId,
@@ -85,11 +93,18 @@ export function useSwapFace() {
         })
       );
     },
-    [client, runTask, setVideoEtaSeconds, setVideoProgress, setVideoStage]
+    [
+      client,
+      runTask,
+      setVideoEtaSeconds,
+      setVideoProgress,
+      setVideoStage,
+      setVideoTaskConfigId,
+    ]
   );
 
   const swapVideo = useCallback(
-    async (task: AnyVideoTask) => {
+    async (task: AnyVideoTask): Promise<TaskResult> => {
       await kSwapFaceRefs.cancel?.();
 
       setIsSwapping(true);
@@ -97,6 +112,7 @@ export function useSwapFace() {
       setVideoProgress(0);
       setVideoEtaSeconds(null);
       setVideoStage(null);
+      setVideoTaskConfigId(null);
 
       const taskId = (kSwapFaceRefs.id++).toString();
       // 使用对象引用来控制轮询，确保可以从外部停止
@@ -166,10 +182,12 @@ export function useSwapFace() {
         }
       };
 
-      const { result, error } = await client.createVideoTask({
+      const { result, error, configId, status } = await client.createVideoTask({
         id: taskId,
         ...(task as any),
       });
+
+      setVideoTaskConfigId(configId ?? null);
 
       // If the backend returns immediately (queued), we don't have the result yet.
       // We rely on polling to get the result.
@@ -185,6 +203,11 @@ export function useSwapFace() {
         setError(error);
         setVideoStage("failed");
         pollingControl.shouldStop = true; // Stop polling
+      } else if ((task as any).dryRunConfigOnly || status === "config-only") {
+        pollingControl.shouldStop = true;
+        setVideoProgress(0);
+        setVideoEtaSeconds(null);
+        setVideoStage("config-only");
       }
 
       // Wait for polling to finish (it finishes when status is success/failed/cancelled)
@@ -198,11 +221,20 @@ export function useSwapFace() {
         setVideoStage("done");
         setOutput(finalResult);
         setIsSwapping(false);
-        return finalResult;
+        return {
+          result: finalResult,
+          configId: configId ?? null,
+          status: status ?? "success",
+        };
       }
 
       setIsSwapping(false);
-      return result;
+      return {
+        result: result ?? null,
+        error,
+        configId: configId ?? null,
+        status: status ?? null,
+      };
     },
     [
       client,
@@ -212,6 +244,7 @@ export function useSwapFace() {
       setVideoEtaSeconds,
       setVideoProgress,
       setVideoStage,
+      setVideoTaskConfigId,
     ]
   );
 
@@ -228,6 +261,7 @@ export function useSwapFace() {
     videoProgress,
     videoEtaSeconds,
     videoStage,
+    videoTaskConfigId,
     swapFace,
     swapVideo,
     cancel: () => kSwapFaceRefs.cancel?.(),

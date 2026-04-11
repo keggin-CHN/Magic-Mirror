@@ -289,6 +289,56 @@
   font-size: 12px;
 }
 
+.video-config-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.video-config-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.video-config-check input {
+  width: 14px;
+  height: 14px;
+}
+
+.video-config-label {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.video-config-input {
+  min-width: 220px;
+  flex: 1;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.video-config-id-tip {
+  margin-top: 6px;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.video-config-id-tip code {
+  color: #52c41a;
+}
+
 .video-progress-panel {
   position: absolute;
   bottom: -92px;

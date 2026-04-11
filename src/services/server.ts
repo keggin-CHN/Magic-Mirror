@@ -38,6 +38,9 @@ export interface VideoTask {
   keyFrameMs?: number;
   useGpu?: boolean;
   gpuProvider?: VideoGpuProvider;
+  configId?: string;
+  generateConfigId?: boolean;
+  dryRunConfigOnly?: boolean;
 }
 
 export interface VideoGpuMode {
@@ -62,6 +65,8 @@ export interface DetectFacesResult {
 export interface TaskResult {
   result: string | null;
   error?: string;
+  configId?: string | null;
+  status?: string | null;
 }
 
 export interface VideoTaskProgress {
@@ -141,6 +146,11 @@ class _Server {
             targetDir: await this.rootDir(),
           });
         } catch (error) {
+          const errorMessage = String(error ?? "");
+          if (errorMessage.toLowerCase().includes("ffmpeg")) {
+            console.error("[Server] ffmpeg 修复失败，终止启动:", error);
+            throw error;
+          }
           console.warn("[Server] Windows runtime 修复失败，继续尝试启动:", error);
         }
       }
@@ -412,7 +422,12 @@ class _Server {
         try {
           const data = JSON.parse(errorText);
           if (data?.error) {
-            return { result: null, error: data.error };
+            return {
+              result: null,
+              error: data.error,
+              configId: data.configId ?? null,
+              status: data.status ?? null,
+            };
           }
         } catch {
           // ignore
@@ -435,7 +450,11 @@ class _Server {
         return { result: null, error: data.error };
       }
 
-      return { result: data.result || null };
+      return {
+        result: data.result || null,
+        configId: data.configId ?? null,
+        status: data.status ?? null,
+      };
     } catch (error) {
       console.error("[Server] 视频换脸请求异常:", error);
       return { result: null, error: "network" };

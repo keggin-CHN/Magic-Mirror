@@ -48,6 +48,77 @@ After downloading the model files, the first launch may take some time.
 
 > The app should launch within 3 minutes. If it takes longer than 10 minutes to start, please refer to the [FAQ](./faq.md)
 
+## Headless Linux Server Deployment (Ubuntu/Debian/CentOS/RHEL)
+
+For supercomputing/server scenarios (no desktop required), deploy the web server and run tasks remotely.
+
+### 1) Prepare bundle on server
+
+Make sure your server directory contains:
+
+- `web_server.dist/`
+- `dist-web/`
+- optionally a release archive such as `magicmirror_web_*.tar.gz` or `web_linux_x86_64.zip`
+
+### 2) Run cross-distro installer
+
+Use the Linux installer script:
+
+```bash
+sudo INSTALL_DIR=/opt/magicmirror \
+  WEB_HOST=0.0.0.0 \
+  WEB_PORT=21859 \
+  WEB_UI_PORT=15129 \
+  SERVICE_NAME=magic-mirror-web \
+  SERVICE_USER=root \
+  VIDEO_TASK_CONFIG_SECRET='replace-with-a-strong-secret' \
+  bash ./scripts/install-server-linux.sh
+```
+
+Script path: `scripts/install-server-linux.sh`
+
+What it does:
+
+- auto-detects package manager (`apt` / `dnf` / `yum`)
+- installs runtime dependencies (`ffmpeg`, `nginx`, OpenCV runtime libs, etc.)
+- supports `systemd` service setup on modern Linux
+- supports fallback `nohup` startup when `systemd` is unavailable
+- configures reverse proxy: `UI -> /api -> WEB_PORT`
+
+### 3) Service management (systemd)
+
+If systemd exists:
+
+```bash
+sudo systemctl status magic-mirror-web --no-pager
+sudo systemctl restart magic-mirror-web
+sudo journalctl -u magic-mirror-web -f
+```
+
+### 4) Ports / firewall
+
+Open both ports in your cloud security group and host firewall:
+
+- `WEB_UI_PORT` (default `15129`) for browser UI
+- `WEB_PORT` (default `21859`) for backend API (usually proxied behind UI)
+
+### 5) “View Task ID Only” workflow (config-only)
+
+When you enable **View Task ID Only (Do not run locally)** in UI:
+
+- server creates a task config and returns `configId`
+- no local execution happens
+- later requests can submit this `configId` to execute on server
+
+Current implementation also supports signed config tokens (with TTL), so config IDs can be reused without relying only on in-memory process state.
+For production, always set a strong and stable `VIDEO_TASK_CONFIG_SECRET`.
+
+### 6) Legacy / old Linux notes
+
+- if `ffmpeg` is unavailable in default repos, install from your distro’s extra repo first
+- if `nginx` is not desired, set `SKIP_NGINX=1` and expose API port directly
+- if `systemd` is missing, script falls back to background process + pid/log file under `data/web/`
+
 ## Need help?
 
 Most issues are addressed in the [FAQ](./faq.md). If you need further assistance, please [submit an issue](https://github.com/idootop/MagicMirror/issues).

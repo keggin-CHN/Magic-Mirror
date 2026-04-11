@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import traceback
 from functools import lru_cache
@@ -357,6 +358,7 @@ def swap_face_regions_by_sources(input_path, face_sources, regions):
 def swap_face_video(
     input_path,
     face_path,
+    regions=None,
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
@@ -381,6 +383,7 @@ def swap_face_video(
             input_path,
             face_path,
             save_path,
+            regions=regions,
             progress_callback=progress_callback,
             stage_callback=stage_callback,
             use_gpu=use_gpu,
@@ -390,12 +393,9 @@ def swap_face_video(
         if not output_path or not os.path.exists(output_path):
             raise RuntimeError("video-output-missing")
 
-        # 尝试使用 ffmpeg 把原视频音频复用到输出（OpenCV 写入的视频默认没有音轨）
+        # 尝试把原视频音轨复用到输出（原视频有音轨时失败应报错，避免静默无声）
         _emit_stage(stage_callback, "muxing-audio")
-        try:
-            _try_mux_audio(input_path, output_path)
-        except Exception as e:
-            print(f"[WARN] 音频复用失败，将返回无音轨视频: {str(e)}")
+        _mux_audio_or_raise(input_path, output_path)
 
         _emit_stage(stage_callback, "finalizing")
         print(f"[SUCCESS] 视频换脸成功: {output_path}")
@@ -410,6 +410,7 @@ def _swap_face_video(
     input_path,
     face_path,
     save_path,
+    regions=None,
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
@@ -499,6 +500,12 @@ def _swap_face_video(
             height, width = frame.shape[:2]
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             print(f"[INFO] 从第一帧获取尺寸: {width}x{height}")
+
+        normalized_regions = _normalize_regions(regions, width, height) if regions else []
+        if regions and not normalized_regions:
+            raise RuntimeError("invalid-regions")
+        if normalized_regions:
+            print(f"[INFO] 单人视频换脸启用区域限制: {len(normalized_regions)} 个选区")
 
         print(f"[INFO] 创建输出视频: {save_path}")
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -614,29 +621,47 @@ def _swap_face_video(
                         )
 
                     try:
-                        with worker_lock:
-                            reference_face = worker_tf.get_one_face(frame)
-
-                        if reference_face is None:
-                            if not _queue_put_with_stop(
-                                write_queue,
-                                (frame_idx, frame),
-                                timeout=1,
-                                warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
-                            ):
-                                break
-                            with stats_lock:
-                                stats["failed_count"] += 1
-                            continue
-
-                        with worker_lock:
-                            output_frame = worker_tf.swap_face(
-                                vision_frame=frame,
-                                reference_face=reference_face,
-                                destination_face=destination_face,
+                        if normalized_regions:
+                            out, swapped_regions = _swap_face_in_regions_for_frame(
+                                frame,
+                                normalized_regions,
+                                worker_tf,
+                                worker_lock,
+                                destination_face,
                             )
+                            if swapped_regions <= 0:
+                                with stats_lock:
+                                    stats["failed_count"] += 1
+                        else:
+                            with worker_lock:
+                                reference_face = worker_tf.get_one_face(frame)
 
-                        out = output_frame if output_frame is not None else frame
+                            if reference_face is None:
+                                if not _queue_put_with_stop(
+                                    write_queue,
+                                    (frame_idx, frame),
+                                    timeout=1,
+                                    warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
+                                ):
+                                    break
+                                with stats_lock:
+                                    stats["failed_count"] += 1
+                                continue
+
+                            with worker_lock:
+                                output_frame = worker_tf.swap_face(
+                                    vision_frame=frame,
+                                    reference_face=reference_face,
+                                    destination_face=destination_face,
+                                )
+
+                            out = output_frame if output_frame is not None else frame
+                            with stats_lock:
+                                if output_frame is not None:
+                                    stats["processed_count"] += 1
+                                else:
+                                    stats["failed_count"] += 1
+
                         out = _normalize_output_frame(out, width, height)
                         if not _queue_put_with_stop(
                             write_queue,
@@ -645,9 +670,6 @@ def _swap_face_video(
                             warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
                         ):
                             break
-
-                        with stats_lock:
-                            stats["processed_count"] += 1
 
                     except Exception as e:
                         print(f"[WARN] 第{current_frame}帧处理失败: {str(e)}")
@@ -866,6 +888,41 @@ def _normalize_regions(regions, width, height):
     return normalized
 
 
+def _swap_face_in_regions_for_frame(
+    frame,
+    normalized_regions,
+    worker_tf,
+    worker_lock,
+    destination_face,
+):
+    out = frame.copy()
+    swapped_count = 0
+
+    for x, y, w, h in normalized_regions:
+        crop = frame[y : y + h, x : x + w]
+        if crop.size == 0:
+            continue
+
+        with worker_lock:
+            reference_face = worker_tf.get_one_face(crop)
+        if reference_face is None:
+            continue
+
+        with worker_lock:
+            swapped_crop = worker_tf.swap_face(
+                vision_frame=crop,
+                reference_face=reference_face,
+                destination_face=destination_face,
+            )
+        if swapped_crop is None:
+            continue
+
+        out[y : y + h, x : x + w] = swapped_crop
+        swapped_count += 1
+
+    return out, swapped_count
+
+
 def _normalize_regions_with_face_source(regions, width, height):
     normalized = []
     if not regions:
@@ -918,12 +975,76 @@ def _get_output_video_path(file_name):
     return base_name + "_output.mp4"
 
 
+def _resolve_ffmpeg_binary() -> str | None:
+    """优先解析 ffmpeg 可执行文件路径（支持打包目录兜底）。"""
+    env_ffmpeg = os.environ.get("MAGIC_FFMPEG_PATH")
+    if env_ffmpeg and os.path.exists(env_ffmpeg):
+        return env_ffmpeg
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        return ffmpeg
+
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable or ""))
+    candidate_names = ["ffmpeg.exe", "ffmpeg"] if os.name == "nt" else ["ffmpeg"]
+    for name in candidate_names:
+        candidate = os.path.join(exe_dir, name)
+        if os.path.exists(candidate):
+            return candidate
+
+    # 开发环境兜底：项目根目录下若放置了 ffmpeg
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+    for name in candidate_names:
+        candidate = os.path.join(base_dir, name)
+        if os.path.exists(candidate):
+            return candidate
+
+    return None
+
+
+def _resolve_ffprobe_binary() -> str | None:
+    """优先解析 ffprobe 可执行文件路径（支持与 ffmpeg 同目录）。"""
+    env_ffprobe = os.environ.get("MAGIC_FFPROBE_PATH")
+    if env_ffprobe and os.path.exists(env_ffprobe):
+        return env_ffprobe
+
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        return ffprobe
+
+    ffmpeg = _resolve_ffmpeg_binary()
+    if ffmpeg:
+        sibling = os.path.join(
+            os.path.dirname(ffmpeg), "ffprobe.exe" if os.name == "nt" else "ffprobe"
+        )
+        if os.path.exists(sibling):
+            return sibling
+
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable or ""))
+    candidate_names = ["ffprobe.exe", "ffprobe"] if os.name == "nt" else ["ffprobe"]
+    for name in candidate_names:
+        candidate = os.path.join(exe_dir, name)
+        if os.path.exists(candidate):
+            return candidate
+
+    # 开发环境兜底：项目根目录下若放置了 ffprobe
+    base_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
+    )
+    for name in candidate_names:
+        candidate = os.path.join(base_dir, name)
+        if os.path.exists(candidate):
+            return candidate
+
+    return None
+
+
 def _resolve_total_frames(input_video_path: str, fps: float, current_total: int) -> int:
     """优先使用 OpenCV 帧数；若为 0，则尝试用 ffprobe 回退估算。"""
     if current_total and current_total > 0:
         return int(current_total)
 
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = _resolve_ffprobe_binary()
     if not ffprobe:
         print("[WARN] 未找到 ffprobe，无法回退估算总帧数")
         return 0
@@ -985,37 +1106,98 @@ def _resolve_total_frames(input_video_path: str, fps: float, current_total: int)
     return 0
 
 
-def _try_mux_audio(input_video_path: str, output_video_path: str):
-    """如果系统中存在 ffmpeg，尝试把原视频音频复用到输出视频中（失败则忽略）。"""
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
+def _input_has_audio_stream(input_video_path: str) -> bool | None:
+    """检测输入视频是否包含音轨。True/False 表示可确定，None 表示无法判断。"""
+    ffprobe = _resolve_ffprobe_binary()
+    if not ffprobe:
+        print("[WARN] 未找到 ffprobe，无法预检输入视频音轨")
+        return None
+
+    try:
+        cmd = [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "json",
+            input_video_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            print("[WARN] ffprobe 预检音轨失败，将继续尝试复用音频")
+            return None
+
+        payload = json.loads(proc.stdout or "{}")
+        streams = payload.get("streams")
+        if isinstance(streams, list):
+            return len(streams) > 0
+    except Exception as e:
+        print(f"[WARN] ffprobe 预检音轨异常: {str(e)}")
+    return None
+
+
+def _mux_audio_or_raise(input_video_path: str, output_video_path: str):
+    """原视频有音轨时，音频复用失败应明确报错；无音轨时允许跳过。"""
+    has_audio = _input_has_audio_stream(input_video_path)
+    if has_audio is False:
+        print("[INFO] 原视频无音轨，跳过音频复用")
         return
 
+    try:
+        _try_mux_audio(input_video_path, output_video_path)
+    except Exception as e:
+        print(f"[ERROR] 音频复用失败: {str(e)}")
+        raise RuntimeError("audio-mux-failed") from e
+
+
+def _try_mux_audio(input_video_path: str, output_video_path: str):
+    """使用 ffmpeg 将原视频音轨复用到输出视频（优先 copy，失败回退 aac 转码）。"""
+    ffmpeg = _resolve_ffmpeg_binary()
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg-not-found")
+
     tmp_path = os.path.splitext(output_video_path)[0] + "_mux_tmp.mp4"
-    cmd = [
-        ffmpeg,
-        "-y",
-        "-i",
-        output_video_path,
-        "-i",
-        input_video_path,
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a?",
-        "-c:v",
-        "copy",
-        "-c:a",
-        "aac",
-        "-shortest",
-        tmp_path,
-    ]
+    errors = []
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {proc.stderr[-500:]}")
+    for audio_codec in ("copy", "aac"):
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-i",
+            output_video_path,
+            "-i",
+            input_video_path,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a?",
+            "-c:v",
+            "copy",
+            "-c:a",
+            audio_codec,
+            "-shortest",
+            tmp_path,
+        ]
 
-    os.replace(tmp_path, output_video_path)
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode == 0:
+            os.replace(tmp_path, output_video_path)
+            return
+
+        err_tail = (proc.stderr or "")[-320:]
+        errors.append(f"{audio_codec}: {err_tail}")
+
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+    raise RuntimeError("ffmpeg failed: " + " | ".join(errors))
 
 
 def _get_model_path(file_name: str):
@@ -1161,10 +1343,7 @@ def swap_face_video_by_sources(
             raise RuntimeError("video-output-missing")
 
         _emit_stage(stage_callback, "muxing-audio")
-        try:
-            _try_mux_audio(input_path, output_path)
-        except Exception as e:
-            print(f"[WARN] 音频复用失败，将返回无音轨视频: {str(e)}")
+        _mux_audio_or_raise(input_path, output_path)
 
         _emit_stage(stage_callback, "finalizing")
         return output_path
