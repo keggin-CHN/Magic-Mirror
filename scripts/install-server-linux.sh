@@ -16,13 +16,22 @@ fi
 INSTALL_DIR="${INSTALL_DIR:-$PROJECT_ROOT}"
 WEB_PORT="${WEB_PORT:-21859}"
 WEB_UI_PORT="${WEB_UI_PORT:-15129}"
-WEB_HOST="${WEB_HOST:-0.0.0.0}"
+TERMINAL_ONLY_MODE="${TERMINAL_ONLY_MODE:-0}"
+WEB_HOST="${WEB_HOST:-}"
 SERVICE_NAME="${SERVICE_NAME:-magic-mirror-web}"
 SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-root}}"
 WEB_SERVER_DIR="${WEB_SERVER_DIR:-$INSTALL_DIR/web_server.dist}"
 USE_ALIYUN_MIRROR="${USE_ALIYUN_MIRROR:-0}"
-SKIP_NGINX="${SKIP_NGINX:-0}"
+SKIP_NGINX="${SKIP_NGINX:-}"
 VIDEO_TASK_CONFIG_SECRET="${VIDEO_TASK_CONFIG_SECRET:-magic-mirror-config-secret}"
+
+if [ "$TERMINAL_ONLY_MODE" = "1" ]; then
+  WEB_HOST="${WEB_HOST:-127.0.0.1}"
+  SKIP_NGINX="${SKIP_NGINX:-1}"
+else
+  WEB_HOST="${WEB_HOST:-0.0.0.0}"
+  SKIP_NGINX="${SKIP_NGINX:-0}"
+fi
 
 PKG_MANAGER=""
 
@@ -376,11 +385,14 @@ EOF
 
 print_summary() {
   log "Done."
+  if [ "$TERMINAL_ONLY_MODE" = "1" ]; then
+    log "Terminal-only mode enabled (no public web entry by default)."
+  fi
   log "API endpoint: http://${WEB_HOST}:${WEB_PORT}"
   if [ "$SKIP_NGINX" != "1" ]; then
     log "Web UI endpoint: http://${WEB_HOST}:${WEB_UI_PORT}"
   else
-    log "Nginx disabled. You can still use API directly on WEB_PORT."
+    log "Nginx disabled."
   fi
   log "Service name: ${SERVICE_NAME}"
   log "Install dir: ${INSTALL_DIR}"
@@ -401,10 +413,16 @@ main() {
     err "Please extract official web bundle first."
     exit 1
   fi
-  if [ ! -f "$INSTALL_DIR/dist-web/index.html" ]; then
-    err "dist-web not found in $INSTALL_DIR/dist-web"
-    err "Please extract official web bundle first."
-    exit 1
+  if [ "$SKIP_NGINX" != "1" ]; then
+    if [ ! -f "$INSTALL_DIR/dist-web/index.html" ]; then
+      err "dist-web not found in $INSTALL_DIR/dist-web"
+      err "Please extract official web bundle first."
+      exit 1
+    fi
+  else
+    if [ ! -f "$INSTALL_DIR/dist-web/index.html" ]; then
+      warn "dist-web not found, but SKIP_NGINX=1 so UI bundle is optional."
+    fi
   fi
 
   ensure_runtime_layout

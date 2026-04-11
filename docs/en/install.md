@@ -113,10 +113,48 @@ When you enable **View Task ID Only (Do not run locally)** in UI:
 Current implementation also supports signed config tokens (with TTL), so config IDs can be reused without relying only on in-memory process state.
 For production, always set a strong and stable `VIDEO_TASK_CONFIG_SECRET`.
 
-### 6) Legacy / old Linux notes
+### 6) Terminal-only mode for HPC (no exposed ports)
+
+If your cluster cannot expose ports (SSH/Slurm only), use private mode:
+
+```bash
+sudo INSTALL_DIR=/opt/magicmirror \
+  TERMINAL_ONLY_MODE=1 \
+  WEB_HOST=127.0.0.1 \
+  SKIP_NGINX=1 \
+  VIDEO_TASK_CONFIG_SECRET='replace-with-a-strong-secret' \
+  bash ./scripts/install-server-linux.sh
+```
+
+Then run the config directly from terminal without HTTP:
+
+```bash
+python3 ./scripts/run-task-config-cli.py \
+  --config-id 'cfg1.xxxxx.yyyyy' \
+  --input-video /path/to/input.mp4 \
+  --target-face /path/to/face.jpg \
+  --output /path/to/output.mp4
+```
+
+For multi-face config IDs, provide source mapping:
+
+```bash
+python3 ./scripts/run-task-config-cli.py \
+  --config-id 'cfg1.xxxxx.yyyyy' \
+  --input-video /path/to/input.mp4 \
+  --face-source personA=/path/to/a.jpg \
+  --face-source personB=/path/to/b.jpg \
+  --output /path/to/output.mp4
+```
+
+You can also pass `--library-map-json /path/to/map.json`, where JSON is either:
+- object: `{ "personA": "/path/a.jpg", "personB": "/path/b.jpg" }`
+- list: `[{"id":"personA","path":"/path/a.jpg"}]`
+
+### 7) Legacy / old Linux notes
 
 - if `ffmpeg` is unavailable in default repos, install from your distro’s extra repo first
-- if `nginx` is not desired, set `SKIP_NGINX=1` and expose API port directly
+- if `nginx` is not desired, set `SKIP_NGINX=1`
 - if `systemd` is missing, script falls back to background process + pid/log file under `data/web/`
 
 ## Need help?

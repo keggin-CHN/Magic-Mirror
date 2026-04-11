@@ -118,10 +118,48 @@ sudo journalctl -u magic-mirror-web -f
 当前实现已支持带签名且带 TTL 的配置 token，不再只依赖进程内内存态 ID。
 生产环境务必设置稳定且强度足够的 `VIDEO_TASK_CONFIG_SECRET`。
 
-### 6）老系统兼容建议
+### 6）超算纯终端模式（不暴露端口）
+
+如果你的超算/集群无法暴露端口（仅 SSH/作业系统），可以启用私有终端模式：
+
+```bash
+sudo INSTALL_DIR=/opt/magicmirror \
+  TERMINAL_ONLY_MODE=1 \
+  WEB_HOST=127.0.0.1 \
+  SKIP_NGINX=1 \
+  VIDEO_TASK_CONFIG_SECRET='请替换为强密钥' \
+  bash ./scripts/install-server-linux.sh
+```
+
+随后可直接在终端消费 `configId` 执行任务（无需 HTTP）：
+
+```bash
+python3 ./scripts/run-task-config-cli.py \
+  --config-id 'cfg1.xxxxx.yyyyy' \
+  --input-video /path/to/input.mp4 \
+  --target-face /path/to/face.jpg \
+  --output /path/to/output.mp4
+```
+
+多人配置可这样指定素材映射：
+
+```bash
+python3 ./scripts/run-task-config-cli.py \
+  --config-id 'cfg1.xxxxx.yyyyy' \
+  --input-video /path/to/input.mp4 \
+  --face-source personA=/path/to/a.jpg \
+  --face-source personB=/path/to/b.jpg \
+  --output /path/to/output.mp4
+```
+
+也支持 `--library-map-json /path/to/map.json`，JSON 结构可为：
+- 对象：`{ "personA": "/path/a.jpg", "personB": "/path/b.jpg" }`
+- 列表：`[{"id":"personA","path":"/path/a.jpg"}]`
+
+### 7）老系统兼容建议
 
 - 默认仓库没有 `ffmpeg` 时，请先启用发行版扩展仓库再安装
-- 不想使用 nginx 时可设置 `SKIP_NGINX=1`，直接暴露 API 端口
+- 不想使用 nginx 时可设置 `SKIP_NGINX=1`
 - 无 `systemd` 时，脚本会写入 `data/web/` 下的 pid/log 并后台运行
 
 ## 遇到问题？
