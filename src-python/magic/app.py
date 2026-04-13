@@ -1,6 +1,3 @@
-import base64
-import hashlib
-import hmac
 import json
 import os
 import threading
@@ -17,10 +14,22 @@ from .face import (
     get_gpu_acceleration_modes,
     load_models,
     swap_face,
+    swap_face_deep,
     swap_face_regions,
     swap_face_regions_by_sources,
     swap_face_video,
     swap_face_video_by_sources,
+    swap_face_video_deep,
+)
+from .task_config import (
+    build_video_task_config_token,
+    compute_file_sha256,
+    get_expected_face_source_sha256_map,
+    get_expected_input_video_sha256,
+    get_expected_target_face_sha256,
+    get_expected_target_faces_sha256_map,
+    parse_video_task_config_token,
+    verify_file_sha256,
 )
 
 app = Bottle()
@@ -112,76 +121,16 @@ def _clone_json_payload(payload):
     return json.loads(json.dumps(payload, ensure_ascii=False))
 
 
-def _b64url_encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-
-
-def _b64url_decode(encoded: str) -> bytes:
-    padding = "=" * (-len(encoded) % 4)
-    return base64.urlsafe_b64decode((encoded + padding).encode("ascii"))
-
-
-def _sign_video_task_config_payload(payload_b64: str) -> str:
-    return hmac.new(
-        VIDEO_TASK_CONFIG_SECRET.encode("utf-8"),
-        payload_b64.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-
 def _build_video_task_config_token(payload: dict) -> str:
-    body = {
-        "v": 1,
-        "iat": int(time.time()),
-        "config": _clone_json_payload(payload),
-    }
-    raw = json.dumps(
-        body, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
-    payload_b64 = _b64url_encode(raw)
-    signature = _sign_video_task_config_payload(payload_b64)
-    return f"{VIDEO_TASK_CONFIG_TOKEN_PREFIX}.{payload_b64}.{signature}"
+    return build_video_task_config_token(payload, VIDEO_TASK_CONFIG_SECRET)
 
 
 def _parse_video_task_config_token(config_id: str):
-    if not isinstance(config_id, str):
-        return None
-    prefix = f"{VIDEO_TASK_CONFIG_TOKEN_PREFIX}."
-    if not config_id.startswith(prefix):
-        return None
-    parts = config_id.split(".", 2)
-    if len(parts) != 3:
-        return None
-
-    _, payload_b64, signature = parts
-    expected_signature = _sign_video_task_config_payload(payload_b64)
-    if not hmac.compare_digest(signature, expected_signature):
-        return None
-
-    try:
-        raw = _b64url_decode(payload_b64)
-        body = json.loads(raw.decode("utf-8"))
-    except Exception:
-        return None
-
-    if not isinstance(body, dict):
-        return None
-
-    issued_at = body.get("iat")
-    try:
-        issued_at = float(issued_at)
-    except (TypeError, ValueError):
-        return None
-
-    if issued_at <= 0:
-        return None
-    if time.time() - issued_at > VIDEO_TASK_CONFIG_TTL_SECONDS:
-        return None
-
-    config = body.get("config")
-    if not isinstance(config, dict):
-        return None
-    return _clone_json_payload(config)
+    return parse_video_task_config_token(
+        str(config_id),
+        VIDEO_TASK_CONFIG_SECRET,
+        legacy_ttl_seconds=VIDEO_TASK_CONFIG_TTL_SECONDS,
+    )
 
 
 def _cleanup_video_task_configs():
@@ -225,6 +174,142 @@ def _get_video_task_config(config_id: str):
     return _parse_video_task_config_token(str(config_id))
 
 
+def _extract_stored_path(file_entry):
+    if isinstance(file_entry, str) and file_entry:
+        return file_entry
+    if isinstance(file_entry, dict):
+        path = file_entry.get("path")
+        if isinstance(path, str) and path:
+            return path
+    return None
+
+
+def _extract_stored_face_sources(face_sources):
+    if not isinstance(face_sources, list):
+        return None
+
+    resolved = []
+    for source in face_sources:
+        if not isinstance(source, dict):
+            return None
+        source_id = source.get("id")
+        source_path = _extract_stored_path(source)
+        if source_id is None or not source_path:
+            return None
+        resolved.append({"id": str(source_id), "path": source_path})
+
+    return resolved or None
+
+
+def _build_video_task_config_payload(
+    *,
+    input_video: str,
+    target_face: str | None = None,
+    target_faces: list[dict] | None = None,
+    deep_swap_mode: bool = False,
+    segment_duration_sec: int = 12,
+    segment_overlap_frames: int = 6,
+    face_sources: list[dict] | None = None,
+    regions=None,
+    key_frame_ms: int = 0,
+    use_gpu: bool = False,
+    gpu_provider: str = "auto",
+):
+    payload = {
+        "inputVideo": {
+            "path": input_video,
+            "sha256": compute_file_sha256(input_video),
+        },
+        "regions": regions if isinstance(regions, list) else None,
+        "keyFrameMs": max(0, int(key_frame_ms or 0)),
+        "useGpu": bool(use_gpu),
+        "gpuProvider": str(gpu_provider or "auto").strip().lower(),
+    }
+
+    if isinstance(face_sources, list) and len(face_sources) > 0:
+        normalized_sources = []
+        for source in face_sources:
+            if not isinstance(source, dict):
+                raise RuntimeError("missing-face-sources")
+            source_id = source.get("id")
+            source_path = source.get("path")
+            if source_id is None or not source_path:
+                raise RuntimeError("missing-face-sources")
+            normalized_sources.append(
+                {
+                    "id": str(source_id),
+                    "path": source_path,
+                    "sha256": compute_file_sha256(source_path),
+                }
+            )
+        payload["faceSources"] = normalized_sources
+    elif isinstance(target_faces, list) and len(target_faces) > 0:
+        normalized_targets = []
+        for idx, target in enumerate(target_faces):
+            if not isinstance(target, dict):
+                raise RuntimeError("missing-params")
+            target_id = target.get("id")
+            target_path = target.get("path")
+            if not target_path:
+                raise RuntimeError("missing-params")
+            normalized_targets.append(
+                {
+                    "id": str(target_id or f"target-{idx + 1}"),
+                    "path": target_path,
+                    "sha256": compute_file_sha256(target_path),
+                }
+            )
+        payload["targetFaces"] = normalized_targets
+        payload["deepSwapMode"] = bool(deep_swap_mode or True)
+        payload["segmentDurationSec"] = max(1, int(segment_duration_sec or 1))
+        payload["segmentOverlapFrames"] = max(0, int(segment_overlap_frames or 0))
+    else:
+        if not target_face:
+            raise RuntimeError("missing-params")
+        payload["targetFace"] = {
+            "path": target_face,
+            "sha256": compute_file_sha256(target_face),
+        }
+
+    return payload
+
+
+def _ensure_video_task_config_matches(
+    config: dict,
+    input_video: str,
+    *,
+    target_face: str | None = None,
+    target_face_map: dict[str, str] | None = None,
+    source_map: dict[str, str] | None = None,
+):
+    expected_input_sha256 = get_expected_input_video_sha256(config)
+    if expected_input_sha256 and not verify_file_sha256(input_video, expected_input_sha256):
+        raise RuntimeError("config-mismatch")
+
+    expected_target_sha256 = get_expected_target_face_sha256(config)
+    if expected_target_sha256:
+        if not target_face or not verify_file_sha256(target_face, expected_target_sha256):
+            raise RuntimeError("config-mismatch")
+
+    expected_target_face_sha256_map = get_expected_target_faces_sha256_map(config)
+    if expected_target_face_sha256_map:
+        if not isinstance(target_face_map, dict):
+            raise RuntimeError("config-mismatch")
+        for target_id, expected_sha256 in expected_target_face_sha256_map.items():
+            target_path = target_face_map.get(str(target_id))
+            if not target_path or not verify_file_sha256(target_path, expected_sha256):
+                raise RuntimeError("config-mismatch")
+
+    expected_source_sha256_map = get_expected_face_source_sha256_map(config)
+    if expected_source_sha256_map:
+        if not isinstance(source_map, dict):
+            raise RuntimeError("config-mismatch")
+        for source_id, expected_sha256 in expected_source_sha256_map.items():
+            source_path = source_map.get(str(source_id))
+            if not source_path or not verify_file_sha256(source_path, expected_sha256):
+                raise RuntimeError("config-mismatch")
+
+
 def _ext(path: str) -> str:
     return os.path.splitext(path)[1].lower()
 
@@ -251,6 +336,7 @@ def _simplify_task_error(err: object) -> str:
         "video-frame-read-failed",
         "output-write-failed",
         "invalid-regions",
+        "config-mismatch",
         "config-not-found",
     ]
     for code in codes:
@@ -314,7 +400,10 @@ def create_task():
         target_face = body.get("targetFace")
         regions = body.get("regions")
         face_sources = body.get("faceSources")
+        target_faces = body.get("targetFaces")
+        deep_swap_mode = bool(body.get("deepSwapMode", False))
         has_face_sources = "faceSources" in body
+        has_target_faces = "targetFaces" in body or deep_swap_mode
 
         if not all([task_id, input_image]):
             response.status = 400
@@ -382,6 +471,37 @@ def create_task():
                     lambda: swap_face(input_image, fallback_face),
                     task_id=task_id,
                 )
+        elif has_target_faces:
+            if not isinstance(target_faces, list) or len(target_faces) == 0:
+                response.status = 400
+                return {"error": "missing-params"}
+
+            target_face_paths = []
+            for target in target_faces:
+                if isinstance(target, str):
+                    target_path = target
+                elif isinstance(target, dict):
+                    target_path = target.get("path")
+                else:
+                    target_path = None
+                if not target_path:
+                    response.status = 400
+                    return {"error": "missing-params"}
+                try:
+                    _validate_file(
+                        target_path,
+                        ALLOWED_IMAGE_EXTS,
+                        missing_code="unsupported-image-format",
+                    )
+                except (RuntimeError, FileNotFoundError) as e:
+                    response.status = 400
+                    return {"error": _simplify_task_error(e)}
+                target_face_paths.append(target_path)
+
+            res, err = AsyncTask.run(
+                lambda: swap_face_deep(input_image, target_face_paths, regions=regions),
+                task_id=task_id,
+            )
         else:
             if not target_face:
                 response.status = 400
@@ -528,8 +648,12 @@ def create_video_task():
         task_id = body.get("id")
         input_video = body.get("inputVideo")
         target_face = body.get("targetFace")
+        target_faces = body.get("targetFaces")
         regions = body.get("regions")
         face_sources = body.get("faceSources")
+        deep_swap_mode = bool(body.get("deepSwapMode", False))
+        segment_duration_sec = body.get("segmentDurationSec", 12)
+        segment_overlap_frames = body.get("segmentOverlapFrames", 6)
         config_id = body.get("configId")
         generate_config_id = bool(body.get("generateConfigId", False))
         dry_run_config_only = bool(body.get("dryRunConfigOnly", False))
@@ -537,6 +661,7 @@ def create_video_task():
         use_gpu = body.get("useGpu", False)
         gpu_provider = str(body.get("gpuProvider", "auto") or "auto").strip().lower()
 
+        stored_config = None
         if config_id:
             stored_config = _get_video_task_config(str(config_id))
             if not isinstance(stored_config, dict):
@@ -544,11 +669,23 @@ def create_video_task():
                 return {"error": "config-not-found"}
 
             if target_face is None:
-                target_face = stored_config.get("targetFace")
+                target_face = _extract_stored_path(stored_config.get("targetFace"))
+            if target_faces is None and "targetFaces" in stored_config:
+                target_faces = _extract_stored_face_sources(stored_config.get("targetFaces"))
             if face_sources is None and "faceSources" in stored_config:
-                face_sources = stored_config.get("faceSources")
+                face_sources = _extract_stored_face_sources(stored_config.get("faceSources"))
             if regions is None and "regions" in stored_config:
                 regions = stored_config.get("regions")
+            if "deepSwapMode" not in body:
+                deep_swap_mode = bool(stored_config.get("deepSwapMode", deep_swap_mode))
+            if "segmentDurationSec" not in body:
+                segment_duration_sec = stored_config.get(
+                    "segmentDurationSec", segment_duration_sec
+                )
+            if "segmentOverlapFrames" not in body:
+                segment_overlap_frames = stored_config.get(
+                    "segmentOverlapFrames", segment_overlap_frames
+                )
             if "keyFrameMs" not in body:
                 key_frame_ms = stored_config.get("keyFrameMs", key_frame_ms)
             if "useGpu" not in body:
@@ -578,7 +715,20 @@ def create_video_task():
             key_frame_ms = 0
         key_frame_ms = max(0, key_frame_ms)
 
+        try:
+            segment_duration_sec = int(float(segment_duration_sec or 12))
+        except (TypeError, ValueError):
+            segment_duration_sec = 12
+        segment_duration_sec = max(1, segment_duration_sec)
+
+        try:
+            segment_overlap_frames = int(float(segment_overlap_frames or 6))
+        except (TypeError, ValueError):
+            segment_overlap_frames = 6
+        segment_overlap_frames = max(0, segment_overlap_frames)
+
         has_face_sources = face_sources is not None
+        has_target_faces = (target_faces is not None) or deep_swap_mode
 
         print("[API] 收到视频换脸请求:")
         print(f"  - task_id: {task_id}")
@@ -602,6 +752,15 @@ def create_video_task():
         except (RuntimeError, FileNotFoundError) as e:
             response.status = 400
             return {"error": _simplify_task_error(e)}
+
+        source_map = None
+        target_face_path = None
+        target_face_map = None
+        target_face_items = None
+
+        if has_face_sources and has_target_faces:
+            response.status = 400
+            return {"error": "missing-params"}
 
         if has_face_sources:
             if not isinstance(face_sources, list) or len(face_sources) == 0:
@@ -641,17 +800,86 @@ def create_video_task():
                 if not source_id or str(source_id) not in source_map:
                     response.status = 400
                     return {"error": "invalid-face-source-binding"}
+        elif has_target_faces:
+            if not isinstance(target_faces, list) or len(target_faces) == 0:
+                response.status = 400
+                return {"error": "missing-params"}
 
-        config_payload = {
-            "regions": regions if isinstance(regions, list) else None,
-            "keyFrameMs": key_frame_ms,
-            "useGpu": bool(use_gpu),
-            "gpuProvider": gpu_provider,
-        }
-        if has_face_sources:
-            config_payload["faceSources"] = face_sources
+            target_face_items = []
+            target_face_map = {}
+            for index, target in enumerate(target_faces):
+                if isinstance(target, str):
+                    target_id = f"target-{index + 1}"
+                    target_path = target
+                elif isinstance(target, dict):
+                    target_id = str(target.get("id") or f"target-{index + 1}")
+                    target_path = target.get("path")
+                else:
+                    target_id = None
+                    target_path = None
+
+                if not target_id or not target_path:
+                    response.status = 400
+                    return {"error": "missing-params"}
+
+                try:
+                    _validate_file(
+                        target_path,
+                        ALLOWED_IMAGE_EXTS,
+                        missing_code="unsupported-image-format",
+                    )
+                except (RuntimeError, FileNotFoundError) as e:
+                    response.status = 400
+                    return {"error": _simplify_task_error(e)}
+
+                target_face_items.append({"id": str(target_id), "path": target_path})
+                target_face_map[str(target_id)] = target_path
         else:
-            config_payload["targetFace"] = target_face
+            if not target_face:
+                response.status = 400
+                return {"error": "missing-params"}
+
+            target_face_path = target_face
+            try:
+                _validate_file(
+                    target_face_path,
+                    ALLOWED_IMAGE_EXTS,
+                    missing_code="unsupported-image-format",
+                )
+            except (RuntimeError, FileNotFoundError) as e:
+                response.status = 400
+                return {"error": _simplify_task_error(e)}
+
+        if config_id:
+            try:
+                _ensure_video_task_config_matches(
+                    stored_config,
+                    input_video,
+                    target_face=target_face_path,
+                    target_face_map=target_face_map,
+                    source_map=source_map,
+                )
+            except RuntimeError as e:
+                response.status = 400
+                return {"error": _simplify_task_error(e)}
+
+        try:
+            config_payload = _build_video_task_config_payload(
+                input_video=input_video,
+                target_face=target_face_path,
+                target_faces=target_face_items if has_target_faces else None,
+                deep_swap_mode=deep_swap_mode,
+                segment_duration_sec=segment_duration_sec,
+                segment_overlap_frames=segment_overlap_frames,
+                face_sources=face_sources if has_face_sources else None,
+                regions=regions,
+                key_frame_ms=key_frame_ms,
+                use_gpu=use_gpu,
+                gpu_provider=gpu_provider,
+            )
+        except (RuntimeError, FileNotFoundError) as e:
+            response.status = 400
+            return {"error": _simplify_task_error(e)}
 
         active_config_id = None
         if config_id:
@@ -727,25 +955,25 @@ def create_video_task():
                 use_gpu=use_gpu,
                 gpu_provider=gpu_provider,
             )
+        elif has_target_faces:
+            task_callable = lambda: swap_face_video_deep(
+                input_video,
+                [item["path"] for item in (target_face_items or [])],
+                regions=regions,
+                key_frame_ms=key_frame_ms,
+                progress_callback=_on_progress,
+                stage_callback=_on_stage,
+                use_gpu=use_gpu,
+                gpu_provider=gpu_provider,
+                segment_duration_sec=segment_duration_sec,
+                segment_overlap_frames=segment_overlap_frames,
+            )
         else:
-            if not target_face:
-                response.status = 400
-                return {"error": "missing-params"}
-
-            try:
-                _validate_file(
-                    target_face,
-                    ALLOWED_IMAGE_EXTS,
-                    missing_code="unsupported-image-format",
-                )
-            except (RuntimeError, FileNotFoundError) as e:
-                response.status = 400
-                return {"error": _simplify_task_error(e)}
-
             task_callable = lambda: swap_face_video(
                 input_video,
-                target_face,
+                target_face_path,
                 regions=regions,
+                key_frame_ms=key_frame_ms,
                 progress_callback=_on_progress,
                 stage_callback=_on_stage,
                 use_gpu=use_gpu,

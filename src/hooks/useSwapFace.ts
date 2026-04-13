@@ -22,6 +22,8 @@ const kSwapFaceRefs: {
 type WebImageTask = {
   inputFileId: string;
   targetFaceId?: string;
+  targetFaces?: FaceSource[];
+  deepSwapMode?: boolean;
   regions?: Region[];
   faceSources?: FaceSource[];
 };
@@ -29,6 +31,10 @@ type WebImageTask = {
 type WebVideoTask = {
   inputFileId: string;
   targetFaceId?: string;
+  targetFaces?: FaceSource[];
+  deepSwapMode?: boolean;
+  segmentDurationSec?: number;
+  segmentOverlapFrames?: number;
   regions?: Region[];
   faceSources?: FaceSource[];
   keyFrameMs?: number;

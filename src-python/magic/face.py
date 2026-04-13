@@ -8,8 +8,9 @@ import traceback
 from functools import lru_cache
 import time
 import queue
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
+import tempfile
 
 import cv2
 import numpy as np
@@ -359,6 +360,7 @@ def swap_face_video(
     input_path,
     face_path,
     regions=None,
+    key_frame_ms=0,
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
@@ -384,6 +386,7 @@ def swap_face_video(
             face_path,
             save_path,
             regions=regions,
+            key_frame_ms=key_frame_ms,
             progress_callback=progress_callback,
             stage_callback=stage_callback,
             use_gpu=use_gpu,
@@ -411,6 +414,7 @@ def _swap_face_video(
     face_path,
     save_path,
     regions=None,
+    key_frame_ms=0,
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
@@ -2103,3 +2107,562 @@ def _match_tracks_to_detections(tracks, detections):
                 matches.append((tid, best_idx))
 
     return matches
+
+
+def swap_face_deep(input_path, face_paths, regions=None):
+    try:
+        if not isinstance(face_paths, list) or len(face_paths) == 0:
+            raise RuntimeError("missing-params")
+
+        save_path = _get_output_file_path(input_path)
+        input_img = _read_image(input_path)
+        height, width = input_img.shape[:2]
+
+        destination_faces = _load_destination_faces(face_paths, _tf, _tf_lock)
+        if not destination_faces:
+            raise RuntimeError("no-face-detected")
+
+        if regions:
+            normalized_regions = _normalize_regions(regions, width, height)
+            if not normalized_regions:
+                raise RuntimeError("invalid-regions")
+        else:
+            normalized_regions = _sort_boxes_by_position(
+                _detect_face_boxes_in_frame(
+                    input_img,
+                    [(0, 0, width, height)],
+                    _tf,
+                    _tf_lock,
+                )
+            )
+            if not normalized_regions:
+                raise RuntimeError("no-face-detected")
+
+        output_img = input_img.copy()
+        swapped_count = 0
+
+        for index, (x, y, w, h) in enumerate(_sort_boxes_by_position(normalized_regions)):
+            crop = input_img[y : y + h, x : x + w]
+            if crop.size == 0:
+                continue
+
+            with _tf_lock:
+                reference_face = _tf.get_one_face(crop)
+            if reference_face is None:
+                continue
+
+            destination_face = destination_faces[index % len(destination_faces)]
+            with _tf_lock:
+                output_crop = _tf.swap_face(
+                    vision_frame=crop,
+                    reference_face=reference_face,
+                    destination_face=destination_face,
+                )
+            if output_crop is None:
+                continue
+
+            output_img[y : y + h, x : x + w] = output_crop
+            swapped_count += 1
+
+        if swapped_count == 0 and regions:
+            return _write_image(save_path, output_img)
+        if swapped_count == 0:
+            raise RuntimeError("no-face-detected")
+        return _write_image(save_path, output_img)
+
+    except Exception as e:
+        _log_error("swap_face_deep", e)
+        raise
+
+
+def swap_face_video_deep(
+    input_path,
+    face_paths,
+    regions=None,
+    key_frame_ms=0,
+    progress_callback=None,
+    stage_callback=None,
+    use_gpu=False,
+    gpu_provider="auto",
+    segment_duration_sec=12,
+    segment_overlap_frames=6,
+):
+    try:
+        _emit_stage(stage_callback, "validating-input")
+        if not os.path.exists(input_path):
+            raise FileNotFoundError("file-not-found")
+        if not isinstance(face_paths, list) or len(face_paths) == 0:
+            raise RuntimeError("missing-params")
+
+        for face_path in face_paths:
+            if not isinstance(face_path, str) or not os.path.exists(face_path):
+                raise FileNotFoundError("file-not-found")
+
+        save_path = _get_output_video_path(input_path)
+        output_path = _swap_face_video_deep(
+            input_path=input_path,
+            face_paths=face_paths,
+            regions=regions,
+            key_frame_ms=key_frame_ms,
+            save_path=save_path,
+            progress_callback=progress_callback,
+            stage_callback=stage_callback,
+            use_gpu=use_gpu,
+            gpu_provider=gpu_provider,
+            segment_duration_sec=segment_duration_sec,
+            segment_overlap_frames=segment_overlap_frames,
+        )
+
+        if not output_path or not os.path.exists(output_path):
+            raise RuntimeError("video-output-missing")
+
+        _emit_stage(stage_callback, "muxing-audio")
+        _mux_audio_or_raise(input_path, output_path)
+
+        _emit_stage(stage_callback, "finalizing")
+        return output_path
+    except Exception as e:
+        _log_error("swap_face_video_deep", e)
+        raise
+
+
+def _swap_face_video_deep(
+    input_path,
+    face_paths,
+    regions,
+    key_frame_ms,
+    save_path,
+    progress_callback=None,
+    stage_callback=None,
+    use_gpu=False,
+    gpu_provider="auto",
+    segment_duration_sec=12,
+    segment_overlap_frames=6,
+):
+    cap = None
+    temp_dir = None
+    try:
+        _emit_stage(stage_callback, "opening-video")
+        cap = cv2.VideoCapture(input_path)
+        if not cap.isOpened():
+            raise RuntimeError("video-open-failed")
+
+        _emit_stage(stage_callback, "reading-video-metadata")
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not fps or fps <= 0:
+            fps = 25.0
+
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        total_frames = _resolve_total_frames(input_path, fps, total_frames)
+
+        if width <= 0 or height <= 0:
+            ok, first_frame = cap.read()
+            if not ok or first_frame is None:
+                raise RuntimeError("video-open-failed")
+            height, width = first_frame.shape[:2]
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+        normalized_regions = _normalize_regions(regions, width, height) if regions else []
+        if regions and not normalized_regions:
+            raise RuntimeError("invalid-regions")
+
+        _emit_stage(stage_callback, "extracting-target-face")
+        gpu_pool_size = _resolve_gpu_pool_size(1) if use_gpu else 1
+        if use_gpu:
+            _emit_stage(stage_callback, "gpu-initializing")
+        tf_pool, using_gpu, selected_provider = _get_tf_pool(
+            use_gpu=use_gpu,
+            gpu_provider=gpu_provider,
+            pool_size=gpu_pool_size,
+        )
+        if using_gpu:
+            _emit_stage(stage_callback, "gpu-enabled")
+            print(f"[INFO] 深度换脸启用 GPU Provider: {selected_provider}")
+        elif use_gpu:
+            _emit_stage(stage_callback, "gpu-fallback-cpu")
+        else:
+            _emit_stage(stage_callback, "using-cpu")
+
+        bootstrap_tf, bootstrap_lock = tf_pool[0]
+        destination_faces = _load_destination_faces(face_paths, bootstrap_tf, bootstrap_lock)
+        if not destination_faces:
+            raise RuntimeError("no-face-detected")
+
+        if total_frames <= 0:
+            raise RuntimeError("video-open-failed")
+
+        segment_frames = max(1, int(round(max(1, int(segment_duration_sec or 12)) * fps)))
+        overlap_frames = max(0, int(segment_overlap_frames or 0))
+        segments = _plan_video_segments(total_frames, segment_frames, overlap_frames)
+
+        temp_dir = tempfile.mkdtemp(prefix="magicmirror_deep_segments_")
+        max_workers = min(
+            len(segments),
+            max(1, min(multiprocessing.cpu_count(), 4 if not use_gpu else 2)),
+        )
+
+        _emit_stage(stage_callback, "processing-video-segments")
+        started_at = time.time()
+        completed_frames = 0
+        segment_results = {}
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_segment = {
+                executor.submit(
+                    _process_deep_video_segment,
+                    input_path=input_path,
+                    segment=segment,
+                    destination_faces=destination_faces,
+                    normalized_regions=normalized_regions,
+                    fps=fps,
+                    width=width,
+                    height=height,
+                    temp_dir=temp_dir,
+                    use_gpu=use_gpu,
+                    gpu_provider=gpu_provider,
+                ): segment
+                for segment in segments
+            }
+
+            for future in as_completed(future_to_segment):
+                segment = future_to_segment[future]
+                result = future.result()
+                segment_results[segment["index"]] = result
+                completed_frames += int(result.get("framesWritten", 0) or 0)
+                if progress_callback:
+                    try:
+                        progress_callback(
+                            frame_count=min(completed_frames, total_frames),
+                            total_frames=total_frames,
+                            elapsed_seconds=max(0.0, time.time() - started_at),
+                        )
+                    except Exception as e:
+                        print(f"[WARN] progress_callback failed: {str(e)}")
+
+        ordered_segment_paths = [
+            segment_results[index]["path"]
+            for index in sorted(segment_results.keys())
+            if segment_results.get(index) and segment_results[index].get("path")
+        ]
+        if not ordered_segment_paths:
+            raise RuntimeError("video-output-missing")
+
+        _emit_stage(stage_callback, "merging-video-segments")
+        _concat_video_segments(ordered_segment_paths, save_path, fps, width, height)
+        return save_path
+
+    except Exception as e:
+        _log_error("_swap_face_video_deep", e)
+        raise
+    finally:
+        if cap is not None:
+            cap.release()
+        if temp_dir and os.path.isdir(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _load_destination_faces(face_paths, tf_instance=None, tf_lock=None):
+    if tf_instance is None:
+        tf_instance = _tf
+    if tf_lock is None:
+        tf_lock = _tf_lock
+
+    destination_faces = []
+    for face_path in face_paths:
+        if isinstance(face_path, dict):
+            face_path = face_path.get("path")
+        if not isinstance(face_path, str) or not face_path:
+            continue
+        face_img = _read_image(face_path)
+        with tf_lock:
+            destination_face = tf_instance.get_one_face(face_img)
+        if destination_face is None:
+            print(f"[WARN] 目标脸素材未检测到人脸，已跳过: {face_path}")
+            continue
+        destination_faces.append(destination_face)
+    return destination_faces
+
+
+def _sort_boxes_by_position(boxes):
+    return sorted(boxes or [], key=lambda item: (int(item[1]), int(item[0])))
+
+
+def _sort_detections_by_position(detections):
+    return sorted(
+        detections or [],
+        key=lambda item: (
+            int(item.get("box", (0, 0, 0, 0))[1]),
+            int(item.get("box", (0, 0, 0, 0))[0]),
+        ),
+    )
+
+
+def _build_deep_tracks_from_seed_regions(seed_regions, detections, target_count):
+    tracks = {}
+    used_det = set()
+    track_id = 1
+    sorted_regions = _sort_boxes_by_position(seed_regions)
+
+    for index, region_box in enumerate(sorted_regions):
+        best_idx = -1
+        best_iou = 0.0
+
+        for det_idx, det in enumerate(detections or []):
+            if det_idx in used_det:
+                continue
+            iou = _iou(region_box, det["box"])
+            if iou > best_iou:
+                best_iou = iou
+                best_idx = det_idx
+
+        if best_idx < 0:
+            best_dist = None
+            for det_idx, det in enumerate(detections or []):
+                if det_idx in used_det:
+                    continue
+                dist = _center_distance(region_box, det["box"])
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_idx = det_idx
+
+        if best_idx >= 0:
+            used_det.add(best_idx)
+            init_box = detections[best_idx]["box"]
+        else:
+            init_box = region_box
+
+        tracks[track_id] = {
+            "trackId": track_id,
+            "targetIndex": index % max(1, int(target_count or 1)),
+            "box": init_box,
+            "missed": 0,
+        }
+        track_id += 1
+
+    return tracks
+
+
+def _build_deep_tracks_from_detections(detections, target_count):
+    tracks = {}
+    sorted_detections = _sort_detections_by_position(detections)
+    for index, det in enumerate(sorted_detections, start=1):
+        tracks[index] = {
+            "trackId": index,
+            "targetIndex": (index - 1) % max(1, int(target_count or 1)),
+            "box": det["box"],
+            "missed": 0,
+        }
+    return tracks
+
+
+def _plan_video_segments(total_frames, segment_frames, overlap_frames):
+    segments = []
+    if total_frames <= 0:
+        return segments
+
+    segment_frames = max(1, int(segment_frames or 1))
+    overlap_frames = max(0, int(overlap_frames or 0))
+
+    core_start = 0
+    index = 0
+    while core_start < total_frames:
+        core_end = min(total_frames, core_start + segment_frames)
+        read_start = max(0, core_start - overlap_frames)
+        read_end = min(total_frames, core_end + overlap_frames)
+        segments.append(
+            {
+                "index": index,
+                "coreStart": core_start,
+                "coreEnd": core_end,
+                "readStart": read_start,
+                "readEnd": read_end,
+            }
+        )
+        index += 1
+        core_start = core_end
+    return segments
+
+
+def _process_deep_video_segment(
+    input_path,
+    segment,
+    destination_faces,
+    normalized_regions,
+    fps,
+    width,
+    height,
+    temp_dir,
+    use_gpu=False,
+    gpu_provider="auto",
+):
+    cap = None
+    writer = None
+    try:
+        segment_index = int(segment["index"])
+        core_start = int(segment["coreStart"])
+        core_end = int(segment["coreEnd"])
+        read_start = int(segment["readStart"])
+        read_end = int(segment["readEnd"])
+
+        temp_output_path = os.path.join(temp_dir, f"segment_{segment_index:04d}.mp4")
+        cap = cv2.VideoCapture(input_path)
+        if not cap.isOpened():
+            raise RuntimeError("video-open-failed")
+        cap.set(cv2.CAP_PROP_POS_FRAMES, read_start)
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
+        if not writer.isOpened():
+            raise RuntimeError("video-write-failed")
+
+        tf_pool, _, _ = _get_tf_pool(
+            use_gpu=use_gpu,
+            gpu_provider=gpu_provider,
+            pool_size=1,
+        )
+        worker_tf, worker_lock = tf_pool[0]
+
+        tracks = {}
+        next_track_id = 1
+        frames_written = 0
+        track_missed_limit = 90
+
+        frame_index = read_start
+        while frame_index < read_end:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+
+            detections = _sort_detections_by_position(
+                _get_faces_with_boxes(frame, worker_tf, worker_lock)
+            )
+
+            if not tracks:
+                if normalized_regions:
+                    tracks = _build_deep_tracks_from_seed_regions(
+                        normalized_regions,
+                        detections,
+                        len(destination_faces),
+                    )
+                else:
+                    tracks = _build_deep_tracks_from_detections(
+                        detections,
+                        len(destination_faces),
+                    )
+                next_track_id = max(tracks.keys(), default=0) + 1
+
+            matches = _match_tracks_to_detections(tracks, detections) if tracks else []
+            matched_track_ids = set()
+            matched_detection_ids = set()
+
+            for track_id, detection_index in matches:
+                track = tracks.get(track_id)
+                if track is None:
+                    continue
+                track["box"] = detections[detection_index]["box"]
+                track["missed"] = 0
+                matched_track_ids.add(track_id)
+                matched_detection_ids.add(detection_index)
+
+            stale_track_ids = []
+            for track_id, track in tracks.items():
+                if track_id in matched_track_ids:
+                    continue
+                track["missed"] = int(track.get("missed", 0)) + 1
+                if int(track["missed"]) > track_missed_limit:
+                    stale_track_ids.append(track_id)
+
+            for track_id in stale_track_ids:
+                tracks.pop(track_id, None)
+
+            new_matches = []
+            if not normalized_regions:
+                for detection_index, detection in enumerate(detections):
+                    if detection_index in matched_detection_ids:
+                        continue
+                    track_id = next_track_id
+                    next_track_id += 1
+                    tracks[track_id] = {
+                        "trackId": track_id,
+                        "targetIndex": (track_id - 1) % max(1, len(destination_faces)),
+                        "box": detection["box"],
+                        "missed": 0,
+                    }
+                    new_matches.append((track_id, detection_index))
+
+            out = frame
+            for track_id, detection_index in matches + new_matches:
+                track = tracks.get(track_id)
+                if track is None:
+                    continue
+                reference_face = detections[detection_index].get("face")
+                if reference_face is None:
+                    continue
+                destination_face = destination_faces[
+                    int(track.get("targetIndex", 0)) % len(destination_faces)
+                ]
+                with worker_lock:
+                    swapped = worker_tf.swap_face(
+                        vision_frame=out,
+                        reference_face=reference_face,
+                        destination_face=destination_face,
+                    )
+                if swapped is not None:
+                    out = swapped
+
+            out = _normalize_output_frame(out, width, height)
+            if core_start <= frame_index < core_end:
+                writer.write(out)
+                frames_written += 1
+
+            frame_index += 1
+
+        return {"path": temp_output_path, "framesWritten": frames_written}
+
+    except Exception as e:
+        _log_error("_process_deep_video_segment", e)
+        raise
+    finally:
+        if cap is not None:
+            cap.release()
+        if writer is not None:
+            writer.release()
+
+
+def _concat_video_segments(segment_paths, output_path, fps, width, height):
+    writer = None
+    caps = []
+    try:
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        if not writer.isOpened():
+            raise RuntimeError("video-write-failed")
+
+        for segment_path in segment_paths:
+            cap = cv2.VideoCapture(segment_path)
+            caps.append(cap)
+            if not cap.isOpened():
+                raise RuntimeError("video-open-failed")
+
+            while True:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+                writer.write(_normalize_output_frame(frame, width, height))
+
+        if not os.path.exists(output_path):
+            raise RuntimeError("video-output-missing")
+        return output_path
+    except Exception as e:
+        _log_error("_concat_video_segments", e)
+        raise
+    finally:
+        for cap in caps:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        if writer is not None:
+            writer.release()

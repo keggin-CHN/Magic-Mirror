@@ -135,7 +135,7 @@ sudo INSTALL_DIR=/opt/magicmirror \
 
 ```bash
 python3 ./scripts/run-task-config-cli.py \
-  --config-id 'cfg1.xxxxx.yyyyy' \
+  --config-id 'cfg2.xxxxx.yyyyy' \
   --input-video /path/to/input.mp4 \
   --target-face /path/to/face.jpg \
   --output /path/to/output.mp4
@@ -145,7 +145,7 @@ python3 ./scripts/run-task-config-cli.py \
 
 ```bash
 python3 ./scripts/run-task-config-cli.py \
-  --config-id 'cfg1.xxxxx.yyyyy' \
+  --config-id 'cfg2.xxxxx.yyyyy' \
   --input-video /path/to/input.mp4 \
   --face-source personA=/path/to/a.jpg \
   --face-source personB=/path/to/b.jpg \
@@ -153,8 +153,21 @@ python3 ./scripts/run-task-config-cli.py \
 ```
 
 也支持 `--library-map-json /path/to/map.json`，JSON 结构可为：
-- 对象：`{ "personA": "/path/a.jpg", "personB": "/path/b.jpg" }`
+- 对象：`{ "personA": "/path/a.jpg", "personB": "/path/b.jpg", "target-1": "/path/t1.jpg" }`
 - 列表：`[{"id":"personA","path":"/path/a.jpg"}]`
+
+深度换脸（`targetFaces + deepSwapMode`）可在纯终端模式下执行：
+
+```bash
+python3 ./scripts/run-task-config-cli.py \
+  --config-id 'cfg2.xxxxx.yyyyy' \
+  --input-video /path/to/input.mp4 \
+  --target-face-item target-1=/path/to/t1.jpg \
+  --target-face-item target-2=/path/to/t2.jpg \
+  --segment-duration-sec 12 \
+  --segment-overlap-frames 6 \
+  --output /path/to/output.mp4
+```
 
 ### 7）老系统兼容建议
 

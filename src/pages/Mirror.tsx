@@ -118,6 +118,9 @@ export function MirrorPage() {
     origin: Region;
   } | null>(null);
   const [isMultiFaceMode, setIsMultiFaceMode] = useState(false);
+  const [isDeepSwapMode, setIsDeepSwapMode] = useState(false);
+  const [deepSegmentDurationSec, setDeepSegmentDurationSec] = useState(12);
+  const [deepSegmentOverlapFrames, setDeepSegmentOverlapFrames] = useState(6);
   const [faceSources, setFaceSources] = useState<FaceAsset[]>([]);
   const faceSourceInputRef = useRef<HTMLInputElement | null>(null);
   const mainInputRef = useRef<HTMLInputElement | null>(null);
@@ -344,6 +347,9 @@ export function MirrorPage() {
       moveRef.current = null;
       setSelectionZoom(1);
       setActiveFaceSourceId(null);
+      setIsDeepSwapMode(false);
+      setDeepSegmentDurationSec(12);
+      setDeepSegmentOverlapFrames(6);
       inputPathRef.current = null;
       autoDetectedImagePathRef.current = null;
       return;
@@ -369,6 +375,9 @@ export function MirrorPage() {
     moveRef.current = null;
     setSelectionZoom(1);
     setActiveFaceSourceId(null);
+    setIsDeepSwapMode(false);
+    setDeepSegmentDurationSec(12);
+    setDeepSegmentOverlapFrames(6);
 
     if (input.type === "image") {
       const img = new Image();
@@ -857,7 +866,7 @@ export function MirrorPage() {
       event.stopPropagation();
 
       // 如果当前有选中的素材，则直接分配给该区域
-      if (activeFaceSourceId) {
+      if (activeFaceSourceId && !isDeepSwapMode) {
         setRegions((prev: Region[]) =>
           prev.map((region: Region, idx: number) =>
             idx === index ? { ...region, faceSourceId: activeFaceSourceId } : region
@@ -884,7 +893,7 @@ export function MirrorPage() {
       };
       setSelectedRegionIndex(index);
     },
-    [canSelect, clamp, regions, activeFaceSourceId]
+    [canSelect, clamp, regions, activeFaceSourceId, isDeepSwapMode]
   );
 
   const handleResizePointerDown = useCallback(
@@ -947,6 +956,7 @@ export function MirrorPage() {
     setIsMultiFaceMode((prev: boolean) => {
       const next = !prev;
       if (!next) {
+        setIsDeepSwapMode(false);
         setFaceSources([]);
         setRegions((prevRegions: Region[]) =>
           prevRegions.map((region: Region) => ({
@@ -1079,7 +1089,7 @@ export function MirrorPage() {
 
   const handleAssignSelectedRegionFaceSource = useCallback(
     (faceSourceId: string) => {
-      if (selectedRegionIndex === null) {
+      if (selectedRegionIndex === null || isDeepSwapMode) {
         return;
       }
       setRegions((prev: Region[]) =>
@@ -1089,7 +1099,7 @@ export function MirrorPage() {
       );
       setActiveFaceSourceId(faceSourceId || null);
     },
-    [selectedRegionIndex]
+    [isDeepSwapMode, selectedRegionIndex]
   );
 
   const handleRenameFaceSource = useCallback(
@@ -1329,43 +1339,89 @@ export function MirrorPage() {
           return;
         }
 
-        if (videoRegions.some((region: Region) => !region.faceSourceId)) {
+        if (
+          !isDeepSwapMode &&
+          videoRegions.some((region: Region) => !region.faceSourceId)
+        ) {
           setNotice(t("Please assign a face source to each selected area."));
           return;
         }
 
         beginSwap();
 
+        const normalizedTargetFaces = faceSources.map((item: FaceAsset) => ({
+          id: item.id,
+          path: item.path,
+        }));
+        const deepRegions = videoRegions.map((region: Region) => ({
+          x: region.x,
+          y: region.y,
+          width: region.width,
+          height: region.height,
+        }));
+        const normalizedSegmentDurationSec = Math.max(
+          1,
+          Math.round(deepSegmentDurationSec)
+        );
+        const normalizedSegmentOverlapFrames = Math.max(
+          0,
+          Math.round(deepSegmentOverlapFrames)
+        );
+
         const videoTaskResult = await swapVideo(
           isWeb
-            ? {
-              inputFileId: input.path,
-              regions: videoRegions,
-              faceSources: faceSources.map((item: FaceAsset) => ({
-                id: item.id,
-                path: item.path,
-              })),
-              keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
-              useGpu: useGpu,
-              gpuProvider: selectedGpuProvider,
-              configId: normalizedTaskConfigId || undefined,
-              generateConfigId: shouldGenerateTaskConfigId,
-              dryRunConfigOnly: viewTaskIdOnly,
-            }
-            : {
-              inputVideo: input.path,
-              regions: videoRegions,
-              faceSources: faceSources.map((item: FaceAsset) => ({
-                id: item.id,
-                path: item.path,
-              })),
-              keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
-              useGpu: useGpu,
-              gpuProvider: selectedGpuProvider,
-              configId: normalizedTaskConfigId || undefined,
-              generateConfigId: shouldGenerateTaskConfigId,
-              dryRunConfigOnly: viewTaskIdOnly,
-            }
+            ? isDeepSwapMode
+              ? {
+                inputFileId: input.path,
+                regions: deepRegions,
+                targetFaces: normalizedTargetFaces,
+                deepSwapMode: true,
+                segmentDurationSec: normalizedSegmentDurationSec,
+                segmentOverlapFrames: normalizedSegmentOverlapFrames,
+                keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
+                useGpu: useGpu,
+                gpuProvider: selectedGpuProvider,
+                configId: normalizedTaskConfigId || undefined,
+                generateConfigId: shouldGenerateTaskConfigId,
+                dryRunConfigOnly: viewTaskIdOnly,
+              }
+              : {
+                inputFileId: input.path,
+                regions: videoRegions,
+                faceSources: normalizedTargetFaces,
+                keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
+                useGpu: useGpu,
+                gpuProvider: selectedGpuProvider,
+                configId: normalizedTaskConfigId || undefined,
+                generateConfigId: shouldGenerateTaskConfigId,
+                dryRunConfigOnly: viewTaskIdOnly,
+              }
+            : isDeepSwapMode
+              ? {
+                inputVideo: input.path,
+                regions: deepRegions,
+                targetFaces: normalizedTargetFaces,
+                deepSwapMode: true,
+                segmentDurationSec: normalizedSegmentDurationSec,
+                segmentOverlapFrames: normalizedSegmentOverlapFrames,
+                keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
+                useGpu: useGpu,
+                gpuProvider: selectedGpuProvider,
+                configId: normalizedTaskConfigId || undefined,
+                generateConfigId: shouldGenerateTaskConfigId,
+                dryRunConfigOnly: viewTaskIdOnly,
+              }
+              : {
+                inputVideo: input.path,
+                regions: videoRegions,
+                faceSources: normalizedTargetFaces,
+                keyFrameMs: Math.max(0, Math.round(videoKeyFrameMs)),
+                useGpu: useGpu,
+                gpuProvider: selectedGpuProvider,
+                configId: normalizedTaskConfigId || undefined,
+                generateConfigId: shouldGenerateTaskConfigId,
+                dryRunConfigOnly: viewTaskIdOnly,
+              }
         );
 
         if (videoTaskResult.configId) {
@@ -1495,6 +1551,7 @@ export function MirrorPage() {
 
     if (
       isMultiFaceMode &&
+      !isDeepSwapMode &&
       imageRegions.some((region: Region) => !region.faceSourceId)
     ) {
       setNotice(t("Please assign a face source to each selected area."));
@@ -1503,31 +1560,50 @@ export function MirrorPage() {
 
     beginSwap();
 
+    const normalizedTargets = faceSources.map((item: FaceAsset) => ({
+      id: item.id,
+      path: item.path,
+    }));
+    const deepImageRegions = imageRegions.map((region: Region) => ({
+      x: region.x,
+      y: region.y,
+      width: region.width,
+      height: region.height,
+    }));
+
     const result = await swapFace(
       isWeb
         ? isMultiFaceMode
-          ? {
-            inputFileId: input.path,
-            regions: imageRegions,
-            faceSources: faceSources.map((item: FaceAsset) => ({
-              id: item.id,
-              path: item.path,
-            })),
-          }
+          ? isDeepSwapMode
+            ? {
+              inputFileId: input.path,
+              regions: deepImageRegions,
+              targetFaces: normalizedTargets,
+              deepSwapMode: true,
+            }
+            : {
+              inputFileId: input.path,
+              regions: imageRegions,
+              faceSources: normalizedTargets,
+            }
           : {
             inputFileId: input.path,
             targetFaceId: me.path,
             regions: imageRegions,
           }
         : isMultiFaceMode
-          ? {
-            inputImage: input.path,
-            regions: imageRegions,
-            faceSources: faceSources.map((item: FaceAsset) => ({
-              id: item.id,
-              path: item.path,
-            })),
-          }
+          ? isDeepSwapMode
+            ? {
+              inputImage: input.path,
+              regions: deepImageRegions,
+              targetFaces: normalizedTargets,
+              deepSwapMode: true,
+            }
+            : {
+              inputImage: input.path,
+              regions: imageRegions,
+              faceSources: normalizedTargets,
+            }
           : {
             inputImage: input.path,
             targetFace: me.path,
@@ -1552,8 +1628,11 @@ export function MirrorPage() {
   }, [
     buildResultName,
     chooseVideoGpuProvider,
+    deepSegmentDurationSec,
+    deepSegmentOverlapFrames,
     faceSources,
     generateTaskConfigId,
+    isDeepSwapMode,
     isMultiFaceMode,
     isWeb,
     regions,
@@ -1608,6 +1687,9 @@ export function MirrorPage() {
     setNotice(null);
     setIsEditingRegions(false);
     setIsMultiFaceMode(false);
+    setIsDeepSwapMode(false);
+    setDeepSegmentDurationSec(12);
+    setDeepSegmentOverlapFrames(6);
     setFaceSources([]);
     setRegions([]);
     setDraftRegion(null);
@@ -1914,6 +1996,16 @@ export function MirrorPage() {
                     {isMultiFaceMode ? t("Single-Face Mode") : t("Multi-Face Swap")}
                   </div>
                 )}
+                {!kMirrorStates.isMe && isMultiFaceMode && (isImageInput || isVideoInput) && (
+                  <div
+                    onClick={() => {
+                      setIsDeepSwapMode((prev: boolean) => !prev);
+                      setActiveFaceSourceId(null);
+                    }}
+                  >
+                    {isDeepSwapMode ? t("Region Binding Mode") : t("Deep Swap Mode")}
+                  </div>
+                )}
                 <div onClick={() => openExternalSafe(t("aboutLink"))}>
                   {t("About")}
                 </div>
@@ -2011,7 +2103,7 @@ export function MirrorPage() {
                     {regions.map((region: Region, index: number) => (
                       <div
                         key={`region-${index}`}
-                        className={`selection-rect ${region.faceSourceId ? "assigned" : ""} ${selectedRegionIndex === index ? "selected" : ""}`}
+                        className={`selection-rect ${!isDeepSwapMode && region.faceSourceId ? "assigned" : ""} ${selectedRegionIndex === index ? "selected" : ""}`}
                         style={{
                           left: region.x,
                           top: region.y,
@@ -2122,6 +2214,36 @@ export function MirrorPage() {
                     <span>{t("View Task ID Only (Do not run locally)")}</span>
                   </label>
                 </div>
+                {isMultiFaceMode && isDeepSwapMode && (
+                  <div className="video-config-row">
+                    <span className="video-config-label">{t("Segment(s)")}</span>
+                    <input
+                      className="video-config-input"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={deepSegmentDurationSec}
+                      onChange={(event) =>
+                        setDeepSegmentDurationSec(
+                          Math.max(1, Number.parseInt(event.target.value || "1", 10) || 1)
+                        )
+                      }
+                    />
+                    <span className="video-config-label">{t("Overlap(frames)")}</span>
+                    <input
+                      className="video-config-input"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={deepSegmentOverlapFrames}
+                      onChange={(event) =>
+                        setDeepSegmentOverlapFrames(
+                          Math.max(0, Number.parseInt(event.target.value || "0", 10) || 0)
+                        )
+                      }
+                    />
+                  </div>
+                )}
                 <div className="video-config-row">
                   <span className="video-config-label">{t("Reuse Task Config ID")}</span>
                   <input
@@ -2257,7 +2379,7 @@ export function MirrorPage() {
                     )}
                   </>
                 )}
-                {selectedRegionIndex !== null && (
+                {selectedRegionIndex !== null && !isDeepSwapMode && (
                   <div className="face-source-bind-row">
                     <span>
                       {t("Selected area")} #{selectedRegionIndex + 1}

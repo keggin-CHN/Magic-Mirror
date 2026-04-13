@@ -130,7 +130,7 @@ Then run the config directly from terminal without HTTP:
 
 ```bash
 python3 ./scripts/run-task-config-cli.py \
-  --config-id 'cfg1.xxxxx.yyyyy' \
+  --config-id 'cfg2.xxxxx.yyyyy' \
   --input-video /path/to/input.mp4 \
   --target-face /path/to/face.jpg \
   --output /path/to/output.mp4
@@ -140,7 +140,7 @@ For multi-face config IDs, provide source mapping:
 
 ```bash
 python3 ./scripts/run-task-config-cli.py \
-  --config-id 'cfg1.xxxxx.yyyyy' \
+  --config-id 'cfg2.xxxxx.yyyyy' \
   --input-video /path/to/input.mp4 \
   --face-source personA=/path/to/a.jpg \
   --face-source personB=/path/to/b.jpg \
@@ -148,8 +148,21 @@ python3 ./scripts/run-task-config-cli.py \
 ```
 
 You can also pass `--library-map-json /path/to/map.json`, where JSON is either:
-- object: `{ "personA": "/path/a.jpg", "personB": "/path/b.jpg" }`
+- object: `{ "personA": "/path/a.jpg", "personB": "/path/b.jpg", "target-1": "/path/t1.jpg" }`
 - list: `[{"id":"personA","path":"/path/a.jpg"}]`
+
+Deep swap (`targetFaces + deepSwapMode`) can also run in terminal-only mode:
+
+```bash
+python3 ./scripts/run-task-config-cli.py \
+  --config-id 'cfg2.xxxxx.yyyyy' \
+  --input-video /path/to/input.mp4 \
+  --target-face-item target-1=/path/to/t1.jpg \
+  --target-face-item target-2=/path/to/t2.jpg \
+  --segment-duration-sec 12 \
+  --segment-overlap-frames 6 \
+  --output /path/to/output.mp4
+```
 
 ### 7) Legacy / old Linux notes
 

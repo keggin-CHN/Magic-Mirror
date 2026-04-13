@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 import argparse
-import base64
-import hashlib
-import hmac
 import json
 import os
 import shutil
 import sys
-import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,12 +11,24 @@ SRC_PYTHON_DIR = PROJECT_ROOT / "src-python"
 if str(SRC_PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_PYTHON_DIR))
 
-from magic.face import load_models, swap_face_video, swap_face_video_by_sources  # noqa: E402
+from magic.face import (  # noqa: E402
+    load_models,
+    swap_face_video,
+    swap_face_video_by_sources,
+    swap_face_video_deep,
+)
+from magic.task_config import (  # noqa: E402
+    get_expected_face_source_sha256_map,
+    get_expected_input_video_sha256,
+    get_expected_target_face_sha256,
+    get_expected_target_faces_sha256_map,
+    parse_video_task_config_token,
+    verify_file_sha256,
+)
 
 ALLOWED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 
-VIDEO_TASK_CONFIG_TOKEN_PREFIX = "cfg1"
 VIDEO_TASK_CONFIG_TTL_SECONDS = int(
     os.environ.get("VIDEO_TASK_CONFIG_TTL_SECONDS", str(7 * 24 * 3600))
 )
@@ -29,63 +37,12 @@ VIDEO_TASK_CONFIG_SECRET = os.environ.get(
 )
 
 
-def _clone_json_payload(payload):
-    return json.loads(json.dumps(payload, ensure_ascii=False))
-
-
-def _b64url_decode(encoded: str) -> bytes:
-    padding = "=" * (-len(encoded) % 4)
-    return base64.urlsafe_b64decode((encoded + padding).encode("ascii"))
-
-
-def _sign_video_task_config_payload(payload_b64: str) -> str:
-    return hmac.new(
-        VIDEO_TASK_CONFIG_SECRET.encode("utf-8"),
-        payload_b64.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-
 def _parse_video_task_config_token(config_id: str):
-    if not isinstance(config_id, str):
-        return None
-    prefix = f"{VIDEO_TASK_CONFIG_TOKEN_PREFIX}."
-    if not config_id.startswith(prefix):
-        return None
-
-    parts = config_id.split(".", 2)
-    if len(parts) != 3:
-        return None
-
-    _, payload_b64, signature = parts
-    expected_signature = _sign_video_task_config_payload(payload_b64)
-    if not hmac.compare_digest(signature, expected_signature):
-        return None
-
-    try:
-        raw = _b64url_decode(payload_b64)
-        body = json.loads(raw.decode("utf-8"))
-    except Exception:
-        return None
-
-    if not isinstance(body, dict):
-        return None
-
-    issued_at = body.get("iat")
-    try:
-        issued_at = float(issued_at)
-    except (TypeError, ValueError):
-        return None
-
-    if issued_at <= 0:
-        return None
-    if time.time() - issued_at > VIDEO_TASK_CONFIG_TTL_SECONDS:
-        return None
-
-    config = body.get("config")
-    if not isinstance(config, dict):
-        return None
-    return _clone_json_payload(config)
+    return parse_video_task_config_token(
+        str(config_id),
+        VIDEO_TASK_CONFIG_SECRET,
+        legacy_ttl_seconds=VIDEO_TASK_CONFIG_TTL_SECONDS,
+    )
 
 
 def _ext(path: str) -> str:
@@ -122,6 +79,7 @@ def _simplify_task_error(err: object) -> str:
         "video-frame-read-failed",
         "output-write-failed",
         "invalid-regions",
+        "config-mismatch",
         "config-not-found",
         "model-load-failed",
     ]
@@ -187,6 +145,29 @@ def _build_face_source_override_map(args):
     return source_map
 
 
+def _parse_target_face_item_entry(raw: str):
+    if "=" not in raw:
+        raise RuntimeError("invalid-face-source-binding")
+    target_id, target_path = raw.split("=", 1)
+    target_id = str(target_id).strip()
+    target_path = target_path.strip()
+    if not target_id or not target_path:
+        raise RuntimeError("invalid-face-source-binding")
+    return target_id, target_path
+
+
+def _build_target_face_override_map(args):
+    target_map = {}
+    if args.library_map_json:
+        target_map.update(_load_library_map(args.library_map_json))
+
+    for item in args.target_face_item or []:
+        target_id, target_path = _parse_target_face_item_entry(item)
+        target_map[str(target_id)] = target_path
+
+    return target_map
+
+
 def _resolve_face_source_map(face_sources, override_map):
     if not isinstance(face_sources, list) or len(face_sources) == 0:
         raise RuntimeError("missing-face-sources")
@@ -223,6 +204,8 @@ def _resolve_target_face(config, args, override_map):
         target_face = args.target_face
     else:
         target_face = config.get("targetFace")
+        if isinstance(target_face, dict):
+            target_face = target_face.get("path")
 
     if not target_face:
         target_face_id = config.get("targetFaceId")
@@ -238,6 +221,58 @@ def _resolve_target_face(config, args, override_map):
         missing_code="unsupported-image-format",
     )
     return target_face
+
+
+def _resolve_target_faces(config, override_map):
+    target_faces = config.get("targetFaces")
+    if not isinstance(target_faces, list) or len(target_faces) == 0:
+        raise RuntimeError("missing-params")
+
+    resolved = {}
+    for index, target in enumerate(target_faces):
+        if not isinstance(target, dict):
+            raise RuntimeError("missing-params")
+
+        target_id = str(target.get("id") or f"target-{index + 1}")
+        target_path = target.get("path")
+        if not target_path:
+            target_path = override_map.get(target_id)
+
+        if not target_path:
+            raise RuntimeError("missing-params")
+
+        _validate_file(
+            target_path,
+            ALLOWED_IMAGE_EXTS,
+            missing_code="unsupported-image-format",
+        )
+        resolved[target_id] = target_path
+
+    return resolved
+
+
+def _resolve_segment_options(config, args):
+    try:
+        segment_duration_sec = int(
+            float(config.get("segmentDurationSec", 12) or 12)
+        )
+    except (TypeError, ValueError):
+        segment_duration_sec = 12
+    try:
+        segment_overlap_frames = int(
+            float(config.get("segmentOverlapFrames", 6) or 6)
+        )
+    except (TypeError, ValueError):
+        segment_overlap_frames = 6
+
+    if args.segment_duration_sec is not None:
+        segment_duration_sec = int(args.segment_duration_sec)
+    if args.segment_overlap_frames is not None:
+        segment_overlap_frames = int(args.segment_overlap_frames)
+
+    segment_duration_sec = max(1, segment_duration_sec)
+    segment_overlap_frames = max(0, segment_overlap_frames)
+    return segment_duration_sec, segment_overlap_frames
 
 
 def _apply_gpu_overrides(config, args):
@@ -315,7 +350,11 @@ def _parse_args():
     parser = argparse.ArgumentParser(
         description="Run MagicMirror video face-swap from signed configId in terminal-only mode."
     )
-    parser.add_argument("--config-id", required=True, help="Signed task config token (cfg1.*)")
+    parser.add_argument(
+        "--config-id",
+        required=True,
+        help="Signed task config token (cfg2.* or legacy cfg1.*)",
+    )
     parser.add_argument("--input-video", required=True, help="Input video path on current machine")
     parser.add_argument("--output", help="Optional output path. Defaults to *_output.mp4")
     parser.add_argument("--target-face", help="Override single-face target image path")
@@ -326,7 +365,22 @@ def _parse_args():
     )
     parser.add_argument(
         "--library-map-json",
-        help="JSON file for id->path mapping, for targetFaceId/faceSources fallback",
+        help="JSON file for id->path mapping, for targetFaceId/faceSources/targetFaces fallback",
+    )
+    parser.add_argument(
+        "--target-face-item",
+        action="append",
+        help="Override deep target mapping, format: targetId=/path/to/image",
+    )
+    parser.add_argument(
+        "--segment-duration-sec",
+        type=int,
+        help="Override deep mode segment duration in seconds",
+    )
+    parser.add_argument(
+        "--segment-overlap-frames",
+        type=int,
+        help="Override deep mode segment overlap frames",
     )
     parser.add_argument("--key-frame-ms", type=int, help="Override key frame ms (multi-face mode)")
     parser.add_argument("--use-gpu", action="store_true", help="Force GPU mode")
@@ -363,18 +417,31 @@ def main():
             _print_json({"status": "failed", "error": "config-not-found"})
             return 2
 
-        override_map = _build_face_source_override_map(args)
+        source_override_map = _build_face_source_override_map(args)
+        target_override_map = _build_target_face_override_map(args)
         regions = config.get("regions") if isinstance(config.get("regions"), list) else None
         key_frame_ms = _resolve_key_frame_ms(config, args)
         use_gpu, gpu_provider = _apply_gpu_overrides(config, args)
+
+        expected_input_sha256 = get_expected_input_video_sha256(config)
+        if expected_input_sha256 and not verify_file_sha256(args.input_video, expected_input_sha256):
+            raise RuntimeError("config-mismatch")
 
         if not args.skip_load_models:
             if not load_models():
                 raise RuntimeError("model-load-failed")
 
         face_sources = config.get("faceSources")
+        target_faces = config.get("targetFaces")
+
         if isinstance(face_sources, list):
-            source_map = _resolve_face_source_map(face_sources, override_map)
+            source_map = _resolve_face_source_map(face_sources, source_override_map)
+            expected_source_sha256_map = get_expected_face_source_sha256_map(config)
+            for source_id, expected_sha256 in expected_source_sha256_map.items():
+                source_path = source_map.get(str(source_id))
+                if not source_path or not verify_file_sha256(source_path, expected_sha256):
+                    raise RuntimeError("config-mismatch")
+
             output_path = swap_face_video_by_sources(
                 args.input_video,
                 source_map,
@@ -385,8 +452,33 @@ def main():
                 use_gpu=use_gpu,
                 gpu_provider=gpu_provider,
             )
+        elif isinstance(target_faces, list):
+            target_face_map = _resolve_target_faces(config, target_override_map)
+            expected_target_faces_sha256_map = get_expected_target_faces_sha256_map(config)
+            for target_id, expected_sha256 in expected_target_faces_sha256_map.items():
+                target_path = target_face_map.get(str(target_id))
+                if not target_path or not verify_file_sha256(target_path, expected_sha256):
+                    raise RuntimeError("config-mismatch")
+
+            segment_duration_sec, segment_overlap_frames = _resolve_segment_options(config, args)
+            output_path = swap_face_video_deep(
+                args.input_video,
+                list(target_face_map.values()),
+                regions=regions,
+                key_frame_ms=key_frame_ms,
+                progress_callback=_progress_callback,
+                stage_callback=_stage_callback,
+                use_gpu=use_gpu,
+                gpu_provider=gpu_provider,
+                segment_duration_sec=segment_duration_sec,
+                segment_overlap_frames=segment_overlap_frames,
+            )
         else:
-            target_face = _resolve_target_face(config, args, override_map)
+            target_face = _resolve_target_face(config, args, target_override_map)
+            expected_target_sha256 = get_expected_target_face_sha256(config)
+            if expected_target_sha256 and not verify_file_sha256(target_face, expected_target_sha256):
+                raise RuntimeError("config-mismatch")
+
             output_path = swap_face_video(
                 args.input_video,
                 target_face,

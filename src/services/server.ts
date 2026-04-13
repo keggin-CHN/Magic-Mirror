@@ -23,6 +23,8 @@ export interface Task {
   id: string;
   inputImage: string;
   targetFace?: string;
+  targetFaces?: FaceSource[];
+  deepSwapMode?: boolean;
   regions?: Region[];
   faceSources?: FaceSource[];
 }
@@ -33,6 +35,10 @@ export interface VideoTask {
   id: string;
   inputVideo: string;
   targetFace?: string;
+  targetFaces?: FaceSource[];
+  deepSwapMode?: boolean;
+  segmentDurationSec?: number;
+  segmentOverlapFrames?: number;
   regions?: Region[];
   faceSources?: FaceSource[];
   keyFrameMs?: number;
