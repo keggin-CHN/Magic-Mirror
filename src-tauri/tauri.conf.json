@@ -47,9 +47,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "copyright": "Copyright © 2024 Del Wang",
+    "copyright": "Copyright © 2026 Keggin",
     "shortDescription": "AI Face Swap",
-    "longDescription": "Instant AI Face Swap, Hairstyles & Outfits — One click to a brand new you!",
+    "longDescription": "MagicMirror - A powerful and easy-to-use local AI Face Swap & Video processing tool.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
