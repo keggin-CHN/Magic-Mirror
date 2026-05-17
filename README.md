@@ -14,15 +14,10 @@ Magic Mirror 是一款跨平台的 AI 换脸应用，支持图片与视频的一
 
 ---
 
-## 📚 文档导航
+## 📚 文档
 
-| 中文 | English |
-|---|
-| [📖 详细介绍](docs/cn/readme.md) | — |
-| [🔧 安装指南](docs/cn/install.md) | [🔧 Install Guide](docs/en/install.md) |
-| [📘 使用教程](docs/cn/usage.md) | [📘 Usage Guide](docs/en/usage.md) |
-| [❓ 常见问题](docs/cn/faq.md) | [❓ FAQ](docs/en/faq.md) |
-| [🔌 API 文档](docs/API.md) | [🔌 API Docs](docs/API.md) |
+- [中文](docs/cn/readme.md)
+- [English](docs/en/readme.md)
 
 ---
 
@@ -184,33 +179,3 @@ cd android-app
 - **前端轮询**：自适应间隔（500ms - 2s）+ 指数退避，连续失败 8 次自动放弃
 - **网络层**：所有 fetch 包装超时（默认 30s / 上传 10min / 进度 15s）
 
----
-
-## 🤝 贡献
-
-欢迎提交 Issue 与 Pull Request。提交代码前请先：
-
-1. 运行 `pnpm build` 确保 TypeScript 通过
-2. Python 端运行 `python -m pytest`（如有测试）
-3. 遵循现有代码风格
-
----
-
-## 📝 更新日志
-
-历史版本变更见 [CHANGELOG.md](CHANGELOG.md)。
-
----
-
-## 📄 License
-
-[MIT License](LICENSE) © keggin
-
----
-
-## 🙏 鸣谢
-
-- [InsightFace](https://github.com/deepinsight/insightface) — 人脸检测与特征提取模型
-- [inswapper](https://github.com/haofanwang/inswapper) — 换脸模型
-- [Tauri](https://tauri.app) — 跨平台桌面框架
-- [ONNX Runtime](https://onxruntime.ai) — 跨平台推理引擎
