@@ -1,6 +1,7 @@
 import json
 import mimetypes
 import os
+import re
 import threading
 import time
 import traceback
@@ -63,24 +64,32 @@ ALLOWED_VIDEO_EXTS = {
 }
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-WEB_DATA_DIR = os.path.join(BASE_DIR, "data", "web")
-UPLOADS_DIR = os.path.join(WEB_DATA_DIR, "uploads")
-LIBRARY_DIR = os.path.join(WEB_DATA_DIR, "library")
+WEB_DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, "data", "web"))
+UPLOADS_DIR = os.path.abspath(os.path.join(WEB_DATA_DIR, "uploads"))
+LIBRARY_DIR = os.path.abspath(os.path.join(WEB_DATA_DIR, "library"))
 CONFIG_PATH = os.path.join(WEB_DATA_DIR, "config.json")
 DIST_DIR = os.path.join(BASE_DIR, "dist-web")
 
 TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
+# Upload/cache TTL and size limits
+UPLOAD_TTL_SECONDS = 24 * 3600
+RESULT_TTL_SECONDS = 4 * 3600
+PROGRESS_TTL_SECONDS = 6 * 3600
+MAX_UPLOAD_BYTES_IMAGE = 50 * 1024 * 1024
+MAX_UPLOAD_BYTES_VIDEO = 2 * 1024 * 1024 * 1024
+SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._\-]+")
+
 TOKENS: Dict[str, float] = {}
 TOKENS_LOCK = threading.RLock()
 
-UPLOADS: Dict[str, Dict[str, str]] = {}
+UPLOADS: Dict[str, Dict[str, object]] = {}
 UPLOADS_LOCK = threading.RLock()
 
 RESULTS: Dict[str, Dict[str, object]] = {}
 RESULTS_LOCK = threading.RLock()
 
-VIDEO_TASK_PROGRESS = {}
+VIDEO_TASK_PROGRESS: Dict[str, Dict[str, object]] = {}
 VIDEO_TASK_PROGRESS_LOCK = threading.RLock()
 VIDEO_TASK_CANCELLED = set()
 VIDEO_TASK_CANCELLED_LOCK = threading.RLock()
@@ -176,8 +185,11 @@ def _simplify_task_error(err: object) -> str:
         "invalid-face-source-binding",
         "face-source-not-found",
         "file-not-found",
+        "file-too-large",
+        "invalid-path",
         "unsupported-image-format",
         "unsupported-video-format",
+        "unsupported-file-format",
         "image-decode-failed",
         "no-face-detected",
         "no-face-in-selected-regions",
@@ -200,22 +212,56 @@ def _simplify_task_error(err: object) -> str:
 
 def _sanitize_filename(name: str) -> str:
     base = os.path.basename(name or "upload")
-    return base.replace(" ", "_")
+    base = base.replace(" ", "_")
+    cleaned = SAFE_FILENAME_PATTERN.sub("_", base).strip("._-") or "upload"
+    if len(cleaned) > 200:
+        root, ext = os.path.splitext(cleaned)
+        cleaned = root[: 200 - len(ext)] + ext
+    return cleaned
 
 
-def _save_upload(upload_file, dest_dir: str):
+def _is_path_within(parent: str, child: str) -> bool:
+    """Check child path is within parent directory (path traversal defense)."""
+    try:
+        parent_abs = os.path.abspath(parent)
+        child_abs = os.path.abspath(child)
+        return os.path.commonpath([parent_abs, child_abs]) == parent_abs
+    except (ValueError, OSError):
+        return False
+
+
+def _check_upload_size(upload_file, max_bytes: int) -> bool:
+    """Check upload file size without reading entire content."""
+    raw = getattr(upload_file, "file", None)
+    if raw is None:
+        return True
+    try:
+        current = raw.tell()
+        raw.seek(0, 2)
+        size = raw.tell()
+        raw.seek(current)
+        return size <= max_bytes
+    except (OSError, AttributeError):
+        return True
+
+
+def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None):
+    if max_bytes is not None and not _check_upload_size(upload_file, max_bytes):
+        raise RuntimeError("file-too-large")
     filename = _sanitize_filename(upload_file.filename)
     ext = os.path.splitext(filename)[1].lower()
     file_id = uuid.uuid4().hex
     safe_name = f"{file_id}{ext}" if ext else file_id
-    save_path = os.path.join(dest_dir, safe_name)
+    save_path = os.path.abspath(os.path.join(dest_dir, safe_name))
+    if not _is_path_within(dest_dir, save_path):
+        raise RuntimeError("invalid-path")
     upload_file.save(save_path, overwrite=True)
     return file_id, save_path, safe_name
 
 
 def _register_upload(file_id: str, path: str, kind: str) -> None:
     with UPLOADS_LOCK:
-        UPLOADS[file_id] = {"path": path, "kind": kind}
+        UPLOADS[file_id] = {"path": path, "kind": kind, "createdAt": time.time()}
 
 
 def _clone_json_payload(payload):
@@ -241,6 +287,7 @@ def _register_result(result_path: str, delete_paths: List[str]) -> str:
             "path": result_path,
             "delete_paths": delete_paths,
             "name": os.path.basename(result_path),
+            "createdAt": time.time(),
         }
     return result_id
 
@@ -276,6 +323,121 @@ def _safe_delete(path: str) -> None:
             os.remove(path)
     except Exception:
         pass
+
+
+# ─── Garbage Collection ───────────────────────────────────────────────────────
+
+
+def _cleanup_expired_uploads() -> None:
+    """Remove upload records and files older than UPLOAD_TTL_SECONDS."""
+    now = time.time()
+    expired_paths: List[str] = []
+    with UPLOADS_LOCK:
+        expired_ids = [
+            fid
+            for fid, entry in UPLOADS.items()
+            if now - float(entry.get("createdAt", now)) > UPLOAD_TTL_SECONDS
+        ]
+        for fid in expired_ids:
+            entry = UPLOADS.pop(fid, None)
+            if entry:
+                p = entry.get("path")
+                if isinstance(p, str):
+                    expired_paths.append(p)
+    for p in expired_paths:
+        _safe_delete(p)
+
+
+def _cleanup_expired_results() -> None:
+    """Remove result records and files older than RESULT_TTL_SECONDS."""
+    now = time.time()
+    expired_delete_lists: List[List[str]] = []
+    with RESULTS_LOCK:
+        expired_ids = [
+            rid
+            for rid, entry in RESULTS.items()
+            if now - float(entry.get("createdAt", now)) > RESULT_TTL_SECONDS
+        ]
+        for rid in expired_ids:
+            entry = RESULTS.pop(rid, None)
+            if entry:
+                expired_delete_lists.append(list(entry.get("delete_paths") or []))
+    for paths in expired_delete_lists:
+        for p in paths:
+            _safe_delete(p)
+
+
+def _cleanup_expired_progress() -> None:
+    """Remove finished task progress records older than PROGRESS_TTL_SECONDS."""
+    now = time.time()
+    finished_states = {"success", "failed", "cancelled"}
+    with VIDEO_TASK_PROGRESS_LOCK:
+        to_remove = []
+        for task_id in list(VIDEO_TASK_PROGRESS.keys()):
+            state = VIDEO_TASK_PROGRESS.get(task_id) or {}
+            status = state.get("status")
+            finished_at = state.get("_finishedAt")
+            if status in finished_states:
+                if finished_at is None:
+                    state["_finishedAt"] = now
+                    VIDEO_TASK_PROGRESS[task_id] = state
+                elif now - float(finished_at) > PROGRESS_TTL_SECONDS:
+                    to_remove.append(task_id)
+        for task_id in to_remove:
+            VIDEO_TASK_PROGRESS.pop(task_id, None)
+
+
+def _cleanup_orphan_upload_files() -> None:
+    """Scan uploads dir and remove orphan files not tracked in UPLOADS."""
+    if not os.path.isdir(UPLOADS_DIR):
+        return
+    now = time.time()
+    with UPLOADS_LOCK:
+        known_paths = {
+            os.path.abspath(str(entry.get("path", "")))
+            for entry in UPLOADS.values()
+            if entry.get("path")
+        }
+    try:
+        for name in os.listdir(UPLOADS_DIR):
+            full = os.path.abspath(os.path.join(UPLOADS_DIR, name))
+            if not os.path.isfile(full):
+                continue
+            if full in known_paths:
+                continue
+            try:
+                mtime = os.path.getmtime(full)
+            except OSError:
+                continue
+            if now - mtime > UPLOAD_TTL_SECONDS:
+                _safe_delete(full)
+    except OSError:
+        pass
+
+
+_LAST_GC_AT = 0.0
+_GC_LOCK = threading.RLock()
+_GC_INTERVAL_SECONDS = 5 * 60
+
+
+def _maybe_run_gc() -> None:
+    """Throttled GC entry point, triggered by requests."""
+    global _LAST_GC_AT
+    now = time.time()
+    with _GC_LOCK:
+        if now - _LAST_GC_AT < _GC_INTERVAL_SECONDS:
+            return
+        _LAST_GC_AT = now
+    try:
+        _cleanup_expired_uploads()
+        _cleanup_expired_results()
+        _cleanup_expired_progress()
+        _cleanup_orphan_upload_files()
+    except Exception:
+        print("[WEB] GC failed:", traceback.format_exc())
+
+
+# ─── End GC ───────────────────────────────────────────────────────────────────
 
 
 def _list_library_items() -> List[Dict[str, str]]:
@@ -537,7 +699,7 @@ def _build_video_task_config_payload(
                 }
             )
         payload["targetFaces"] = normalized_targets
-        payload["deepSwapMode"] = bool(deep_swap_mode or True)
+        payload["deepSwapMode"] = bool(deep_swap_mode)
         payload["segmentDurationSec"] = max(1, int(segment_duration_sec or 1))
         payload["segmentOverlapFrames"] = max(0, int(segment_overlap_frames or 0))
     else:
@@ -621,6 +783,12 @@ def enable_cors():
     )
 
 
+@app.hook("before_request")
+def _trigger_gc_hook():
+    """Throttled memory/disk cleanup, triggered by incoming requests."""
+    _maybe_run_gc()
+
+
 @app.route("/api/<path:path>", method=["OPTIONS"])
 def handle_options(path):
     response.status = 200
@@ -689,7 +857,13 @@ def upload_library():
     if ext not in ALLOWED_IMAGE_EXTS:
         response.status = 400
         return {"error": "unsupported-image-format"}
-    _, save_path, safe_name = _save_upload(upload_file, LIBRARY_DIR)
+    try:
+        _, save_path, safe_name = _save_upload(
+            upload_file, LIBRARY_DIR, max_bytes=MAX_UPLOAD_BYTES_IMAGE
+        )
+    except RuntimeError as e:
+        response.status = 400
+        return {"error": _simplify_task_error(e)}
     return {
         "id": safe_name,
         "name": safe_name,
@@ -699,8 +873,12 @@ def upload_library():
 
 @app.get("/api/library/<filename>")
 def get_library_file(filename):
-    path = os.path.join(LIBRARY_DIR, os.path.basename(filename))
-    if not os.path.exists(path):
+    safe_name = os.path.basename(filename or "")
+    path = os.path.abspath(os.path.join(LIBRARY_DIR, safe_name))
+    if not _is_path_within(LIBRARY_DIR, path) or not os.path.exists(path):
+        response.status = 404
+        return {"error": "file-not-found"}
+    if _ext(path) not in ALLOWED_IMAGE_EXTS:
         response.status = 404
         return {"error": "file-not-found"}
     return static_file(os.path.basename(path), root=os.path.dirname(path))
@@ -719,12 +897,20 @@ def upload_file():
     ext = _ext(upload_file.filename or "")
     if ext in ALLOWED_IMAGE_EXTS:
         kind = "image"
+        max_bytes = MAX_UPLOAD_BYTES_IMAGE
     elif ext in ALLOWED_VIDEO_EXTS:
         kind = "video"
+        max_bytes = MAX_UPLOAD_BYTES_VIDEO
     else:
         response.status = 400
         return {"error": "unsupported-file-format"}
-    file_id, save_path, _ = _save_upload(upload_file, UPLOADS_DIR)
+    try:
+        file_id, save_path, _ = _save_upload(
+            upload_file, UPLOADS_DIR, max_bytes=max_bytes
+        )
+    except RuntimeError as e:
+        response.status = 400
+        return {"error": _simplify_task_error(e)}
     _register_upload(file_id, save_path, kind)
     return {
         "fileId": file_id,
@@ -744,8 +930,16 @@ def get_file(file_id):
     if not path or not os.path.exists(path):
         response.status = 404
         return {"error": "file-not-found"}
+    abs_path = os.path.abspath(str(path))
+    if not (
+        _is_path_within(UPLOADS_DIR, abs_path)
+        or _is_path_within(LIBRARY_DIR, abs_path)
+        or _is_path_within(WEB_DATA_DIR, abs_path)
+    ):
+        response.status = 404
+        return {"error": "file-not-found"}
     response.set_header("Cache-Control", "no-store")
-    return static_file(os.path.basename(path), root=os.path.dirname(path))
+    return static_file(os.path.basename(abs_path), root=os.path.dirname(abs_path))
 
 
 @app.get("/api/download/<file_id>")

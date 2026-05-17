@@ -59,6 +59,12 @@ VIDEO_TASK_PROGRESS_LOCK = threading.RLock()
 VIDEO_TASK_CANCELLED = set()
 VIDEO_TASK_CANCELLED_LOCK = threading.RLock()
 
+# GC constants for progress records
+_PROGRESS_TTL_SECONDS = 6 * 3600
+_LAST_PROGRESS_GC_AT = 0.0
+_PROGRESS_GC_LOCK = threading.RLock()
+_PROGRESS_GC_INTERVAL = 5 * 60
+
 VIDEO_TASK_CONFIGS = {}
 VIDEO_TASK_CONFIGS_LOCK = threading.RLock()
 VIDEO_TASK_CONFIG_TTL_SECONDS = 7 * 24 * 3600
@@ -66,6 +72,40 @@ VIDEO_TASK_CONFIG_TOKEN_PREFIX = "cfg1"
 VIDEO_TASK_CONFIG_SECRET = os.environ.get(
     "VIDEO_TASK_CONFIG_SECRET", "magic-mirror-config-secret"
 )
+
+
+def _cleanup_expired_progress() -> None:
+    """Remove finished task progress records older than _PROGRESS_TTL_SECONDS."""
+    now = time.time()
+    finished_states = {"success", "failed", "cancelled"}
+    with VIDEO_TASK_PROGRESS_LOCK:
+        to_remove = []
+        for task_id in list(VIDEO_TASK_PROGRESS.keys()):
+            state = VIDEO_TASK_PROGRESS.get(task_id) or {}
+            status = state.get("status")
+            finished_at = state.get("_finishedAt")
+            if status in finished_states:
+                if finished_at is None:
+                    state["_finishedAt"] = now
+                    VIDEO_TASK_PROGRESS[task_id] = state
+                elif now - float(finished_at) > _PROGRESS_TTL_SECONDS:
+                    to_remove.append(task_id)
+        for task_id in to_remove:
+            VIDEO_TASK_PROGRESS.pop(task_id, None)
+
+
+def _maybe_gc_progress() -> None:
+    """Throttled GC for progress records."""
+    global _LAST_PROGRESS_GC_AT
+    now = time.time()
+    with _PROGRESS_GC_LOCK:
+        if now - _LAST_PROGRESS_GC_AT < _PROGRESS_GC_INTERVAL:
+            return
+        _LAST_PROGRESS_GC_AT = now
+    try:
+        _cleanup_expired_progress()
+    except Exception:
+        pass
 
 
 def _set_video_task_progress(task_id: str, **updates):
@@ -76,6 +116,7 @@ def _set_video_task_progress(task_id: str, **updates):
 
 
 def _get_video_task_progress(task_id: str):
+    _maybe_gc_progress()
     with VIDEO_TASK_PROGRESS_LOCK:
         state = VIDEO_TASK_PROGRESS.get(task_id)
         if not state:
@@ -260,7 +301,7 @@ def _build_video_task_config_payload(
                 }
             )
         payload["targetFaces"] = normalized_targets
-        payload["deepSwapMode"] = bool(deep_swap_mode or True)
+        payload["deepSwapMode"] = bool(deep_swap_mode)
         payload["segmentDurationSec"] = max(1, int(segment_duration_sec or 1))
         payload["segmentOverlapFrames"] = max(0, int(segment_overlap_frames or 0))
     else:
@@ -367,7 +408,7 @@ def enable_cors():
     response.set_header("Access-Control-Allow-Headers", "*")
 
 
-@app.route("<path:path>", method=["GET", "OPTIONS"])
+@app.route("<path:path>", method=["OPTIONS"])
 def handle_options(path):
     response.status = 200
     return "MagicMirror ✨"
@@ -730,15 +771,6 @@ def create_video_task():
         has_face_sources = face_sources is not None
         has_target_faces = (target_faces is not None) or deep_swap_mode
 
-        print("[API] 收到视频换脸请求:")
-        print(f"  - task_id: {task_id}")
-        print(f"  - input_video: {input_video}")
-        print(f"  - target_face: {target_face}")
-        print(f"  - has_face_sources: {has_face_sources}")
-        print(f"  - key_frame_ms: {key_frame_ms}")
-        print(f"  - use_gpu: {use_gpu}")
-        print(f"  - gpu_provider: {gpu_provider}")
-
         if not all([task_id, input_video]):
             response.status = 400
             return {"error": "missing-params"}
@@ -985,11 +1017,9 @@ def create_video_task():
         
         def _on_completion(res, err):
             if _is_video_task_cancelled(task_id):
-                print(f"[API] 视频换脸任务已取消，忽略完成回调: task_id={task_id}")
                 return
 
             if res:
-                print(f"[API] 视频换脸任务完成: {res}")
                 _set_video_task_progress(
                     task_id,
                     status="success",
@@ -1012,7 +1042,6 @@ def create_video_task():
         try:
             _run_video_task_async(task_id, task_callable, _on_completion)
         except Exception as e:
-            print(f"[ERROR] 启动异步任务失败: {str(e)}")
             _set_video_task_progress(
                 task_id,
                 status="failed",

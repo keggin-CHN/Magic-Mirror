@@ -13,7 +13,7 @@ import { isTauri } from "@/services/runtime";
 
 const kSwapFaceRefs: {
   id: number;
-  cancel?: VoidFunction;
+  cancel?: () => Promise<void>;
 } = {
   id: 1,
   cancel: undefined,
@@ -126,17 +126,27 @@ export function useSwapFace() {
       let finalResult: string | null = null;
 
       const pollProgress = async () => {
-        // 添加最大轮询次数限制，避免无限轮询
-        const maxPolls = 3600; // 最多轮询1小时（假设每秒一次）
-        let pollCount = 0;
+        // 按真实经过时间限制（默认 4 小时），避免长任务被误杀
+        const maxDurationMs = 4 * 60 * 60 * 1000;
+        const startedAt = Date.now();
+        // 连续网络错误指数退避控制
+        let consecutiveErrors = 0;
+        const maxConsecutiveErrors = 8;
+        let lastProgress = -1;
+        let stableCount = 0;
 
-        while (!pollingControl.shouldStop && pollCount < maxPolls) {
-          pollCount++;
+        while (!pollingControl.shouldStop) {
+          if (Date.now() - startedAt > maxDurationMs) {
+            console.error("[useSwapFace] polling timeout");
+            setError("polling-timeout");
+            pollingControl.shouldStop = true;
+            break;
+          }
 
           try {
             const state = await client.getVideoTaskProgress(taskId);
+            consecutiveErrors = 0;
 
-            // 处理所有状态
             if (state.status === "running" || state.status === "success") {
               setVideoProgress(state.progress ?? 0);
               setVideoEtaSeconds(state.etaSeconds ?? null);
@@ -159,20 +169,37 @@ export function useSwapFace() {
               break;
             }
 
-            // 轮询间隔优化：根据进度动态调整
-            const interval = state.progress > 0 ? 500 : 1000;
+            // 自适应轮询间隔：进度推进时 500ms，停滞时逐步放大到 2s
+            const currentProgress = state.progress ?? 0;
+            if (currentProgress !== lastProgress) {
+              lastProgress = currentProgress;
+              stableCount = 0;
+            } else {
+              stableCount++;
+            }
+            const interval =
+              currentProgress > 0
+                ? Math.min(500 + stableCount * 200, 2000)
+                : 1000;
             await new Promise((resolve) => setTimeout(resolve, interval));
-          } catch (error) {
-            console.error("[useSwapFace] 轮询进度失败:", error);
-            // 网络错误时继续轮询，但增加间隔
-            await new Promise((resolve) => setTimeout(resolve, 2000));
+          } catch (err) {
+            consecutiveErrors++;
+            console.error(
+              `[useSwapFace] poll failed (${consecutiveErrors}/${maxConsecutiveErrors}):`,
+              err
+            );
+            if (consecutiveErrors >= maxConsecutiveErrors) {
+              setError("network-error");
+              pollingControl.shouldStop = true;
+              break;
+            }
+            // 指数退避: 1s, 2s, 4s, 8s, 16s, 封顶 30s
+            const backoff = Math.min(
+              1000 * Math.pow(2, consecutiveErrors - 1),
+              30000
+            );
+            await new Promise((resolve) => setTimeout(resolve, backoff));
           }
-        }
-
-        if (pollCount >= maxPolls) {
-          console.error("[useSwapFace] 轮询超时");
-          setError("polling-timeout");
-          pollingControl.shouldStop = true;
         }
       };
 

@@ -64,6 +64,9 @@ const kMirrorStates: {
   result?: Asset;
 } = { isMe: true };
 
+const clamp = (value: number, min: number, max: number) =>
+  Math.max(min, Math.min(value, max));
+
 export function MirrorPage() {
   const [flag, setFlag] = useState(false);
   const rebuild = useRef<any>();
@@ -329,7 +332,7 @@ export function MirrorPage() {
         rebuild.current();
       }
     });
-  }, [kMirrorStates.me, kMirrorStates.input, isSwapping]);
+  }, [flag, isSwapping]);
 
   useEffect(() => {
     const input = kMirrorStates.input;
@@ -396,7 +399,7 @@ export function MirrorPage() {
         img.src = "";
       };
     }
-  }, [kMirrorStates.input?.path, kMirrorStates.input?.type]);
+  }, [flag]);
 
   useEffect(() => {
     const me = kMirrorStates.me;
@@ -418,9 +421,6 @@ export function MirrorPage() {
       ];
     });
   }, [isMultiFaceMode, flag, isWeb]);
-
-  const clamp = (value: number, min: number, max: number) =>
-    Math.max(min, Math.min(value, max));
 
   const isImageInput = kMirrorStates.input?.type === "image";
   const isVideoInput = kMirrorStates.input?.type === "video";
@@ -481,12 +481,11 @@ export function MirrorPage() {
         })
         .filter((region: Region) => region.width > 1 && region.height > 1);
     },
-    [clamp]
+    []
   );
 
   const toImageRegions = useCallback((): Region[] => {
     if (!previewRef.current || !inputSize) {
-      console.log("[DEBUG] toImageRegions: previewRef 或 inputSize 为空", { previewRef: previewRef.current, inputSize });
       return [];
     }
     const rect = previewRef.current.getBoundingClientRect();
@@ -503,18 +502,6 @@ export function MirrorPage() {
     const displayHeight = inputSize.height * scale;
     const offsetX = (rect.width - displayWidth) / 2;
     const offsetY = (rect.height - displayHeight) / 2;
-
-    console.log("[DEBUG] toImageRegions 转换参数:", {
-      containerRect: { width: rect.width, height: rect.height },
-      inputSize,
-      scale,
-      baseScale,
-      selectionZoom,
-      displaySize: { width: displayWidth, height: displayHeight },
-      offset: { x: offsetX, y: offsetY },
-      screenRegions: regions,
-    });
-
     const imageRegions = regions
       .map((region: Region, idx: number) => {
         const x = Math.round((region.x - offsetX) / scale);
@@ -525,13 +512,6 @@ export function MirrorPage() {
         const clampedY = clamp(y, 0, inputSize.height - 1);
         const clampedWidth = clamp(width, 1, inputSize.width - clampedX);
         const clampedHeight = clamp(height, 1, inputSize.height - clampedY);
-
-        console.log(`[DEBUG] region[${idx}] 转换:`, {
-          screen: region,
-          raw: { x, y, width, height },
-          clamped: { x: clampedX, y: clampedY, width: clampedWidth, height: clampedHeight },
-        });
-
         return {
           x: clampedX,
           y: clampedY,
@@ -541,8 +521,6 @@ export function MirrorPage() {
         };
       })
       .filter((region: Region) => region.width > 1 && region.height > 1);
-
-    console.log("[DEBUG] toImageRegions 最终结果:", imageRegions);
     return imageRegions;
   }, [regions, inputSize, selectionObjectFit, showSelection, selectionZoom]);
 
@@ -710,7 +688,7 @@ export function MirrorPage() {
         setSelectionZoom(nextZoom);
       }
     },
-    [showSelection, selectionZoom, regions, clamp]
+    [showSelection, selectionZoom, regions]
   );
 
   const handlePointerDown = useCallback(
@@ -729,7 +707,7 @@ export function MirrorPage() {
       startPointRef.current = { x: startX, y: startY };
       setDraftRegion({ x: startX, y: startY, width: 0, height: 0 });
     },
-    [canSelect, clamp]
+    [canSelect]
   );
 
   const handlePointerMove = useCallback(
@@ -823,7 +801,7 @@ export function MirrorPage() {
       const height = Math.abs(currentY - start.y);
       setDraftRegion({ x, y, width, height });
     },
-    [clamp]
+    []
   );
 
   const finishSelection = useCallback(
@@ -893,7 +871,7 @@ export function MirrorPage() {
       };
       setSelectedRegionIndex(index);
     },
-    [canSelect, clamp, regions, activeFaceSourceId, isDeepSwapMode]
+    [canSelect, regions, activeFaceSourceId, isDeepSwapMode]
   );
 
   const handleResizePointerDown = useCallback(
@@ -917,7 +895,7 @@ export function MirrorPage() {
         };
         setSelectedRegionIndex(index);
       },
-    [canSelect, clamp, regions]
+    [canSelect, regions]
   );
 
   const handleDeleteSelected = useCallback(() => {

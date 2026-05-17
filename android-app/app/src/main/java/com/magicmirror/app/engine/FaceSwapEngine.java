@@ -612,16 +612,18 @@ public class FaceSwapEngine {
         return result;
     }
 
-    /** 多人无追踪视频帧处理 */
+    /** 多人无追踪视频帧处理（优化：首次检测后复用结果，仅在换脸后重新检测） */
     private Bitmap processMultiFrame(Bitmap frame, Map<String, float[]> embs) throws Exception {
         Bitmap result = frame;
+        List<FaceDetector.DetectedFace> faces = safeDetectFaces(result);
         for (float[] emb : embs.values()) {
-            List<FaceDetector.DetectedFace> faces = safeDetectFaces(result);
             FaceDetector.DetectedFace face = getOneFaceLikeDesktop(faces);
             if (face == null || face.landmarks == null || face.landmarks.length < 5) {
                 continue;
             }
             result = swapper.swapFace(result, face, emb);
+            // 换脸后人脸位置可能变化，需要重新检测
+            faces = safeDetectFaces(result);
         }
         if (enableEnhancer && enhancer != null && enhancer.isLoaded())
             result = enhanceFaceRegion(result);

@@ -23,6 +23,31 @@ export interface LibraryItem {
 
 const kTokenKey = "web-token";
 
+/** 默认请求超时 */
+const DEFAULT_TIMEOUT_MS = 30_000;
+/** 文件上传超时（10 分钟） */
+const UPLOAD_TIMEOUT_MS = 10 * 60_000;
+/** 进度查询超时 */
+const PROGRESS_TIMEOUT_MS = 15_000;
+
+/**
+ * 带超时的 fetch：使用 AbortController 在指定时间后中止请求，
+ * 防止网络异常时请求永远挂起。
+ */
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 class WebServer {
   _baseURL = "/api";
   _token: string | null = null;
@@ -64,76 +89,96 @@ class WebServer {
   }
 
   async login(password: string) {
-    const res = await fetch(`${this._baseURL}/login`, {
-      method: "post",
-      headers: { "Content-Type": "application/json;charset=UTF-8" },
-      body: JSON.stringify({ password }),
-    });
-    if (!res.ok) {
+    try {
+      const res = await fetchWithTimeout(`${this._baseURL}/login`, {
+        method: "post",
+        headers: { "Content-Type": "application/json;charset=UTF-8" },
+        body: JSON.stringify({ password }),
+      });
+      if (!res.ok) {
+        return null;
+      }
+      const data = await res.json();
+      if (data?.token) {
+        this.token = data.token;
+        return data.token as string;
+      }
+      return null;
+    } catch {
       return null;
     }
-    const data = await res.json();
-    if (data?.token) {
-      this.token = data.token;
-      return data.token as string;
-    }
-    return null;
   }
 
   async updateCredential(password: string) {
-    const res = await fetch(`${this._baseURL}/credential`, {
-      method: "post",
-      headers: this._headers({
-        "Content-Type": "application/json;charset=UTF-8",
-      }),
-      body: JSON.stringify({ password }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      return { success: false, error: text || "http-error" };
+    try {
+      const res = await fetchWithTimeout(`${this._baseURL}/credential`, {
+        method: "post",
+        headers: this._headers({
+          "Content-Type": "application/json;charset=UTF-8",
+        }),
+        body: JSON.stringify({ password }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        return { success: false, error: text || "http-error" };
+      }
+      const data = await res.json();
+      return { success: Boolean(data?.success), error: data?.error };
+    } catch {
+      return { success: false, error: "network" };
     }
-    const data = await res.json();
-    return { success: Boolean(data?.success), error: data?.error };
   }
 
   async uploadFile(file: File): Promise<UploadResult | null> {
-    const form = new FormData();
-    form.append("file", file);
-    const res = await fetch(`${this._baseURL}/upload`, {
-      method: "post",
-      headers: this._headers(),
-      body: form,
-    });
-    if (!res.ok) {
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetchWithTimeout(
+        `${this._baseURL}/upload`,
+        { method: "post", headers: this._headers(), body: form },
+        UPLOAD_TIMEOUT_MS
+      );
+      if (!res.ok) {
+        return null;
+      }
+      return (await res.json()) as UploadResult;
+    } catch {
       return null;
     }
-    return (await res.json()) as UploadResult;
   }
 
   async uploadLibrary(file: File): Promise<LibraryItem | null> {
-    const form = new FormData();
-    form.append("file", file);
-    const res = await fetch(`${this._baseURL}/library/upload`, {
-      method: "post",
-      headers: this._headers(),
-      body: form,
-    });
-    if (!res.ok) {
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetchWithTimeout(
+        `${this._baseURL}/library/upload`,
+        { method: "post", headers: this._headers(), body: form },
+        UPLOAD_TIMEOUT_MS
+      );
+      if (!res.ok) {
+        return null;
+      }
+      return (await res.json()) as LibraryItem;
+    } catch {
       return null;
     }
-    return (await res.json()) as LibraryItem;
   }
 
   async listLibrary(): Promise<LibraryItem[]> {
-    const res = await fetch(`${this._baseURL}/library`, {
-      method: "get",
-      headers: this._headers(),
-    });
-    if (!res.ok) {
+    try {
+      const res = await fetchWithTimeout(`${this._baseURL}/library`, {
+        method: "get",
+        headers: this._headers(),
+      });
+      if (!res.ok) {
+        return [];
+      }
+      const data = await res.json();
+      return Array.isArray(data?.items) ? data.items : [];
+    } catch {
       return [];
     }
-    const data = await res.json();
-    return Array.isArray(data?.items) ? data.items : [];
   }
 
   async detectImageFaces(
@@ -141,7 +186,7 @@ class WebServer {
     regions?: Region[]
   ): Promise<DetectFacesResult> {
     try {
-      const res = await fetch(`${this._baseURL}/task/detect-faces`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/task/detect-faces`, {
         method: "post",
         headers: this._headers({
           "Content-Type": "application/json;charset=UTF-8",
@@ -187,7 +232,7 @@ class WebServer {
     regions?: Region[]
   ): Promise<DetectFacesResult> {
     try {
-      const res = await fetch(`${this._baseURL}/task/video/detect-faces`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/task/video/detect-faces`, {
         method: "post",
         headers: this._headers({
           "Content-Type": "application/json;charset=UTF-8",
@@ -242,7 +287,7 @@ class WebServer {
 
   async getVideoGpuModes(): Promise<VideoGpuModesResult> {
     try {
-      const res = await fetch(`${this._baseURL}/task/video/gpu-modes`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/task/video/gpu-modes`, {
         method: "get",
         headers: this._headers(),
       });
@@ -290,7 +335,7 @@ class WebServer {
 
   async createTask(task: Omit<Task, "id"> & { id: string } & { inputFileId: string; targetFaceId?: string }) {
     try {
-      const res = await fetch(`${this._baseURL}/task`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/task`, {
         method: "post",
         headers: this._headers({
           "Content-Type": "application/json;charset=UTF-8",
@@ -335,7 +380,7 @@ class WebServer {
 
   async createVideoTask(task: Omit<VideoTask, "id"> & { id: string } & { inputFileId: string; targetFaceId?: string }) {
     try {
-      const res = await fetch(`${this._baseURL}/task/video`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/task/video`, {
         method: "post",
         headers: this._headers({
           "Content-Type": "application/json;charset=UTF-8",
@@ -397,12 +442,13 @@ class WebServer {
 
   async getVideoTaskProgress(taskId: string): Promise<VideoTaskProgress> {
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `${this._baseURL}/task/video/progress/${encodeURIComponent(taskId)}`,
         {
           method: "get",
           headers: this._headers(),
-        }
+        },
+        PROGRESS_TIMEOUT_MS
       );
       if (!res.ok) {
         return { status: "idle", progress: 0, etaSeconds: null };
@@ -429,7 +475,7 @@ class WebServer {
 
   async cancelTask(taskId: string): Promise<boolean> {
     try {
-      const res = await fetch(`${this._baseURL}/task/${taskId}`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/task/${taskId}`, {
         method: "delete",
         headers: this._headers(),
       });
@@ -450,7 +496,7 @@ class WebServer {
 
   async downloadResult(fileId: string, filename?: string) {
     const url = this.buildDownloadUrl(fileId);
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       method: "get",
       headers: this._headers(),
     });

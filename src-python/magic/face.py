@@ -1694,7 +1694,6 @@ def _swap_face_video_by_sources(
                     error_container['error'] = e
                 print(f"[ERROR] 写入线程异常: {str(e)}")
                 stop_event.set()
-                stop_event.set()
 
         # 启动线程（移除 daemon=True 以确保线程正确完成）
         read_thread = threading.Thread(target=read_frames, name="VideoReader")

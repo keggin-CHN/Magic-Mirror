@@ -846,9 +846,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadVideo(Uri uri) {
+        MediaMetadataRetriever retriever = null;
         try {
             selectedVideoUri = uri;
-            MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+            retriever = new MediaMetadataRetriever();
             retriever.setDataSource(this, uri);
 
             Bitmap thumb = retriever.getFrameAtTime(0);
@@ -858,7 +859,6 @@ public class MainActivity extends AppCompatActivity {
             String w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
             String h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
             String dur = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-            retriever.release();
 
             videoDurationMs = dur != null ? Long.parseLong(dur) : 0;
             videoKeyFrameMs = 0;
@@ -894,6 +894,10 @@ public class MainActivity extends AppCompatActivity {
             updateButtons();
         } catch (Exception e) {
             Toast.makeText(this, getString(R.string.load_video_failed, e.getMessage()), Toast.LENGTH_SHORT).show();
+        } finally {
+            if (retriever != null) {
+                try { retriever.release(); } catch (Exception ignored) {}
+            }
         }
     }
 
@@ -901,16 +905,20 @@ public class MainActivity extends AppCompatActivity {
         if (selectedVideoUri == null)
             return;
         executor.execute(() -> {
+            MediaMetadataRetriever ret = null;
             try {
-                MediaMetadataRetriever ret = new MediaMetadataRetriever();
+                ret = new MediaMetadataRetriever();
                 ret.setDataSource(this, selectedVideoUri);
                 Bitmap frame = ret.getFrameAtTime(videoKeyFrameMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST);
-                ret.release();
                 if (frame != null) {
                     mainHandler.post(() -> ivKeyFrameThumb.setImageBitmap(frame));
                 }
             } catch (Exception e) {
                 Log.w(TAG, "获取关键帧缩略图失败", e);
+            } finally {
+                if (ret != null) {
+                    try { ret.release(); } catch (Exception ignored) {}
+                }
             }
         });
     }
