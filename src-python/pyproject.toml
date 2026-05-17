@@ -2,7 +2,7 @@
 name = "magic"
 version = "2.0.0"
 description = "Instant AI Face Swap, Hairstyles & Outfits — One click to a brand new you!"
-authors = ["Del Wang <hello@xbox.work>"]
+authors = ["keggin <zhou239829001@gmail.com>"]
 
 
 [tool.poetry.dependencies]

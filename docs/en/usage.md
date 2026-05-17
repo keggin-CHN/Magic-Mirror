@@ -1,23 +1,24 @@
 # Usage Guide
 
-First, drag a front-facing photo of yourself into the mirror.
+## Basic Workflow
 
-![](../assets/mirror-me.jpg)
+1. Start the frontend and Python server.
+2. Upload a clear front-facing photo as the face source.
+3. Upload the target image or video.
+4. Choose single-face or multi-face mode.
+5. Start the face swap and wait for processing to finish.
+6. Download the generated result.
 
-Next, drag your desired photo into the other mirror and wait for processing to complete.
+## Multi-Face Swap
 
-![](../assets/mirror-input.jpg)
+In multi-face mode, you can add multiple face sources and assign different faces to selected regions.
 
-> On Apple M1 chips, face swapping takes about 3-5 seconds, varying with your computer's specs and image size.
+## Video Face Swap
 
-When processing is complete, a new image will appear in the original location with `_output` added to its filename.
+Video processing can take a long time. GPU acceleration is recommended. Use DirectML on Windows or CUDA for supported NVIDIA GPUs.
 
-![](../assets/mirror-result.jpg)
+## Notes
 
-You can continue swapping faces with new photos, or use the top-right menu to flip the mirror and change the face image.
-
-![](../assets/mirror-flip.jpg)
-
-## Need help?
-
-Most issues are addressed in the [FAQ](./faq.md). If you need further assistance, please [submit an issue](https://github.com/idootop/MagicMirror/issues).
+- Use clear, unobstructed, front-facing photos.
+- HEIC/HEIF is not supported. Convert to JPG or PNG first.
+- MP4/H.264 videos are recommended.

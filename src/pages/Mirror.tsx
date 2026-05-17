@@ -503,7 +503,7 @@ export function MirrorPage() {
     const offsetX = (rect.width - displayWidth) / 2;
     const offsetY = (rect.height - displayHeight) / 2;
     const imageRegions = regions
-      .map((region: Region, idx: number) => {
+      .map((region: Region) => {
         const x = Math.round((region.x - offsetX) / scale);
         const y = Math.round((region.y - offsetY) / scale);
         const width = Math.round(region.width / scale);

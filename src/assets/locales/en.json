@@ -1,4 +1,4 @@
-{
+﻿{
   "Downloading resources, please wait": "Downloading resources, please wait ({{progress}}%)...",
   "Extracting resources, please wait": "Extracting resources, please wait ({{progress}}%)...",
   "*If the download is stuck or fails, please download and initialize manually. ": "*If the download is stuck or fails, please download and initialize manually. ",
@@ -121,7 +121,7 @@
   "CUDA (NVIDIA GPU)": "CUDA (NVIDIA GPU)",
   "DirectML (Recommended for Windows)": "DirectML (Recommended for Windows)",
   "CPU (Compatible, slower)": "CPU (Compatible, slower)",
-  "downloadURL": "https://github.com/idootop/MagicMirror/releases/download/server-v1.0.0/server_{{type}}_{{arch}}.zip",
-  "downloadTutorial": "https://thread-sphynx-f26.notion.site/MagicMirror-User-Guide-147aea89ebf680c189cdd76f5668261a",
-  "aboutLink": "https://github.com/idootop/MagicMirror"
+  "downloadURL": "https://github.com/keggin-CHN/Magic-Mirror/releases/download/server-v1.0.0/server_{{type}}_{{arch}}.zip",
+  "downloadTutorial": "https://github.com/keggin-CHN/Magic-Mirror/blob/main/docs/en/usage.md",
+  "aboutLink": "https://github.com/keggin-CHN/Magic-Mirror"
 }

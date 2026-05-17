@@ -5,12 +5,12 @@
   "type": "module",
   "description": "Instant AI Face Swap, Hairstyles & Outfits — One click to a brand new you!",
   "author": {
-    "name": "Del Wang",
-    "email": "hello@xbox.work"
+    "name": "keggin",
+    "email": "zhou239829001@gmail.com"
   },
   "license": "MIT",
-  "homepage": "https://del.wang",
-  "repository": "https://github.com/idootop/MagicMirror",
+  "homepage": "https://github.com/keggin-CHN",
+  "repository": "https://github.com/keggin-CHN/Magic-Mirror",
   "scripts": {
     "tauri": "tauri",
     "dev": "vite",
