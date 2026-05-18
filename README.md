@@ -1,8 +1,8 @@
 # Magic Mirror ✨
 
-> Instant AI Face Swap, Hairstyles & Outfits — One click to a brand new you!
+> A mirror of pixels, a face reborn in light.
 
-Magic Mirror 是一款跨平台的 AI 换脸应用，支持图片与视频的一键换脸，覆盖桌面端（Windows / macOS / Linux）、Web 端与 Android 端。
+Magic Mirror 是一面写在像素里的魔镜：让影像轻轻流转，让面容在光里重生。它是一款跨平台 AI 换脸应用，支持图片与视频的一键换脸，覆盖桌面端（Windows / macOS / Linux）、Web 端与 Android 端。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)](https://react.dev)
