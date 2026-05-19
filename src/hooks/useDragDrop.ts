@@ -104,12 +104,19 @@ export function useDragDrop(
     };
 
     let cleanup: (() => void) | undefined;
+    let disposed = false;
 
     setupListener().then((unlisten) => {
+      if (disposed) {
+        unlisten();
+        return;
+      }
+
       cleanup = unlisten;
     });
 
     return () => {
+      disposed = true;
       cleanup?.();
     };
   }, [onDropped]);

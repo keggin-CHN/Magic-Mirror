@@ -92,6 +92,9 @@ def _cleanup_expired_progress() -> None:
                     to_remove.append(task_id)
         for task_id in to_remove:
             VIDEO_TASK_PROGRESS.pop(task_id, None)
+    with VIDEO_TASK_CANCELLED_LOCK:
+        for task_id in to_remove:
+            VIDEO_TASK_CANCELLED.discard(task_id)
 
 
 def _maybe_gc_progress() -> None:
@@ -109,6 +112,9 @@ def _maybe_gc_progress() -> None:
 
 
 def _set_video_task_progress(task_id: str, **updates):
+    status = updates.get("status")
+    if status in {"success", "failed", "cancelled"} and "_finishedAt" not in updates:
+        updates["_finishedAt"] = time.time()
     with VIDEO_TASK_PROGRESS_LOCK:
         state = VIDEO_TASK_PROGRESS.get(task_id, {})
         state.update(updates)
@@ -121,7 +127,9 @@ def _get_video_task_progress(task_id: str):
         state = VIDEO_TASK_PROGRESS.get(task_id)
         if not state:
             return {"status": "idle", "progress": 0, "etaSeconds": None, "stage": None}
-        return state.copy()
+        public_state = state.copy()
+    public_state.pop("_finishedAt", None)
+    return public_state
 
 
 def _mark_video_task_cancelled(task_id: str):
@@ -929,7 +937,7 @@ def create_video_task():
         # 先设置初始状态
         _set_video_task_progress(
             task_id,
-            status="running",
+            status="queued",
             progress=0,
             etaSeconds=None,
             stage="queued",
@@ -1073,6 +1081,7 @@ def create_video_task():
 
 @app.get("/task/video/progress/<task_id>")
 def get_video_task_progress(task_id):
+    response.set_header("Cache-Control", "no-store")
     return _get_video_task_progress(task_id)
 
 

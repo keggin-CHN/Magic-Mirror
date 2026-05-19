@@ -6,6 +6,24 @@ import { t } from "i18next";
 
 export type ServerStatus = "idle" | "launching" | "running";
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const LONG_REQUEST_TIMEOUT_MS = 120_000;
+const PROGRESS_REQUEST_TIMEOUT_MS = 15_000;
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
 export interface Region {
   x: number;
   y: number;
@@ -191,7 +209,7 @@ class _Server {
 
   async status(): Promise<ServerStatus> {
     try {
-      const res = await fetch(`${this._baseURL}/status`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/status`, {
         method: "get",
       });
       const data = await res.json();
@@ -203,9 +221,13 @@ class _Server {
 
   async prepare(): Promise<boolean> {
     try {
-      const res = await fetch(`${this._baseURL}/prepare`, {
-        method: "post",
-      });
+      const res = await fetchWithTimeout(
+        `${this._baseURL}/prepare`,
+        {
+          method: "post",
+        },
+        LONG_REQUEST_TIMEOUT_MS
+      );
       const data = await res.json();
       return data.success || false;
     } catch {
@@ -215,7 +237,7 @@ class _Server {
 
   async createTask(task: Task): Promise<TaskResult> {
     try {
-      const res = await fetch(`${this._baseURL}/task`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/task`, {
         method: "post",
         headers: {
           "Content-Type": "application/json;charset=UTF-8",
@@ -259,7 +281,7 @@ class _Server {
 
   async detectImageFaces(inputImage: string, regions?: Region[]): Promise<DetectFacesResult> {
     try {
-      const res = await fetch(`${this._baseURL}/task/detect-faces`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/task/detect-faces`, {
         method: "post",
         headers: {
           "Content-Type": "application/json;charset=UTF-8",
@@ -305,7 +327,7 @@ class _Server {
     regions?: Region[]
   ): Promise<DetectFacesResult> {
     try {
-      const res = await fetch(`${this._baseURL}/task/video/detect-faces`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/task/video/detect-faces`, {
         method: "post",
         headers: {
           "Content-Type": "application/json;charset=UTF-8",
@@ -360,7 +382,7 @@ class _Server {
 
   async getVideoGpuModes(): Promise<VideoGpuModesResult> {
     try {
-      const res = await fetch(`${this._baseURL}/task/video/gpu-modes`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/task/video/gpu-modes`, {
         method: "get",
       });
 
@@ -407,8 +429,7 @@ class _Server {
 
   async createVideoTask(task: VideoTask): Promise<TaskResult> {
     try {
-      console.log("[Server] 发送视频换脸请求:", task);
-      const res = await fetch(`${this._baseURL}/task/video`, {
+      const res = await fetchWithTimeout(`${this._baseURL}/task/video`, {
         method: "post",
         headers: {
           "Content-Type": "application/json;charset=UTF-8",
@@ -449,8 +470,6 @@ class _Server {
         return { result: null, error: "invalid-json" };
       }
 
-      console.log("[Server] 视频换脸响应:", data);
-
       if (data.error) {
         console.error("[Server] 服务端返回错误:", data.error);
         return { result: null, error: data.error };
@@ -469,14 +488,22 @@ class _Server {
 
   async getVideoTaskProgress(taskId: string): Promise<VideoTaskProgress> {
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `${this._baseURL}/task/video/progress/${encodeURIComponent(taskId)}`,
         {
           method: "get",
-        }
+        },
+        PROGRESS_REQUEST_TIMEOUT_MS
       );
       if (!res.ok) {
-        return { status: "idle", progress: 0, etaSeconds: null };
+        let error = `http-${res.status}`;
+        try {
+          const data = await res.json();
+          error = data?.error || error;
+        } catch {
+          // ignore
+        }
+        return { status: "idle", progress: 0, etaSeconds: null, error };
       }
       const data = await res.json();
       return {
@@ -494,17 +521,23 @@ class _Server {
         result: data.result ?? null,
       };
     } catch {
-      return { status: "idle", progress: 0, etaSeconds: null };
+      return { status: "idle", progress: 0, etaSeconds: null, error: "network" };
     }
   }
 
   async cancelTask(taskId: string): Promise<boolean> {
     try {
-      const res = await fetch(`${this._baseURL}/task/${taskId}`, {
-        method: "delete",
-      });
+      const res = await fetchWithTimeout(
+        `${this._baseURL}/task/${encodeURIComponent(taskId)}`,
+        {
+          method: "delete",
+        }
+      );
+      if (!res.ok) {
+        return false;
+      }
       const data = await res.json();
-      return data.success || false;
+      return Boolean(data?.success);
     } catch {
       return false;
     }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useXState, XSta } from "xsta";
 import { Server, ServerStatus } from "../services/server";
 import { sleep } from "../services/utils";
@@ -10,15 +10,17 @@ let launchPromise: Promise<boolean> | null = null;
 
 export function useServer() {
   const [status, setStatus] = useXState<ServerStatus>(kStatusKey, "idle");
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
-  const launch = async () => {
+  const launch = useCallback(async () => {
     // 如果已经有启动任务在进行，返回同一个 Promise
     if (launchPromise) {
       return launchPromise;
     }
 
-    if (status !== "idle") {
-      console.warn(`[useServer] 服务器已在运行或正在启动，当前状态: ${status}`);
+    if (statusRef.current !== "idle") {
+      console.warn(`[useServer] 服务器已在运行或正在启动，当前状态: ${statusRef.current}`);
       return true;
     }
 
@@ -64,7 +66,7 @@ export function useServer() {
     })();
 
     return launchPromise;
-  };
+  }, [setStatus]);
 
   const kill = useCallback(() => {
     setStatus("idle");

@@ -147,7 +147,11 @@ export function useSwapFace() {
             const state = await client.getVideoTaskProgress(taskId);
             consecutiveErrors = 0;
 
-            if (state.status === "running" || state.status === "success") {
+            if (
+              state.status === "queued" ||
+              state.status === "running" ||
+              state.status === "success"
+            ) {
               setVideoProgress(state.progress ?? 0);
               setVideoEtaSeconds(state.etaSeconds ?? null);
               setVideoStage(state.stage ?? null);
@@ -156,6 +160,8 @@ export function useSwapFace() {
                 pollingControl.shouldStop = true;
                 break;
               }
+            } else if (state.error) {
+              throw new Error(state.error);
             } else if (state.status === "failed") {
               setVideoEtaSeconds(null);
               setVideoStage(state.stage ?? "failed");

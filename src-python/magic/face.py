@@ -31,6 +31,19 @@ _tf_gpu_instances = {}
 _tf_gpu_lock = threading.RLock()
 
 
+_VERBOSE_LOGS = os.environ.get("MAGIC_VERBOSE_LOGS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _debug_log(message: str):
+    if _VERBOSE_LOGS:
+        print(message)
+
+
 def _log_error(context: str, error: Exception):
     """记录详细的错误信息"""
     error_msg = f"[ERROR] {context}\n"
@@ -242,22 +255,22 @@ def swap_face(input_path, face_path):
 
 def swap_face_regions(input_path, face_path, regions):
     try:
-        print(f"[DEBUG] swap_face_regions 被调用")
-        print(f"[DEBUG] input_path: {input_path}")
-        print(f"[DEBUG] face_path: {face_path}")
-        print(f"[DEBUG] regions 类型: {type(regions)}, 值: {regions}")
+        _debug_log("[DEBUG] swap_face_regions 被调用")
+        _debug_log(f"[DEBUG] input_path: {input_path}")
+        _debug_log(f"[DEBUG] face_path: {face_path}")
+        _debug_log(f"[DEBUG] regions 类型: {type(regions)}, 值: {regions}")
         
         save_path = _get_output_file_path(input_path)
         input_img = _read_image(input_path)
         height, width = input_img.shape[:2]
-        print(f"[DEBUG] 图片尺寸: {width}x{height}")
+        _debug_log(f"[DEBUG] 图片尺寸: {width}x{height}")
         
         normalized_regions = _normalize_regions(regions, width, height)
-        print(f"[DEBUG] normalized_regions: {normalized_regions}")
+        _debug_log(f"[DEBUG] normalized_regions: {normalized_regions}")
 
         # 未选择/无有效选区：回退全图换脸
         if not normalized_regions:
-            print("[WARN] 无有效选区，回退全图换脸！")
+            _debug_log("[WARN] 无有效选区，回退全图换脸！")
             output_img = _swap_face(input_path, face_path)
             return _write_image(save_path, output_img)
 
@@ -861,34 +874,34 @@ def _write_image(img_path: str, img):
 
 def _normalize_regions(regions, width, height):
     normalized = []
-    print(f"[DEBUG] _normalize_regions: regions={regions}, 图片尺寸={width}x{height}")
+    _debug_log(f"[DEBUG] _normalize_regions: regions={regions}, 图片尺寸={width}x{height}")
     if not regions:
-        print("[DEBUG] regions 为空或 None")
+        _debug_log("[DEBUG] regions 为空或 None")
         return normalized
     for i, region in enumerate(regions):
-        print(f"[DEBUG] 处理 region[{i}]: type={type(region)}, value={region}")
+        _debug_log(f"[DEBUG] 处理 region[{i}]: type={type(region)}, value={region}")
         if not isinstance(region, dict):
-            print(f"[DEBUG] region[{i}] 不是 dict，跳过")
+            _debug_log(f"[DEBUG] region[{i}] 不是 dict，跳过")
             continue
         try:
             x = int(region.get("x", 0))
             y = int(region.get("y", 0))
             w = int(region.get("width", 0))
             h = int(region.get("height", 0))
-            print(f"[DEBUG] region[{i}] 解析: x={x}, y={y}, w={w}, h={h}")
+            _debug_log(f"[DEBUG] region[{i}] 解析: x={x}, y={y}, w={w}, h={h}")
         except (TypeError, ValueError) as e:
-            print(f"[DEBUG] region[{i}] 解析失败: {e}")
+            _debug_log(f"[DEBUG] region[{i}] 解析失败: {e}")
             continue
         if w <= 0 or h <= 0:
-            print(f"[DEBUG] region[{i}] w 或 h <= 0，跳过")
+            _debug_log(f"[DEBUG] region[{i}] w 或 h <= 0，跳过")
             continue
         x = max(0, min(x, width - 1))
         y = max(0, min(y, height - 1))
         w = max(1, min(w, width - x))
         h = max(1, min(h, height - y))
-        print(f"[DEBUG] region[{i}] 规范化后: x={x}, y={y}, w={w}, h={h}")
+        _debug_log(f"[DEBUG] region[{i}] 规范化后: x={x}, y={y}, w={w}, h={h}")
         normalized.append((x, y, w, h))
-    print(f"[DEBUG] 最终 normalized: {normalized}")
+    _debug_log(f"[DEBUG] 最终 normalized: {normalized}")
     return normalized
 
 

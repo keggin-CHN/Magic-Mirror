@@ -161,6 +161,7 @@ def _require_auth() -> bool:
         if token not in TOKENS:
             response.status = 401
             return False
+        TOKENS[token] = time.time()
     return True
 
 
@@ -385,6 +386,10 @@ def _cleanup_expired_progress() -> None:
                     to_remove.append(task_id)
         for task_id in to_remove:
             VIDEO_TASK_PROGRESS.pop(task_id, None)
+    if to_remove:
+        with VIDEO_TASK_CANCELLED_LOCK:
+            for task_id in to_remove:
+                VIDEO_TASK_CANCELLED.discard(task_id)
 
 
 def _cleanup_orphan_upload_files() -> None:
@@ -472,6 +477,9 @@ def _get_library_path(item_id: str) -> Optional[str]:
 
 
 def _set_video_task_progress(task_id: str, **updates):
+    status = updates.get("status")
+    if status in {"success", "failed", "cancelled"} and "_finishedAt" not in updates:
+        updates["_finishedAt"] = time.time()
     with VIDEO_TASK_PROGRESS_LOCK:
         state = VIDEO_TASK_PROGRESS.get(task_id, {})
         state.update(updates)
@@ -479,6 +487,7 @@ def _set_video_task_progress(task_id: str, **updates):
 
 
 def _get_video_task_progress(task_id: str):
+    _maybe_run_gc()
     with VIDEO_TASK_PROGRESS_LOCK:
         state = VIDEO_TASK_PROGRESS.get(task_id)
         if not state:
@@ -488,7 +497,9 @@ def _get_video_task_progress(task_id: str):
                 "etaSeconds": None,
                 "stage": None,
             }
-        return state.copy()
+        public_state = state.copy()
+    public_state.pop("_finishedAt", None)
+    return public_state
 
 
 def _mark_video_task_cancelled(task_id: str):
@@ -922,6 +933,8 @@ def upload_file():
 
 @app.get("/api/file/<file_id>")
 def get_file(file_id):
+    if not _require_auth():
+        return {"error": "unauthorized"}
     path = _get_upload_path(file_id)
     if not path:
         info = _get_result_info(file_id)
@@ -944,6 +957,8 @@ def get_file(file_id):
 
 @app.get("/api/download/<file_id>")
 def download_file(file_id):
+    if not _require_auth():
+        return {"error": "unauthorized"}
     info = _get_result_info(file_id)
     if not info:
         response.status = 404
@@ -1409,7 +1424,7 @@ def create_video_task():
 
         _set_video_task_progress(
             task_id,
-            status="running",
+            status="queued",
             progress=0,
             etaSeconds=None,
             stage="queued",
@@ -1549,11 +1564,16 @@ def create_video_task():
 
 @app.get("/api/task/video/progress/<task_id>")
 def get_video_task_progress(task_id):
+    response.set_header("Cache-Control", "no-store")
+    if not _require_auth():
+        return {"error": "unauthorized"}
     return _get_video_task_progress(task_id)
 
 
 @app.delete("/api/task/<task_id>")
 def cancel_task(task_id):
+    if not _require_auth():
+        return {"error": "unauthorized"}
     AsyncTask.cancel(task_id)
     _mark_video_task_cancelled(task_id)
     _set_video_task_progress(

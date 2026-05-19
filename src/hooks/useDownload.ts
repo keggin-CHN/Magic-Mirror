@@ -62,15 +62,24 @@ export function useDownload() {
     };
 
     let cleanup: (() => void) | undefined;
+    let disposed = false;
 
     setup().then((unlisten) => {
-      cleanup = () => {
+      const nextCleanup = () => {
         unlisten?.download();
         unlisten?.unzip();
       };
+
+      if (disposed) {
+        nextCleanup();
+        return;
+      }
+
+      cleanup = nextCleanup;
     });
 
     return () => {
+      disposed = true;
       cleanup?.();
     };
   }, []);

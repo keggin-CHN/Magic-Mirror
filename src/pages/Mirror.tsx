@@ -69,8 +69,8 @@ const clamp = (value: number, min: number, max: number) =>
 
 export function MirrorPage() {
   const [flag, setFlag] = useState(false);
-  const rebuild = useRef<any>();
-  rebuild.current = () => setFlag(!flag);
+  const rebuild = useRef<() => void>(() => undefined);
+  rebuild.current = () => setFlag((prev: boolean) => !prev);
 
   const { i18n, t } = useTranslation();
   const navigate = useNavigate();
@@ -143,9 +143,12 @@ export function MirrorPage() {
       return;
     }
     setIsLibraryLoading(true);
-    const items = await webClient.listLibrary();
-    setLibraryItems(items);
-    setIsLibraryLoading(false);
+    try {
+      const items = await webClient.listLibrary();
+      setLibraryItems(items);
+    } finally {
+      setIsLibraryLoading(false);
+    }
   }, [isWeb, webClient]);
 
   useEffect(() => {
@@ -228,13 +231,16 @@ export function MirrorPage() {
       }
       setIsUploading(true);
       const uploaded: LibraryItem[] = [];
-      for (const file of validFiles) {
-        const item = await webClient.uploadLibrary(file);
-        if (item) {
-          uploaded.push(item);
+      try {
+        for (const file of validFiles) {
+          const item = await webClient.uploadLibrary(file);
+          if (item) {
+            uploaded.push(item);
+          }
         }
+      } finally {
+        setIsUploading(false);
       }
-      setIsUploading(false);
       if (!uploaded.length) {
         setNotice(t("Upload failed. Please try again."));
         return uploaded;
@@ -284,8 +290,12 @@ export function MirrorPage() {
         return null;
       }
       setIsUploading(true);
-      const uploaded = await webClient.uploadFile(file);
-      setIsUploading(false);
+      let uploaded: UploadResult | null = null;
+      try {
+        uploaded = await webClient.uploadFile(file);
+      } finally {
+        setIsUploading(false);
+      }
       if (!uploaded) {
         setNotice(t("Upload failed. Please try again."));
         return null;
@@ -322,7 +332,7 @@ export function MirrorPage() {
   );
 
   useEffect(() => {
-    setTimeout(() => {
+    const timer = window.setTimeout(() => {
       if (kMirrorStates.me && !kMirrorStates.input) {
         kMirrorStates.isMe = false;
         rebuild.current();
@@ -331,7 +341,9 @@ export function MirrorPage() {
         kMirrorStates.isMe = false;
         rebuild.current();
       }
-    });
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, [flag, isSwapping]);
 
   useEffect(() => {
@@ -539,7 +551,8 @@ export function MirrorPage() {
     autoDetectedImagePathRef.current = input.path;
     let cancelled = false;
 
-    (async () => {
+  (async () => {
+    try {
       setIsDetectingFaces(true);
       const detected = isWeb
         ? await webClient.detectImageFaces(input.path)
@@ -547,7 +560,6 @@ export function MirrorPage() {
       if (cancelled) {
         return;
       }
-      setIsDetectingFaces(false);
 
       if (detected.error) {
         return;
@@ -569,11 +581,17 @@ export function MirrorPage() {
       if (!screenRegions.length) {
         setNotice(t("No face detected in selected areas."));
       }
-    })();
+    } finally {
+      if (!cancelled) {
+        setIsDetectingFaces(false);
+      }
+    }
+  })();
 
-    return () => {
-      cancelled = true;
-    };
+  return () => {
+    cancelled = true;
+    setIsDetectingFaces(false);
+  };
   }, [
     showSelection,
     isImageInput,

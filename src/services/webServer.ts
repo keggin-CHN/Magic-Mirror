@@ -40,12 +40,32 @@ async function fetchWithTimeout(
   timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(input, { ...init, signal: controller.signal });
   } finally {
-    clearTimeout(timer);
+    globalThis.clearTimeout(timer);
   }
+}
+
+function toHeaderRecord(extra?: HeadersInit): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (!extra) {
+    return headers;
+  }
+  if (extra instanceof Headers) {
+    extra.forEach((value, key) => {
+      headers[key] = value;
+    });
+    return headers;
+  }
+  if (Array.isArray(extra)) {
+    for (const [key, value] of extra) {
+      headers[key] = value;
+    }
+    return headers;
+  }
+  return { ...extra };
 }
 
 class WebServer {
@@ -79,9 +99,7 @@ class WebServer {
   }
 
   _headers(extra?: HeadersInit) {
-    const headers: Record<string, string> = {
-      ...(extra || {}),
-    } as Record<string, string>;
+    const headers = toHeaderRecord(extra);
     if (this._token) {
       headers.Authorization = `Bearer ${this._token}`;
     }
@@ -451,7 +469,14 @@ class WebServer {
         PROGRESS_TIMEOUT_MS
       );
       if (!res.ok) {
-        return { status: "idle", progress: 0, etaSeconds: null };
+        let error = `http-${res.status}`;
+        try {
+          const data = await res.json();
+          error = data?.error || error;
+        } catch {
+          // ignore
+        }
+        return { status: "idle", progress: 0, etaSeconds: null, error };
       }
       const data = await res.json();
       return {
@@ -469,50 +494,71 @@ class WebServer {
         result: data.resultFileId ?? null,
       };
     } catch {
-      return { status: "idle", progress: 0, etaSeconds: null };
+      return { status: "idle", progress: 0, etaSeconds: null, error: "network" };
     }
   }
 
   async cancelTask(taskId: string): Promise<boolean> {
     try {
-      const res = await fetchWithTimeout(`${this._baseURL}/task/${taskId}`, {
-        method: "delete",
-        headers: this._headers(),
-      });
+      const res = await fetchWithTimeout(
+        `${this._baseURL}/task/${encodeURIComponent(taskId)}`,
+        {
+          method: "delete",
+          headers: this._headers(),
+        }
+      );
+      if (!res.ok) {
+        return false;
+      }
       const data = await res.json();
-      return data.success || false;
+      return Boolean(data?.success);
     } catch {
       return false;
     }
   }
 
+  _withTokenQuery(url: string) {
+    if (!this._token) {
+      return url;
+    }
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}token=${encodeURIComponent(this._token)}`;
+  }
+
   buildFileUrl(fileId: string) {
-    return `${this._baseURL}/file/${encodeURIComponent(fileId)}`;
+    return this._withTokenQuery(`${this._baseURL}/file/${encodeURIComponent(fileId)}`);
   }
 
   buildDownloadUrl(fileId: string) {
-    return `${this._baseURL}/download/${encodeURIComponent(fileId)}`;
+    return this._withTokenQuery(`${this._baseURL}/download/${encodeURIComponent(fileId)}`);
   }
 
   async downloadResult(fileId: string, filename?: string) {
     const url = this.buildDownloadUrl(fileId);
-    const res = await fetchWithTimeout(url, {
-      method: "get",
-      headers: this._headers(),
-    });
-    if (!res.ok) {
+    try {
+      const res = await fetchWithTimeout(url, {
+        method: "get",
+        headers: this._headers(),
+      });
+      if (!res.ok) {
+        return false;
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement("a");
+        a.href = objectUrl;
+        a.download = filename || "result";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+      return true;
+    } catch {
       return false;
     }
-    const blob = await res.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = objectUrl;
-    a.download = filename || "result";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(objectUrl);
-    return true;
   }
 }
 
