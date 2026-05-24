@@ -102,6 +102,10 @@ VIDEO_TASK_CONFIG_SECRET = os.environ.get(
     "VIDEO_TASK_CONFIG_SECRET", "magic-mirror-config-secret"
 )
 
+_LIBRARY_CACHE_LOCK = threading.RLock()
+_LIBRARY_CACHE_MTIME: Optional[int] = None
+_LIBRARY_CACHE_ITEMS: List[Dict[str, str]] = []
+
 
 def _ensure_dirs():
     os.makedirs(WEB_DATA_DIR, exist_ok=True)
@@ -445,23 +449,50 @@ def _maybe_run_gc() -> None:
 # ─── End GC ───────────────────────────────────────────────────────────────────
 
 
+def _invalidate_library_cache() -> None:
+    global _LIBRARY_CACHE_MTIME, _LIBRARY_CACHE_ITEMS
+    with _LIBRARY_CACHE_LOCK:
+        _LIBRARY_CACHE_MTIME = None
+        _LIBRARY_CACHE_ITEMS = []
+
+
 def _list_library_items() -> List[Dict[str, str]]:
-    items: List[Dict[str, str]] = []
     if not os.path.isdir(LIBRARY_DIR):
-        return items
-    for name in sorted(os.listdir(LIBRARY_DIR)):
-        path = os.path.join(LIBRARY_DIR, name)
-        if not os.path.isfile(path):
-            continue
-        if _ext(path) not in ALLOWED_IMAGE_EXTS:
-            continue
-        items.append(
-            {
-                "id": name,
-                "name": name,
-                "url": f"/api/library/{name}",
-            }
-        )
+        _invalidate_library_cache()
+        return []
+
+    try:
+        dir_mtime = os.stat(LIBRARY_DIR).st_mtime_ns
+    except OSError:
+        _invalidate_library_cache()
+        return []
+
+    with _LIBRARY_CACHE_LOCK:
+        if _LIBRARY_CACHE_MTIME == dir_mtime:
+            return [item.copy() for item in _LIBRARY_CACHE_ITEMS]
+
+    items: List[Dict[str, str]] = []
+    try:
+        entries = sorted(os.scandir(LIBRARY_DIR), key=lambda entry: entry.name)
+        for entry in entries:
+            if not entry.is_file():
+                continue
+            if _ext(entry.name) not in ALLOWED_IMAGE_EXTS:
+                continue
+            items.append(
+                {
+                    "id": entry.name,
+                    "name": entry.name,
+                    "url": f"/api/library/{entry.name}",
+                }
+            )
+    except OSError:
+        return []
+
+    with _LIBRARY_CACHE_LOCK:
+        _LIBRARY_CACHE_MTIME = dir_mtime
+        _LIBRARY_CACHE_ITEMS = [item.copy() for item in items]
+
     return items
 
 
@@ -875,6 +906,7 @@ def upload_library():
     except RuntimeError as e:
         response.status = 400
         return {"error": _simplify_task_error(e)}
+    _invalidate_library_cache()
     return {
         "id": safe_name,
         "name": safe_name,

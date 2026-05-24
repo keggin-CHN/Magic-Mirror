@@ -38,6 +38,7 @@ export function useServer() {
         // 使用超时机制避免无限等待
         const maxWaitTime = 30000; // 30秒超时
         const startTime = Date.now();
+        let pollDelay = 200;
 
         while (XSta.get(kStatusKey) === "launching") {
           if (Date.now() - startTime > maxWaitTime) {
@@ -50,7 +51,8 @@ export function useServer() {
           if (status === "running") {
             break;
           }
-          await sleep(200);
+          await sleep(pollDelay);
+          pollDelay = Math.min(Math.round(pollDelay * 1.5), 1000);
         }
 
         const prepared = await Server.prepare();

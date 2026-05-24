@@ -190,10 +190,12 @@ export function useSwapFace() {
             await new Promise((resolve) => setTimeout(resolve, interval));
           } catch (err) {
             consecutiveErrors++;
-            console.error(
-              `[useSwapFace] poll failed (${consecutiveErrors}/${maxConsecutiveErrors}):`,
-              err
-            );
+            if (consecutiveErrors === 1 || consecutiveErrors >= maxConsecutiveErrors) {
+              console.error(
+                `[useSwapFace] poll failed (${consecutiveErrors}/${maxConsecutiveErrors}):`,
+                err
+              );
+            }
             if (consecutiveErrors >= maxConsecutiveErrors) {
               setError("network-error");
               pollingControl.shouldStop = true;

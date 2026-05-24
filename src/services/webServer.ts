@@ -7,6 +7,11 @@ import type {
   VideoTask,
   VideoTaskProgress,
 } from "./server";
+import {
+  PROGRESS_REQUEST_TIMEOUT_MS,
+  UPLOAD_REQUEST_TIMEOUT_MS,
+  fetchWithTimeout,
+} from "./utils";
 
 export interface UploadResult {
   fileId: string;
@@ -22,31 +27,6 @@ export interface LibraryItem {
 }
 
 const kTokenKey = "web-token";
-
-/** 默认请求超时 */
-const DEFAULT_TIMEOUT_MS = 30_000;
-/** 文件上传超时（10 分钟） */
-const UPLOAD_TIMEOUT_MS = 10 * 60_000;
-/** 进度查询超时 */
-const PROGRESS_TIMEOUT_MS = 15_000;
-
-/**
- * 带超时的 fetch：使用 AbortController 在指定时间后中止请求，
- * 防止网络异常时请求永远挂起。
- */
-async function fetchWithTimeout(
-  input: RequestInfo | URL,
-  init: RequestInit = {},
-  timeoutMs: number = DEFAULT_TIMEOUT_MS
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } finally {
-    globalThis.clearTimeout(timer);
-  }
-}
 
 function toHeaderRecord(extra?: HeadersInit): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -154,7 +134,7 @@ class WebServer {
       const res = await fetchWithTimeout(
         `${this._baseURL}/upload`,
         { method: "post", headers: this._headers(), body: form },
-        UPLOAD_TIMEOUT_MS
+        UPLOAD_REQUEST_TIMEOUT_MS
       );
       if (!res.ok) {
         return null;
@@ -172,7 +152,7 @@ class WebServer {
       const res = await fetchWithTimeout(
         `${this._baseURL}/library/upload`,
         { method: "post", headers: this._headers(), body: form },
-        UPLOAD_TIMEOUT_MS
+        UPLOAD_REQUEST_TIMEOUT_MS
       );
       if (!res.ok) {
         return null;
@@ -466,7 +446,7 @@ class WebServer {
           method: "get",
           headers: this._headers(),
         },
-        PROGRESS_TIMEOUT_MS
+        PROGRESS_REQUEST_TIMEOUT_MS
       );
       if (!res.ok) {
         let error = `http-${res.status}`;

@@ -78,6 +78,7 @@ def load_models():
         return False
 
 
+@lru_cache(maxsize=1)
 def _get_available_execution_providers():
     try:
         import onnxruntime as ort
@@ -566,6 +567,7 @@ def _swap_face_video(
             "start_time": time.time(),
         }
         stats_lock = threading.Lock()
+        progress_log_interval = max(30, total_frames // 20) if total_frames > 0 else 300
 
         def read_frames():
             try:
@@ -627,7 +629,7 @@ def _swap_face_video(
                         except Exception as e:
                             print(f"[WARN] progress_callback failed: {str(e)}")
 
-                    if current_frame % 30 == 0:
+                    if current_frame == 1 or current_frame % progress_log_interval == 0:
                         progress = (
                             (current_frame / total_frames * 100)
                             if total_frames > 0
@@ -992,6 +994,7 @@ def _get_output_video_path(file_name):
     return base_name + "_output.mp4"
 
 
+@lru_cache(maxsize=1)
 def _resolve_ffmpeg_binary() -> str | None:
     """优先解析 ffmpeg 可执行文件路径（支持打包目录兜底）。"""
     env_ffmpeg = os.environ.get("MAGIC_FFMPEG_PATH")
@@ -1019,6 +1022,7 @@ def _resolve_ffmpeg_binary() -> str | None:
     return None
 
 
+@lru_cache(maxsize=1)
 def _resolve_ffprobe_binary() -> str | None:
     """优先解析 ffprobe 可执行文件路径（支持与 ffmpeg 同目录）。"""
     env_ffprobe = os.environ.get("MAGIC_FFPROBE_PATH")

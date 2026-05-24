@@ -3,26 +3,13 @@ import { homeDir, join } from "@tauri-apps/api/path";
 import { arch, type } from "@tauri-apps/plugin-os";
 import { Child, Command } from "@tauri-apps/plugin-shell";
 import { t } from "i18next";
+import {
+  LONG_REQUEST_TIMEOUT_MS,
+  PROGRESS_REQUEST_TIMEOUT_MS,
+  fetchWithTimeout,
+} from "./utils";
 
 export type ServerStatus = "idle" | "launching" | "running";
-
-const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-const LONG_REQUEST_TIMEOUT_MS = 120_000;
-const PROGRESS_REQUEST_TIMEOUT_MS = 15_000;
-
-async function fetchWithTimeout(
-  input: RequestInfo | URL,
-  init: RequestInit = {},
-  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } finally {
-    globalThis.clearTimeout(timer);
-  }
-}
 
 export interface Region {
   x: number;

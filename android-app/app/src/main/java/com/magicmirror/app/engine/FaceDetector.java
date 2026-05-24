@@ -11,11 +11,11 @@ import ai.onnxruntime.OrtSession;
 import ai.onnxruntime.OrtSession.Result;
 
 import java.io.File;
+import java.nio.FloatBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * SCRFD 人脸检测器 — 使用 scrfd_2.5g.onnx 模型
@@ -26,6 +26,10 @@ public class FaceDetector {
     private static final String TAG = "FaceDetector";
     private static final String MODEL_NAME = "scrfd_2.5g.onnx";
     private static final int INPUT_SIZE = 640;
+    private static final int INPUT_CHANNEL_SIZE = INPUT_SIZE * INPUT_SIZE;
+    private static final int INPUT_BUFFER_SIZE = 3 * INPUT_CHANNEL_SIZE;
+    private static final long[] INPUT_SHAPE = {1, 3, INPUT_SIZE, INPUT_SIZE};
+    private static final float PAD_VALUE = (0f - 127.5f) / 128.0f;
     private static final float CONF_THRESHOLD = 0.5f;
     private static final float NMS_THRESHOLD = 0.4f;
     private static final int MAX_OUTPUT_FACES = 20;
@@ -37,7 +41,10 @@ public class FaceDetector {
     private static final float MAX_FACE_ASPECT = 2.20f;
 
     private OrtSession session;
+    private String inputName;
     private final OrtEnvironment env;
+    private final ThreadLocal<float[]> inputBuffer = ThreadLocal.withInitial(() -> new float[INPUT_BUFFER_SIZE]);
+    private final ThreadLocal<int[]> pixelBuffer = ThreadLocal.withInitial(() -> new int[INPUT_CHANNEL_SIZE]);
 
     public FaceDetector(OrtEnvironment env) {
         this.env = env;
@@ -48,6 +55,7 @@ public class FaceDetector {
         OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
         ModelUtils.configureSessionOptions(opts, useGpu, TAG);
         session = env.createSession(modelFile.getAbsolutePath(), opts);
+        inputName = session.getInputNames().iterator().next();
         Log.i(TAG, "人脸检测模型加载成功, 输入: " + session.getInputNames()
                 + ", 输出数: " + session.getOutputNames().size());
     }
@@ -69,56 +77,35 @@ public class FaceDetector {
 
         Bitmap resized = Bitmap.createScaledBitmap(bitmap, newW, newH, true);
 
-        // 创建输入张量 [1, 3, 640, 640]
-        // SCRFD 预处理: BGR 通道，(pixel - 127.5) / 128.0
-        float[][][][] inputData = new float[1][3][INPUT_SIZE][INPUT_SIZE];
-        int[] pixels = new int[newW * newH];
+        float[] inputData = inputBuffer.get();
+        int[] pixels = pixelBuffer.get();
+        Arrays.fill(inputData, PAD_VALUE);
         resized.getPixels(pixels, 0, newW, 0, 0, newW, newH);
 
         for (int y = 0; y < newH; y++) {
+            int rowOffset = y * newW;
+            int tensorRowOffset = y * INPUT_SIZE;
             for (int x = 0; x < newW; x++) {
-                int pixel = pixels[y * newW + x];
+                int pixel = pixels[rowOffset + x];
                 int r = (pixel >> 16) & 0xFF;
                 int g = (pixel >> 8) & 0xFF;
                 int b = pixel & 0xFF;
-                // BGR 顺序，标准化
-                inputData[0][0][y][x] = (b - 127.5f) / 128.0f;
-                inputData[0][1][y][x] = (g - 127.5f) / 128.0f;
-                inputData[0][2][y][x] = (r - 127.5f) / 128.0f;
-            }
-        }
-        // Fix #3: 填充区域应为 (0 - 127.5) / 128.0 = -0.99609375，而非 0.0
-        // 因为黑色像素 (0,0,0) 经过 SCRFD 预处理后应该是 -0.996
-        float padVal = (0f - 127.5f) / 128.0f; // ≈ -0.996
-        for (int ch = 0; ch < 3; ch++) {
-            for (int y = newH; y < INPUT_SIZE; y++) {
-                for (int x = 0; x < INPUT_SIZE; x++) {
-                    inputData[0][ch][y][x] = padVal;
-                }
-            }
-            for (int y = 0; y < newH; y++) {
-                for (int x = newW; x < INPUT_SIZE; x++) {
-                    inputData[0][ch][y][x] = padVal;
-                }
+                int tensorOffset = tensorRowOffset + x;
+                inputData[tensorOffset] = (b - 127.5f) / 128.0f;
+                inputData[INPUT_CHANNEL_SIZE + tensorOffset] = (g - 127.5f) / 128.0f;
+                inputData[INPUT_CHANNEL_SIZE * 2 + tensorOffset] = (r - 127.5f) / 128.0f;
             }
         }
 
         if (resized != bitmap)
             resized.recycle();
 
-        OnnxTensor inputTensor = OnnxTensor.createTensor(env, inputData);
-        Map<String, OnnxTensor> inputs = new HashMap<>();
-        inputs.put(session.getInputNames().iterator().next(), inputTensor);
-
-        Result result = session.run(inputs);
-
-        List<DetectedFace> faces = parseDetections(result, scale, origW, origH);
-        faces = filterPlausibleFaces(faces, origW, origH);
-
-        inputTensor.close();
-        result.close();
-
-        return nms(faces, NMS_THRESHOLD);
+        try (OnnxTensor inputTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(inputData), INPUT_SHAPE);
+                Result result = session.run(Collections.singletonMap(inputName, inputTensor))) {
+            List<DetectedFace> faces = parseDetections(result, scale, origW, origH);
+            faces = filterPlausibleFaces(faces, origW, origH);
+            return nms(faces, NMS_THRESHOLD);
+        }
     }
 
     private List<DetectedFace> parseDetections(Result result, float scale, int origW, int origH) {
