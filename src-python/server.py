@@ -7,6 +7,7 @@ from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 
+    """Check if a directory is writable."""
 def _is_dir_writable(path: str) -> bool:
     try:
         if not path:
@@ -59,6 +60,7 @@ def _boot_log_path() -> str:
     return os.path.join(tempfile.gettempdir(), "magic_mirror_boot.log")
 
 
+    """Append a message to the boot log file."""
 def _append_boot_log(text: str) -> None:
     try:
         path = _boot_log_path()
