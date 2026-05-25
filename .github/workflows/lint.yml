@@ -1,0 +1,29 @@
+name: Lint
+
+on:
+  push:
+    paths:
+      - "src-python/**"
+      - ".github/workflows/lint.yml"
+  pull_request:
+    paths:
+      - "src-python/**"
+      - ".github/workflows/lint.yml"
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install linters
+        run: pip install ruff
+      - name: Run ruff check
+        run: ruff check src-python/
+      - name: Run ruff format check
+        run: ruff format --check src-python/
