@@ -131,6 +131,7 @@ def _save_config(cfg: dict) -> None:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
+    """Generate a new authentication token."""
 def _issue_token() -> str:
     token = uuid.uuid4().hex
     with TOKENS_LOCK:
@@ -138,6 +139,7 @@ def _issue_token() -> str:
     return token
 
 
+    """Remove expired authentication tokens."""
 def _cleanup_tokens() -> None:
     now = time.time()
     with TOKENS_LOCK:
@@ -150,6 +152,7 @@ def _cleanup_tokens() -> None:
             TOKENS.pop(token, None)
 
 
+    """Extract the authentication token from the request."""
 def _extract_token() -> Optional[str]:
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
@@ -157,6 +160,7 @@ def _extract_token() -> Optional[str]:
     return request.headers.get("X-Token") or request.query.get("token")
 
 
+    """Validate the request token and reject unauthorized calls."""
 def _require_auth() -> bool:
     _cleanup_tokens()
     token = _extract_token()
@@ -818,6 +822,7 @@ def _stream_and_cleanup(path: str, result_id: str, delete_paths: List[str]):
 
 # Enable CORS
 @app.hook("after_request")
+    """Configure CORS headers for all responses."""
 def enable_cors():
     response.set_header("Access-Control-Allow-Origin", "*")
     response.set_header(
@@ -835,17 +840,20 @@ def _trigger_gc_hook():
 
 
 @app.route("/api/<path:path>", method=["OPTIONS"])
+    """Handle CORS preflight OPTIONS requests."""
 def handle_options(path):
     response.status = 200
     return {}
 
 
 @app.get("/api/status")
+    """Return the server status and available features."""
 def status():
     return {"status": "running"}
 
 
 @app.post("/api/prepare")
+    """Prepare a file for face detection."""
 def prepare():
     if request.method == "OPTIONS":
         return {}
@@ -853,6 +861,7 @@ def prepare():
 
 
 @app.post("/api/login")
+    """Authenticate with password and return a token."""
 def login():
     if request.method == "OPTIONS":
         return {}
@@ -867,6 +876,7 @@ def login():
 
 
 @app.post("/api/credential")
+    """Update the server password."""
 def update_credential():
     if request.method == "OPTIONS":
         return {}
@@ -882,6 +892,7 @@ def update_credential():
 
 
 @app.get("/api/library")
+    """List all items in the face library."""
 def list_library():
     if not _require_auth():
         return {"error": "unauthorized"}
@@ -889,6 +900,7 @@ def list_library():
 
 
 @app.post("/api/library/upload")
+    """Upload a new face to the library."""
 def upload_library():
     if request.method == "OPTIONS":
         return {}
@@ -918,6 +930,7 @@ def upload_library():
 
 
 @app.get("/api/library/<filename>")
+    """Retrieve a face library file by filename."""
 def get_library_file(filename):
     safe_name = os.path.basename(filename or "")
     path = os.path.abspath(os.path.join(LIBRARY_DIR, safe_name))
@@ -931,6 +944,7 @@ def get_library_file(filename):
 
 
 @app.post("/api/upload")
+    """Upload a file for processing."""
 def upload_file():
     if request.method == "OPTIONS":
         return {}
@@ -967,6 +981,7 @@ def upload_file():
 
 
 @app.get("/api/file/<file_id>")
+    """Retrieve an uploaded file by ID."""
 def get_file(file_id):
     if not _require_auth():
         return {"error": "unauthorized"}
@@ -991,6 +1006,7 @@ def get_file(file_id):
 
 
 @app.get("/api/download/<file_id>")
+    """Download a result file by ID."""
 def download_file(file_id):
     if not _require_auth():
         return {"error": "unauthorized"}
@@ -1011,6 +1027,7 @@ def download_file(file_id):
 
 
 @app.route("/api/task/detect-faces", method=["POST", "OPTIONS"])
+    """Detect faces in an uploaded image."""
 def detect_faces_for_image():
     if request.method == "OPTIONS":
         return {}
@@ -1040,6 +1057,7 @@ def detect_faces_for_image():
 
 
 @app.route("/api/task/video/detect-faces", method=["POST", "OPTIONS"])
+    """Detect faces in a video file."""
 def detect_faces_for_video():
     if request.method == "OPTIONS":
         return {}
@@ -1078,6 +1096,7 @@ def detect_faces_for_video():
 
 
 @app.route("/api/task", method=["POST", "OPTIONS"])
+    """Create a new face swap task."""
 def create_task():
     if request.method == "OPTIONS":
         return {}
@@ -1207,6 +1226,7 @@ def create_task():
 
 
 @app.route("/api/task/video/gpu-modes", method=["GET", "OPTIONS"])
+    """Return available GPU acceleration modes."""
 def get_video_gpu_modes():
     if request.method == "OPTIONS":
         return {}
@@ -1225,6 +1245,7 @@ def get_video_gpu_modes():
 
 
 @app.route("/api/task/video", method=["POST", "OPTIONS"])
+    """Create a new video face swap task."""
 def create_video_task():
     if request.method == "OPTIONS":
         return {}
@@ -1598,6 +1619,7 @@ def create_video_task():
 
 
 @app.get("/api/task/video/progress/<task_id>")
+    """Return the progress of a video task."""
 def get_video_task_progress(task_id):
     response.set_header("Cache-Control", "no-store")
     if not _require_auth():
@@ -1606,6 +1628,7 @@ def get_video_task_progress(task_id):
 
 
 @app.delete("/api/task/<task_id>")
+    """Cancel a running task."""
 def cancel_task(task_id):
     if not _require_auth():
         return {"error": "unauthorized"}
@@ -1622,6 +1645,7 @@ def cancel_task(task_id):
 
 
 @app.get("/")
+    """Serve the main web page."""
 def web_index():
     if os.path.isdir(DIST_DIR):
         return static_file("index.html", root=DIST_DIR)
@@ -1630,6 +1654,7 @@ def web_index():
 
 
 @app.get("/<filepath:path>")
+    """Serve static web assets."""
 def web_assets(filepath):
     if os.path.isdir(DIST_DIR):
         candidate = os.path.join(DIST_DIR, filepath)

@@ -410,6 +410,7 @@ app.plugins[0].json_dumps = lambda *args, **kwargs: json.dumps(
 
 # Enable CORS
 @app.hook("after_request")
+    """Configure CORS headers for all responses."""
 def enable_cors():
     response.set_header("Access-Control-Allow-Origin", "*")
     response.set_header("Access-Control-Allow-Methods", "*")
@@ -417,17 +418,20 @@ def enable_cors():
 
 
 @app.route("<path:path>", method=["OPTIONS"])
+    """Handle CORS preflight OPTIONS requests."""
 def handle_options(path):
     response.status = 200
     return "MagicMirror ✨"
 
 
 @app.get("/status")
+    """Return the server status and available features."""
 def status():
     return {"status": "running"}
 
 
 @app.route("/prepare", method=["POST", "OPTIONS"])
+    """Prepare a file for face detection."""
 def prepare():
     # 处理 OPTIONS 预检请求
     if request.method == "OPTIONS":
@@ -437,6 +441,7 @@ def prepare():
 
 
 @app.route("/task", method=["POST", "OPTIONS"])
+    """Create a new face swap task."""
 def create_task():
     # 处理 OPTIONS 预检请求
     if request.method == "OPTIONS":
@@ -590,6 +595,7 @@ def create_task():
 
 
 @app.route("/task/detect-faces", method=["POST", "OPTIONS"])
+    """Detect faces in an uploaded image."""
 def detect_faces_for_image():
     if request.method == "OPTIONS":
         return {}
@@ -625,6 +631,7 @@ def detect_faces_for_image():
 
 
 @app.route("/task/video/detect-faces", method=["POST", "OPTIONS"])
+    """Detect faces in a video file."""
 def detect_faces_for_video():
     if request.method == "OPTIONS":
         return {}
@@ -670,6 +677,7 @@ def detect_faces_for_video():
 
 
 @app.route("/task/video/gpu-modes", method=["GET", "OPTIONS"])
+    """Return available GPU acceleration modes."""
 def get_video_gpu_modes():
     if request.method == "OPTIONS":
         return {}
@@ -686,6 +694,7 @@ def get_video_gpu_modes():
 
 
 @app.route("/task/video", method=["POST", "OPTIONS"])
+    """Create a new video face swap task."""
 def create_video_task():
     # 处理 OPTIONS 预检请求
     if request.method == "OPTIONS":
@@ -1080,12 +1089,14 @@ def create_video_task():
 
 
 @app.get("/task/video/progress/<task_id>")
+    """Return the progress of a video task."""
 def get_video_task_progress(task_id):
     response.set_header("Cache-Control", "no-store")
     return _get_video_task_progress(task_id)
 
 
 @app.delete("/task/<task_id>")
+    """Cancel a running task."""
 def cancel_task(task_id):
     AsyncTask.cancel(task_id)
     _mark_video_task_cancelled(task_id)
