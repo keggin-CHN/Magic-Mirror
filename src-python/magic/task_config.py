@@ -119,6 +119,7 @@ def build_video_task_config_token(payload: Dict[str, Any], secret: str) -> str:
     return f"{VIDEO_TASK_CONFIG_TOKEN_PREFIX}.{payload_b64}.{signature}"
 
 
+    """Parse and verify a video task config token."""
 def parse_video_task_config_token(
     config_id: str,
     secret: str,
@@ -165,14 +166,17 @@ def parse_video_task_config_token(
     return clone_json_payload(config)
 
 
+    """Get the expected SHA256 for the input video."""
 def get_expected_input_video_sha256(config: Dict[str, Any]) -> Optional[str]:
     return _extract_sha256(config.get("inputVideo"))
 
 
+    """Get the expected SHA256 for the target face."""
 def get_expected_target_face_sha256(config: Dict[str, Any]) -> Optional[str]:
     return _extract_sha256(config.get("targetFace"))
 
 
+    """Get a map of target face SHA256 hashes."""
 def get_expected_target_faces_sha256_map(config: Dict[str, Any]) -> Dict[str, str]:
     out: Dict[str, str] = {}
     target_faces = config.get("targetFaces")
@@ -190,6 +194,7 @@ def get_expected_target_faces_sha256_map(config: Dict[str, Any]) -> Dict[str, st
     return out
 
 
+    """Get a map of face source SHA256 hashes."""
 def get_expected_face_source_sha256_map(config: Dict[str, Any]) -> Dict[str, str]:
     out: Dict[str, str] = {}
     face_sources = config.get("faceSources")
@@ -207,6 +212,7 @@ def get_expected_face_source_sha256_map(config: Dict[str, Any]) -> Dict[str, str
     return out
 
 
+    """Parse and verify a signed token."""
 def _parse_signed_token(config_id: str, *, prefix: str, secret: str) -> Optional[Dict[str, Any]]:
     token_prefix = f"{prefix}."
     if not config_id.startswith(token_prefix):
@@ -232,6 +238,7 @@ def _parse_signed_token(config_id: str, *, prefix: str, secret: str) -> Optional
     return body
 
 
+    """Canonicalize input video config."""
 def _canonicalize_input_video(payload: Dict[str, Any]) -> Optional[Dict[str, str]]:
     input_sha256 = _normalize_sha256(payload.get("inputVideoHash"))
     if input_sha256:
@@ -252,6 +259,7 @@ def _canonicalize_input_video(payload: Dict[str, Any]) -> Optional[Dict[str, str
     return None
 
 
+    """Canonicalize target face config."""
 def _canonicalize_target_face(payload: Dict[str, Any]) -> Optional[Dict[str, str]]:
     target_sha256 = _normalize_sha256(payload.get("targetFaceHash"))
     if target_sha256:
@@ -272,6 +280,7 @@ def _canonicalize_target_face(payload: Dict[str, Any]) -> Optional[Dict[str, str
     return None
 
 
+    """Canonicalize face source configs."""
 def _canonicalize_face_sources(face_sources: Iterable[Any]) -> List[Dict[str, str]]:
     normalized: List[Dict[str, str]] = []
 
@@ -303,6 +312,7 @@ def _canonicalize_face_sources(face_sources: Iterable[Any]) -> List[Dict[str, st
     return normalized
 
 
+    """Canonicalize face regions."""
 def _canonicalize_regions(regions: Any) -> List[Dict[str, Any]]:
     if not isinstance(regions, list):
         return []
@@ -342,6 +352,7 @@ def _canonicalize_regions(regions: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+    """Coerce a value to a non-negative int."""
 def _coerce_non_negative_int(value: Any) -> int:
     try:
         return max(0, int(float(value or 0)))
@@ -349,6 +360,7 @@ def _coerce_non_negative_int(value: Any) -> int:
         return 0
 
 
+    """Normalize GPU provider name."""
 def _normalize_gpu_provider(value: Any) -> str:
     mode = str(value or "auto").strip().lower()
     if mode in {"dml", "directml"}:
@@ -360,6 +372,7 @@ def _normalize_gpu_provider(value: Any) -> str:
     return "auto"
 
 
+    """Extract SHA256 hash from an item."""
 def _extract_sha256(item: Any) -> Optional[str]:
     if not isinstance(item, dict):
         return None
@@ -371,6 +384,7 @@ def _extract_sha256(item: Any) -> Optional[str]:
     return None
 
 
+    """Normalize a SHA256 hash value."""
 def _normalize_sha256(value: Any) -> Optional[str]:
     if value is None:
         return None
