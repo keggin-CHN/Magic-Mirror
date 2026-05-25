@@ -257,6 +257,7 @@ def _check_upload_size(upload_file, max_bytes: int) -> bool:
         return True
 
 
+    """Save an uploaded file to the destination directory."""
 def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None):
     if max_bytes is not None and not _check_upload_size(upload_file, max_bytes):
         raise RuntimeError("file-too-large")
@@ -271,19 +272,23 @@ def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None)
     return file_id, save_path, safe_name
 
 
+    """Register an uploaded file for later retrieval."""
 def _register_upload(file_id: str, path: str, kind: str) -> None:
     with UPLOADS_LOCK:
         UPLOADS[file_id] = {"path": path, "kind": kind, "createdAt": time.time()}
 
 
+    """Deep clone a JSON-serializable payload."""
 def _clone_json_payload(payload):
     return json.loads(json.dumps(payload, ensure_ascii=False))
 
 
+    """Build a signed config token for a video task."""
 def _build_video_task_config_token(payload: Dict[str, object]) -> str:
     return build_video_task_config_token(payload, VIDEO_TASK_CONFIG_SECRET)
 
 
+    """Parse and verify a video task config token."""
 def _parse_video_task_config_token(config_id: str) -> Optional[Dict[str, object]]:
     return parse_video_task_config_token(
         str(config_id),
@@ -292,6 +297,7 @@ def _parse_video_task_config_token(config_id: str) -> Optional[Dict[str, object]
     )
 
 
+    """Register a result file for download and cleanup."""
 def _register_result(result_path: str, delete_paths: List[str]) -> str:
     result_id = uuid.uuid4().hex
     with RESULTS_LOCK:
@@ -304,24 +310,28 @@ def _register_result(result_path: str, delete_paths: List[str]) -> str:
     return result_id
 
 
+    """Get the file path for an uploaded file."""
 def _get_upload_path(file_id: str) -> Optional[str]:
     with UPLOADS_LOCK:
         item = UPLOADS.get(file_id)
         return item.get("path") if item else None
 
 
+    """Get the file kind for an uploaded file."""
 def _get_upload_kind(file_id: str) -> Optional[str]:
     with UPLOADS_LOCK:
         item = UPLOADS.get(file_id)
         return item.get("kind") if item else None
 
 
+    """Get info about a registered result."""
 def _get_result_info(file_id: str) -> Optional[Dict[str, object]]:
     with RESULTS_LOCK:
         info = RESULTS.get(file_id)
         return info.copy() if info else None
 
 
+    """Remove an upload registration by path."""
 def _remove_upload_by_path(path: str) -> None:
     with UPLOADS_LOCK:
         to_remove = [key for key, item in UPLOADS.items() if item.get("path") == path]
@@ -329,6 +339,7 @@ def _remove_upload_by_path(path: str) -> None:
             UPLOADS.pop(key, None)
 
 
+    """Safely delete a file, ignoring errors."""
 def _safe_delete(path: str) -> None:
     try:
         if path and os.path.exists(path):
@@ -456,6 +467,7 @@ def _maybe_run_gc() -> None:
 # ─── End GC ───────────────────────────────────────────────────────────────────
 
 
+    """Invalidate the face library cache."""
 def _invalidate_library_cache() -> None:
     global _LIBRARY_CACHE_MTIME, _LIBRARY_CACHE_ITEMS
     with _LIBRARY_CACHE_LOCK:
@@ -463,6 +475,7 @@ def _invalidate_library_cache() -> None:
         _LIBRARY_CACHE_ITEMS = []
 
 
+    """List all items in the face library."""
 def _list_library_items() -> List[Dict[str, str]]:
     if not os.path.isdir(LIBRARY_DIR):
         _invalidate_library_cache()
@@ -503,6 +516,7 @@ def _list_library_items() -> List[Dict[str, str]]:
     return items
 
 
+    """Get the file path for a library item."""
 def _get_library_path(item_id: str) -> Optional[str]:
     if not item_id:
         return None
