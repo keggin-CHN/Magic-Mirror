@@ -5,13 +5,13 @@ on:
     paths:
       - "Dockerfile"
       - ".dockerignore"
-      - "src-python/**"
+      - "src-python/requirements-docker.txt"
       - ".github/workflows/docker-build.yml"
   pull_request:
     paths:
       - "Dockerfile"
       - ".dockerignore"
-      - "src-python/**"
+      - "src-python/requirements-docker.txt"
       - ".github/workflows/docker-build.yml"
   workflow_dispatch:
 
@@ -22,18 +22,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Validate Dockerfile syntax
-        run: |
-          docker run --rm -i hadolint/hadolint < Dockerfile || true
-      - name: Build (dependency layer only, skip model download)
-        run: |
-          # Build only up to requirements install to validate Dockerfile
-          docker build --target builder -t magic-mirror:ci --no-cache -f- . <<'EOF'
-          FROM python:3.12-slim AS builder
-          RUN apt-get update && apt-get install -y --no-install-recommends \
-              libgl1-mesa-glx libglib2.0-0 wget ca-certificates \
-              && rm -rf /var/lib/apt/lists/*
-          WORKDIR /app
-          COPY src-python/requirements-docker.txt requirements.txt
-          RUN pip install --no-cache-dir -r requirements.txt
-          EOF
+      - name: Validate Dockerfile with hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+          ignore: DL3008
