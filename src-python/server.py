@@ -13,8 +13,8 @@ def _is_dir_writable(path: str) -> bool:
         if not path:
             return False
         os.makedirs(path, exist_ok=True)
-        probe = os.path.join(path, ".magic_mirror_write_probe")
-        with open(probe, "a", encoding="utf-8"):
+        probe = os.path.join(path, '.magic_mirror_write_probe')
+        with open(probe, 'a', encoding='utf-8'):
             pass
         try:
             os.remove(probe)
@@ -36,8 +36,8 @@ def _boot_log_path() -> str:
 
     candidates = []
 
-    exe_path = os.path.abspath(sys.executable or "")
-    exe_dir = os.path.dirname(exe_path) if exe_path else ""
+    exe_path = os.path.abspath(sys.executable or '')
+    exe_dir = os.path.dirname(exe_path) if exe_path else ''
     if exe_dir:
         candidates.append(exe_dir)
 
@@ -55,19 +55,19 @@ def _boot_log_path() -> str:
 
     for directory in candidates:
         if _is_dir_writable(directory):
-            return os.path.join(directory, "magic_mirror_boot.log")
+            return os.path.join(directory, 'magic_mirror_boot.log')
 
-    return os.path.join(tempfile.gettempdir(), "magic_mirror_boot.log")
+    return os.path.join(tempfile.gettempdir(), 'magic_mirror_boot.log')
 
 
 def _append_boot_log(text: str) -> None:
     """Append a message to the boot log file."""
     try:
         path = _boot_log_path()
-        with open(path, "a", encoding="utf-8") as f:
+        with open(path, 'a', encoding='utf-8') as f:
             f.write(text)
-            if not text.endswith("\n"):
-                f.write("\n")
+            if not text.endswith('\n'):
+                f.write('\n')
     except Exception:
         # 启动日志不应影响主流程
         pass
@@ -75,6 +75,7 @@ def _append_boot_log(text: str) -> None:
 
 class _GracefulWSGIServer(ThreadingMixIn, WSGIServer):
     """Thread-per-request WSGI server with graceful shutdown support."""
+
     daemon_threads = True
     allow_reuse_address = True
 
@@ -85,27 +86,29 @@ class _GracefulWSGIServer(ThreadingMixIn, WSGIServer):
 
     def shutdown_graceful(self, signum, frame):
         """Handle graceful shutdown signals."""
-        sig_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
-        _append_boot_log(f"received {sig_name}, shutting down gracefully...")
+        sig_name = (
+            signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+        )
+        _append_boot_log(f'received {sig_name}, shutting down gracefully...')
         self._shutting_down = True
         self.shutdown()
 
 
-if __name__ == "__main__":
-    _append_boot_log("=== boot ===")
-    _append_boot_log(f"exe={sys.executable}")
-    _append_boot_log(f"cwd={os.getcwd()}")
-    _append_boot_log(f"argv={sys.argv!r}")
-    _append_boot_log(f"pid={os.getpid()}")
+if __name__ == '__main__':
+    _append_boot_log('=== boot ===')
+    _append_boot_log(f'exe={sys.executable}')
+    _append_boot_log(f'cwd={os.getcwd()}')
+    _append_boot_log(f'argv={sys.argv!r}')
+    _append_boot_log(f'pid={os.getpid()}')
 
-    host = os.environ.get("MIRROR_HOST", "0.0.0.0")
-    port = int(os.environ.get("MIRROR_PORT", "8023"))
+    host = os.environ.get('MIRROR_HOST', '0.0.0.0')
+    port = int(os.environ.get('MIRROR_PORT', '8023'))
 
     try:
         from magic.app import app
 
-        _append_boot_log("import magic.app: OK")
-        _append_boot_log(f"starting threaded wsgi server on {host}:{port}")
+        _append_boot_log('import magic.app: OK')
+        _append_boot_log(f'starting threaded wsgi server on {host}:{port}')
         httpd = make_server(
             host,
             port,
@@ -121,15 +124,15 @@ if __name__ == "__main__":
             except (OSError, ValueError):
                 pass
 
-        _append_boot_log(f"server ready on {host}:{port}")
+        _append_boot_log(f'server ready on {host}:{port}')
         httpd.serve_forever()
     except Exception as e:
-        _append_boot_log("boot failed:")
-        _append_boot_log(f"error={e!r}")
+        _append_boot_log('boot failed:')
+        _append_boot_log(f'error={e!r}')
         _append_boot_log(
-            "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            ''.join(traceback.format_exception(type(e), e, e.__traceback__))
         )
-        _append_boot_log("exit=1")
+        _append_boot_log('exit=1')
         # 双击启动时，留一点时间让文件落盘
         time.sleep(0.2)
         sys.exit(1)

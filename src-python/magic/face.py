@@ -31,11 +31,11 @@ _tf_gpu_instances = {}
 _tf_gpu_lock = threading.RLock()
 
 
-_VERBOSE_LOGS = os.environ.get("MAGIC_VERBOSE_LOGS", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
+_VERBOSE_LOGS = os.environ.get('MAGIC_VERBOSE_LOGS', '').strip().lower() in {
+    '1',
+    'true',
+    'yes',
+    'on',
 }
 
 
@@ -47,10 +47,10 @@ def _debug_log(message: str):
 
 def _log_error(context: str, error: Exception):
     """记录详细的错误信息"""
-    error_msg = f"[ERROR] {context}\n"
-    error_msg += f"错误类型: {type(error).__name__}\n"
-    error_msg += f"错误信息: {str(error)}\n"
-    error_msg += f"堆栈跟踪:\n{traceback.format_exc()}"
+    error_msg = f'[ERROR] {context}\n'
+    error_msg += f'错误类型: {type(error).__name__}\n'
+    error_msg += f'错误信息: {str(error)}\n'
+    error_msg += f'堆栈跟踪:\n{traceback.format_exc()}'
     print(error_msg)
     return error_msg
 
@@ -64,16 +64,16 @@ def _clear_queue(q):
             except queue.Empty:
                 break
     except Exception as e:
-        print(f"[WARN] 清空队列失败: {str(e)}")
+        print(f'[WARN] 清空队列失败: {str(e)}')
 
 
 def load_models():
     """Load the face detection and recognition models."""
     try:
-        _tf.config.face_detector_model = _get_model_path("scrfd_2.5g.onnx")
-        _tf.config.face_embedder_model = _get_model_path("arcface_w600k_r50.onnx")
-        _tf.config.face_swapper_model = _get_model_path("inswapper_128_fp16.onnx")
-        _tf.config.face_enhancer_model = _get_model_path("gfpgan_1.4.onnx")
+        _tf.config.face_detector_model = _get_model_path('scrfd_2.5g.onnx')
+        _tf.config.face_embedder_model = _get_model_path('arcface_w600k_r50.onnx')
+        _tf.config.face_swapper_model = _get_model_path('inswapper_128_fp16.onnx')
+        _tf.config.face_enhancer_model = _get_model_path('gfpgan_1.4.onnx')
         _tf.prepare()
         return True
     except BaseException as _:
@@ -89,70 +89,71 @@ def _get_available_execution_providers():
         providers = ort.get_available_providers()
         return list(providers) if providers else []
     except Exception as e:
-        print(f"[WARN] 获取 ExecutionProvider 失败: {str(e)}")
+        print(f'[WARN] 获取 ExecutionProvider 失败: {str(e)}')
         return []
 
 
 def get_gpu_acceleration_modes():
     """返回当前环境可用的加速模式，供前端在视频换脸前选择。"""
     available_providers = _get_available_execution_providers()
-    modes = [{"id": "cpu", "name": "CPU"}]
+    modes = [{'id': 'cpu', 'name': 'CPU'}]
 
-    if "DmlExecutionProvider" in available_providers:
-        modes.append({"id": "directml", "name": "DirectML"})
+    if 'DmlExecutionProvider' in available_providers:
+        modes.append({'id': 'directml', 'name': 'DirectML'})
 
-    if "CUDAExecutionProvider" in available_providers:
-        modes.append({"id": "cuda", "name": "CUDA"})
+    if 'CUDAExecutionProvider' in available_providers:
+        modes.append({'id': 'cuda', 'name': 'CUDA'})
 
-    return {"modes": modes, "availableProviders": available_providers}
+    return {'modes': modes, 'availableProviders': available_providers}
 
 
 def _normalize_gpu_provider(gpu_provider: str):
     """Normalize GPU provider name."""
-    mode = (gpu_provider or "auto").strip().lower()
-    if mode in {"dml", "directml"}:
-        return "directml"
-    if mode == "cuda":
-        return "cuda"
-    if mode == "cpu":
-        return "cpu"
-    return "auto"
+    mode = (gpu_provider or 'auto').strip().lower()
+    if mode in {'dml', 'directml'}:
+        return 'directml'
+    if mode == 'cuda':
+        return 'cuda'
+    if mode == 'cpu':
+        return 'cpu'
+    return 'auto'
 
 
 def _resolve_execution_provider(gpu_provider: str):
     """Resolve the execution provider for ONNX runtime."""
     mode = _normalize_gpu_provider(gpu_provider)
-    if mode == "cpu":
+    if mode == 'cpu':
         return None
 
     available_providers = _get_available_execution_providers()
-    if mode == "cuda":
-        candidates = ["CUDAExecutionProvider"]
-    elif mode == "directml":
-        candidates = ["DmlExecutionProvider"]
+    if mode == 'cuda':
+        candidates = ['CUDAExecutionProvider']
+    elif mode == 'directml':
+        candidates = ['DmlExecutionProvider']
     else:
-        candidates = ["DmlExecutionProvider", "CUDAExecutionProvider"]
+        candidates = ['DmlExecutionProvider', 'CUDAExecutionProvider']
 
     for provider in candidates:
         if provider in available_providers:
             return provider
     return None
 
+
 def _resolve_gpu_pool_size(num_workers: int) -> int:
     """根据并发线程数和环境变量推导 GPU 实例池大小。"""
-    env_val = os.environ.get("MAGIC_GPU_POOL_SIZE")
+    env_val = os.environ.get('MAGIC_GPU_POOL_SIZE')
     if env_val:
         try:
             forced = int(env_val)
             if forced > 0:
                 return max(1, min(forced, 8))
         except Exception:
-            print(f"[WARN] 无效 MAGIC_GPU_POOL_SIZE={env_val}，将使用自动策略")
+            print(f'[WARN] 无效 MAGIC_GPU_POOL_SIZE={env_val}，将使用自动策略')
     # 默认最多 4 个实例，避免显存占用过高
     return max(1, min(int(num_workers or 1), 4))
 
 
-def _init_gpu_models(gpu_provider: str = "auto", pool_size: int = 1):
+def _init_gpu_models(gpu_provider: str = 'auto', pool_size: int = 1):
     """按需初始化指定 Provider 的 GPU 模型实例池，并缓存。"""
     global _tf_gpu_instances
 
@@ -167,20 +168,20 @@ def _init_gpu_models(gpu_provider: str = "auto", pool_size: int = 1):
 
         # 兼容旧结构：provider -> TinyFace
         if cache is not None and not isinstance(cache, dict):
-            cache = {"instances": [cache], "locks": [threading.RLock()]}
+            cache = {'instances': [cache], 'locks': [threading.RLock()]}
             _tf_gpu_instances[selected_provider] = cache
 
         if cache is None:
-            cache = {"instances": [], "locks": []}
+            cache = {'instances': [], 'locks': []}
             _tf_gpu_instances[selected_provider] = cache
 
-        instances = cache.get("instances")
-        locks = cache.get("locks")
+        instances = cache.get('instances')
+        locks = cache.get('locks')
         if not isinstance(instances, list) or not isinstance(locks, list):
-            cache["instances"] = []
-            cache["locks"] = []
-            instances = cache["instances"]
-            locks = cache["locks"]
+            cache['instances'] = []
+            cache['locks'] = []
+            instances = cache['instances']
+            locks = cache['locks']
 
         if len(instances) >= target_pool_size:
             return True, selected_provider
@@ -188,37 +189,44 @@ def _init_gpu_models(gpu_provider: str = "auto", pool_size: int = 1):
         try:
             for idx in range(len(instances), target_pool_size):
                 print(
-                    f"[INFO] 正在初始化 GPU 加速模型: {selected_provider} ({idx + 1}/{target_pool_size})"
+                    f'[INFO] 正在初始化 GPU 加速模型: {selected_provider} ({idx + 1}/{target_pool_size})'
                 )
                 tf_gpu = TinyFace()
-                tf_gpu.config.face_detector_model = _get_model_path("scrfd_2.5g.onnx")
-                tf_gpu.config.face_embedder_model = _get_model_path("arcface_w600k_r50.onnx")
-                tf_gpu.config.face_swapper_model = _get_model_path("inswapper_128_fp16.onnx")
-                tf_gpu.config.face_enhancer_model = _get_model_path("gfpgan_1.4.onnx")
-                tf_gpu.config.execution_providers = [selected_provider, "CPUExecutionProvider"]
+                tf_gpu.config.face_detector_model = _get_model_path('scrfd_2.5g.onnx')
+                tf_gpu.config.face_embedder_model = _get_model_path(
+                    'arcface_w600k_r50.onnx'
+                )
+                tf_gpu.config.face_swapper_model = _get_model_path(
+                    'inswapper_128_fp16.onnx'
+                )
+                tf_gpu.config.face_enhancer_model = _get_model_path('gfpgan_1.4.onnx')
+                tf_gpu.config.execution_providers = [
+                    selected_provider,
+                    'CPUExecutionProvider',
+                ]
                 tf_gpu.prepare()
                 instances.append(tf_gpu)
                 locks.append(threading.RLock())
 
             print(
-                f"[SUCCESS] GPU 模型初始化成功: {selected_provider}, 实例数={len(instances)}"
+                f'[SUCCESS] GPU 模型初始化成功: {selected_provider}, 实例数={len(instances)}'
             )
             return True, selected_provider
 
         except Exception as e:
-            print(f"[ERROR] GPU 模型初始化失败({selected_provider}): {str(e)}")
+            print(f'[ERROR] GPU 模型初始化失败({selected_provider}): {str(e)}')
             print(traceback.format_exc())
             # 若已有可用实例，降级使用现有池
             if len(instances) > 0 and len(instances) == len(locks):
                 print(
-                    f"[WARN] 使用已初始化的 GPU 实例池继续运行: {selected_provider}, 实例数={len(instances)}"
+                    f'[WARN] 使用已初始化的 GPU 实例池继续运行: {selected_provider}, 实例数={len(instances)}'
                 )
                 return True, selected_provider
             _tf_gpu_instances.pop(selected_provider, None)
             return False, None
 
 
-def _get_tf_pool(use_gpu=False, gpu_provider="auto", pool_size=1):
+def _get_tf_pool(use_gpu=False, gpu_provider='auto', pool_size=1):
     """获取 TinyFace 实例池（CPU 单实例或 GPU 多实例）。"""
     if use_gpu:
         ok, selected_provider = _init_gpu_models(
@@ -227,15 +235,15 @@ def _get_tf_pool(use_gpu=False, gpu_provider="auto", pool_size=1):
         if ok and selected_provider:
             with _tf_gpu_lock:
                 cache = _tf_gpu_instances.get(selected_provider) or {}
-                instances = list(cache.get("instances") or [])
-                locks = list(cache.get("locks") or [])
+                instances = list(cache.get('instances') or [])
+                locks = list(cache.get('locks') or [])
             if instances and len(instances) == len(locks):
                 return list(zip(instances, locks)), True, selected_provider
-        print("[WARN] GPU 不可用，回退到 CPU")
+        print('[WARN] GPU 不可用，回退到 CPU')
     return [(_tf, _tf_lock)], False, None
 
 
-def _get_tf_instance(use_gpu=False, gpu_provider="auto"):
+def _get_tf_instance(use_gpu=False, gpu_provider='auto'):
     """兼容旧调用：获取一个 TinyFace 实例（CPU 或 GPU）。"""
     tf_pool, using_gpu, selected_provider = _get_tf_pool(
         use_gpu=use_gpu, gpu_provider=gpu_provider, pool_size=1
@@ -251,7 +259,7 @@ def _emit_stage(stage_callback, stage: str):
     try:
         stage_callback(stage)
     except Exception as e:
-        print(f"[WARN] stage_callback failed: {str(e)}")
+        print(f'[WARN] stage_callback failed: {str(e)}')
 
 
 def swap_face(input_path, face_path):
@@ -264,28 +272,28 @@ def swap_face(input_path, face_path):
 def swap_face_regions(input_path, face_path, regions):
     """Swap faces in specific regions of an image."""
     try:
-        _debug_log("[DEBUG] swap_face_regions 被调用")
-        _debug_log(f"[DEBUG] input_path: {input_path}")
-        _debug_log(f"[DEBUG] face_path: {face_path}")
-        _debug_log(f"[DEBUG] regions 类型: {type(regions)}, 值: {regions}")
+        _debug_log('[DEBUG] swap_face_regions 被调用')
+        _debug_log(f'[DEBUG] input_path: {input_path}')
+        _debug_log(f'[DEBUG] face_path: {face_path}')
+        _debug_log(f'[DEBUG] regions 类型: {type(regions)}, 值: {regions}')
 
         save_path = _get_output_file_path(input_path)
         input_img = _read_image(input_path)
         height, width = input_img.shape[:2]
-        _debug_log(f"[DEBUG] 图片尺寸: {width}x{height}")
+        _debug_log(f'[DEBUG] 图片尺寸: {width}x{height}')
 
         normalized_regions = _normalize_regions(regions, width, height)
-        _debug_log(f"[DEBUG] normalized_regions: {normalized_regions}")
+        _debug_log(f'[DEBUG] normalized_regions: {normalized_regions}')
 
         # 未选择/无有效选区：回退全图换脸
         if not normalized_regions:
-            _debug_log("[WARN] 无有效选区，回退全图换脸！")
+            _debug_log('[WARN] 无有效选区，回退全图换脸！')
             output_img = _swap_face(input_path, face_path)
             return _write_image(save_path, output_img)
 
         destination_face = _get_one_face(face_path)
         if destination_face is None:
-            raise RuntimeError("no-face-detected")
+            raise RuntimeError('no-face-detected')
 
         output_img = input_img.copy()
         swapped_count = 0
@@ -317,7 +325,7 @@ def swap_face_regions(input_path, face_path, regions):
         return _write_image(save_path, output_img)
 
     except Exception as e:
-        _log_error("swap_face_regions", e)
+        _log_error('swap_face_regions', e)
         raise
 
 
@@ -330,25 +338,25 @@ def swap_face_regions_by_sources(input_path, face_sources, regions):
 
         normalized_regions = _normalize_regions_with_face_source(regions, width, height)
         if not normalized_regions:
-            raise RuntimeError("invalid-face-source-binding")
+            raise RuntimeError('invalid-face-source-binding')
 
         destination_faces = {}
         for source_id, source_path in face_sources.items():
             destination_face = _get_one_face(source_path)
             if destination_face is None:
-                raise RuntimeError("no-face-detected")
+                raise RuntimeError('no-face-detected')
             destination_faces[str(source_id)] = destination_face
 
         output_img = input_img.copy()
         swapped_count = 0
 
         for region in normalized_regions:
-            x, y, w, h = region["x"], region["y"], region["width"], region["height"]
-            source_id = region["faceSourceId"]
+            x, y, w, h = region['x'], region['y'], region['width'], region['height']
+            source_id = region['faceSourceId']
 
             destination_face = destination_faces.get(source_id)
             if destination_face is None:
-                raise RuntimeError("face-source-not-found")
+                raise RuntimeError('face-source-not-found')
 
             crop = input_img[y : y + h, x : x + w]
             with _tf_lock:
@@ -375,7 +383,7 @@ def swap_face_regions_by_sources(input_path, face_sources, regions):
         return _write_image(save_path, output_img)
 
     except Exception as e:
-        _log_error("swap_face_regions_by_sources", e)
+        _log_error('swap_face_regions_by_sources', e)
         raise
 
 
@@ -387,7 +395,7 @@ def swap_face_video(
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
-    gpu_provider="auto",
+    gpu_provider='auto',
 ):
     """Swap faces in a video file.
 
@@ -395,19 +403,19 @@ def swap_face_video(
     Supports GPU acceleration, custom regions, and progress callbacks.
     """
     try:
-        _emit_stage(stage_callback, "validating-input")
+        _emit_stage(stage_callback, 'validating-input')
         print(
-            f"[INFO] 开始视频换脸: input={input_path}, face={face_path}, use_gpu={use_gpu}, gpu_provider={gpu_provider}"
+            f'[INFO] 开始视频换脸: input={input_path}, face={face_path}, use_gpu={use_gpu}, gpu_provider={gpu_provider}'
         )
 
         # 检查输入文件是否存在
         if not os.path.exists(input_path):
-            raise FileNotFoundError("file-not-found")
+            raise FileNotFoundError('file-not-found')
         if not os.path.exists(face_path):
-            raise FileNotFoundError("file-not-found")
+            raise FileNotFoundError('file-not-found')
 
         save_path = _get_output_video_path(input_path)
-        print(f"[INFO] 输出路径: {save_path}")
+        print(f'[INFO] 输出路径: {save_path}')
 
         output_path = _swap_face_video(
             input_path,
@@ -422,18 +430,18 @@ def swap_face_video(
         )
 
         if not output_path or not os.path.exists(output_path):
-            raise RuntimeError("video-output-missing")
+            raise RuntimeError('video-output-missing')
 
         # 尝试把原视频音轨复用到输出（原视频有音轨时失败应报错，避免静默无声）
-        _emit_stage(stage_callback, "muxing-audio")
+        _emit_stage(stage_callback, 'muxing-audio')
         _mux_audio_or_raise(input_path, output_path)
 
-        _emit_stage(stage_callback, "finalizing")
-        print(f"[SUCCESS] 视频换脸成功: {output_path}")
+        _emit_stage(stage_callback, 'finalizing')
+        print(f'[SUCCESS] 视频换脸成功: {output_path}')
         return output_path
 
     except Exception as e:
-        _log_error("swap_face_video", e)
+        _log_error('swap_face_video', e)
         raise
 
 
@@ -446,7 +454,7 @@ def _swap_face_video(
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
-    gpu_provider="auto",
+    gpu_provider='auto',
 ):
     """
     视频换脸处理（支持 GPU 加速和多线程处理池）
@@ -466,24 +474,24 @@ def _swap_face_video(
         num_workers = max(1, min(cpu_count - 1, 8))
         queue_size = max(5, num_workers * 2)
 
-    print(f"[INFO] 使用 {num_workers} 个处理线程，队列大小: {queue_size}")
+    print(f'[INFO] 使用 {num_workers} 个处理线程，队列大小: {queue_size}')
 
     read_queue = queue.Queue(maxsize=queue_size)
     write_queue = queue.PriorityQueue(maxsize=queue_size)
 
     stop_event = threading.Event()
     processing_error = threading.Lock()
-    error_container = {"error": None}
+    error_container = {'error': None}
     workers_done_event = threading.Event()
     workers_done_lock = threading.Lock()
-    workers_done_count = {"count": 0}
+    workers_done_count = {'count': 0}
 
     def _queue_put_with_stop(
         q_obj,
         item,
         *,
         timeout=1,
-        warn_prefix="队列已满，等待中...",
+        warn_prefix='队列已满，等待中...',
     ) -> bool:
         """Put an item in a queue with stop signal support."""
         wait_count = 0
@@ -494,93 +502,95 @@ def _swap_face_video(
             except queue.Full:
                 wait_count += 1
                 if wait_count % 5 == 0:
-                    print(f"[WARN] {warn_prefix} (已等待约 {wait_count} 秒)")
+                    print(f'[WARN] {warn_prefix} (已等待约 {wait_count} 秒)')
         return False
 
     def _mark_worker_done():
         """Mark a worker thread as done."""
         with workers_done_lock:
-            workers_done_count["count"] += 1
-            if workers_done_count["count"] >= num_workers:
+            workers_done_count['count'] += 1
+            if workers_done_count['count'] >= num_workers:
                 workers_done_event.set()
 
     try:
-        _emit_stage(stage_callback, "opening-video")
-        print(f"[INFO] 打开视频文件: {input_path}")
+        _emit_stage(stage_callback, 'opening-video')
+        print(f'[INFO] 打开视频文件: {input_path}')
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
-            raise RuntimeError("video-open-failed")
+            raise RuntimeError('video-open-failed')
 
-        _emit_stage(stage_callback, "reading-video-metadata")
+        _emit_stage(stage_callback, 'reading-video-metadata')
         fps = cap.get(cv2.CAP_PROP_FPS)
         if not fps or fps <= 0:
             fps = 25.0
-            print(f"[WARN] 无法获取视频FPS，使用默认值: {fps}")
+            print(f'[WARN] 无法获取视频FPS，使用默认值: {fps}')
         else:
-            print(f"[INFO] 视频FPS: {fps}")
+            print(f'[INFO] 视频FPS: {fps}')
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         total_frames = _resolve_total_frames(input_path, fps, total_frames)
 
-        print(f"[INFO] 视频尺寸: {width}x{height}, 总帧数: {total_frames}")
+        print(f'[INFO] 视频尺寸: {width}x{height}, 总帧数: {total_frames}')
 
         if width <= 0 or height <= 0:
-            print("[WARN] 无法获取视频尺寸，尝试读取第一帧")
+            print('[WARN] 无法获取视频尺寸，尝试读取第一帧')
             ok, frame = cap.read()
             if not ok:
-                raise RuntimeError("video-open-failed")
+                raise RuntimeError('video-open-failed')
             height, width = frame.shape[:2]
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            print(f"[INFO] 从第一帧获取尺寸: {width}x{height}")
+            print(f'[INFO] 从第一帧获取尺寸: {width}x{height}')
 
-        normalized_regions = _normalize_regions(regions, width, height) if regions else []
+        normalized_regions = (
+            _normalize_regions(regions, width, height) if regions else []
+        )
         if regions and not normalized_regions:
-            raise RuntimeError("invalid-regions")
+            raise RuntimeError('invalid-regions')
         if normalized_regions:
-            print(f"[INFO] 单人视频换脸启用区域限制: {len(normalized_regions)} 个选区")
+            print(f'[INFO] 单人视频换脸启用区域限制: {len(normalized_regions)} 个选区')
 
-        print(f"[INFO] 创建输出视频: {save_path}")
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        print(f'[INFO] 创建输出视频: {save_path}')
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
         if not writer.isOpened():
-            raise RuntimeError("video-write-failed")
+            raise RuntimeError('video-write-failed')
 
-        _emit_stage(stage_callback, "extracting-target-face")
-        print(f"[INFO] 提取目标人脸: {face_path}")
+        _emit_stage(stage_callback, 'extracting-target-face')
+        print(f'[INFO] 提取目标人脸: {face_path}')
 
         gpu_pool_size = _resolve_gpu_pool_size(num_workers) if use_gpu else 1
         if use_gpu:
-            _emit_stage(stage_callback, "gpu-initializing")
+            _emit_stage(stage_callback, 'gpu-initializing')
         tf_pool, using_gpu, selected_provider = _get_tf_pool(
             use_gpu=use_gpu,
             gpu_provider=gpu_provider,
             pool_size=gpu_pool_size,
         )
         if using_gpu:
-            _emit_stage(stage_callback, "gpu-enabled")
+            _emit_stage(stage_callback, 'gpu-enabled')
             print(
-                f"[INFO] 当前 GPU Provider: {selected_provider}, 实例池={len(tf_pool)}, worker={num_workers}"
+                f'[INFO] 当前 GPU Provider: {selected_provider}, 实例池={len(tf_pool)}, worker={num_workers}'
             )
         elif use_gpu:
-            _emit_stage(stage_callback, "gpu-fallback-cpu")
-            print(f"[INFO] 已回退 CPU: worker={num_workers}")
+            _emit_stage(stage_callback, 'gpu-fallback-cpu')
+            print(f'[INFO] 已回退 CPU: worker={num_workers}')
         else:
-            _emit_stage(stage_callback, "using-cpu")
+            _emit_stage(stage_callback, 'using-cpu')
 
         bootstrap_tf, bootstrap_lock = tf_pool[0]
         with bootstrap_lock:
             destination_face = bootstrap_tf.get_one_face(_read_image(face_path))
         if destination_face is None:
-            raise RuntimeError("no-face-detected")
-        print("[SUCCESS] 成功提取目标人脸")
+            raise RuntimeError('no-face-detected')
+        print('[SUCCESS] 成功提取目标人脸')
 
         stats = {
-            "frame_count": 0,
-            "processed_count": 0,
-            "failed_count": 0,
-            "start_time": time.time(),
+            'frame_count': 0,
+            'processed_count': 0,
+            'failed_count': 0,
+            'start_time': time.time(),
         }
         stats_lock = threading.Lock()
         progress_log_interval = max(30, total_frames // 20) if total_frames > 0 else 300
@@ -597,7 +607,7 @@ def _swap_face_video(
                         read_queue,
                         (frame_idx, frame),
                         timeout=1,
-                        warn_prefix="读取队列已满，等待处理线程消费",
+                        warn_prefix='读取队列已满，等待处理线程消费',
                     ):
                         return
                     frame_idx += 1
@@ -607,13 +617,13 @@ def _swap_face_video(
                         read_queue,
                         (None, None),
                         timeout=1,
-                        warn_prefix="读取队列已满，等待投递结束信号",
+                        warn_prefix='读取队列已满，等待投递结束信号',
                     ):
                         break
             except Exception as e:
                 with processing_error:
-                    error_container["error"] = e
-                print(f"[ERROR] 读取线程异常: {str(e)}")
+                    error_container['error'] = e
+                print(f'[ERROR] 读取线程异常: {str(e)}')
                 stop_event.set()
                 _clear_queue(read_queue)
 
@@ -631,8 +641,8 @@ def _swap_face_video(
                         break
 
                     with stats_lock:
-                        stats["frame_count"] += 1
-                        current_frame = stats["frame_count"]
+                        stats['frame_count'] += 1
+                        current_frame = stats['frame_count']
 
                     if progress_callback and current_frame % 5 == 0:
                         try:
@@ -641,11 +651,11 @@ def _swap_face_video(
                                     frame_count=current_frame,
                                     total_frames=total_frames,
                                     elapsed_seconds=max(
-                                        0.0, time.time() - stats["start_time"]
+                                        0.0, time.time() - stats['start_time']
                                     ),
                                 )
                         except Exception as e:
-                            print(f"[WARN] progress_callback failed: {str(e)}")
+                            print(f'[WARN] progress_callback failed: {str(e)}')
 
                     if current_frame == 1 or current_frame % progress_log_interval == 0:
                         progress = (
@@ -654,7 +664,7 @@ def _swap_face_video(
                             else 0
                         )
                         print(
-                            f"[PROGRESS] 处理进度: {current_frame}/{total_frames} ({progress:.1f}%) [Worker-{worker_id}]"
+                            f'[PROGRESS] 处理进度: {current_frame}/{total_frames} ({progress:.1f}%) [Worker-{worker_id}]'
                         )
 
                     try:
@@ -668,7 +678,7 @@ def _swap_face_video(
                             )
                             if swapped_regions <= 0:
                                 with stats_lock:
-                                    stats["failed_count"] += 1
+                                    stats['failed_count'] += 1
                         else:
                             with worker_lock:
                                 reference_face = worker_tf.get_one_face(frame)
@@ -678,11 +688,11 @@ def _swap_face_video(
                                     write_queue,
                                     (frame_idx, frame),
                                     timeout=1,
-                                    warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
+                                    warn_prefix=f'写入队列已满，Worker-{worker_id} 等待中',
                                 ):
                                     break
                                 with stats_lock:
-                                    stats["failed_count"] += 1
+                                    stats['failed_count'] += 1
                                 continue
 
                             with worker_lock:
@@ -695,35 +705,35 @@ def _swap_face_video(
                             out = output_frame if output_frame is not None else frame
                             with stats_lock:
                                 if output_frame is not None:
-                                    stats["processed_count"] += 1
+                                    stats['processed_count'] += 1
                                 else:
-                                    stats["failed_count"] += 1
+                                    stats['failed_count'] += 1
 
                         out = _normalize_output_frame(out, width, height)
                         if not _queue_put_with_stop(
                             write_queue,
                             (frame_idx, out),
                             timeout=1,
-                            warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
+                            warn_prefix=f'写入队列已满，Worker-{worker_id} 等待中',
                         ):
                             break
 
                     except Exception as e:
-                        print(f"[WARN] 第{current_frame}帧处理失败: {str(e)}")
+                        print(f'[WARN] 第{current_frame}帧处理失败: {str(e)}')
                         if not _queue_put_with_stop(
                             write_queue,
                             (frame_idx, frame),
                             timeout=1,
-                            warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
+                            warn_prefix=f'写入队列已满，Worker-{worker_id} 等待中',
                         ):
                             break
                         with stats_lock:
-                            stats["failed_count"] += 1
+                            stats['failed_count'] += 1
 
             except Exception as e:
                 with processing_error:
-                    error_container["error"] = e
-                print(f"[ERROR] 处理线程 Worker-{worker_id} 异常: {str(e)}")
+                    error_container['error'] = e
+                print(f'[ERROR] 处理线程 Worker-{worker_id} 异常: {str(e)}')
                 stop_event.set()
             finally:
                 _mark_worker_done()
@@ -731,7 +741,7 @@ def _swap_face_video(
         def write_frames():
             """Write processed frames to the output video."""
             try:
-                _emit_stage(stage_callback, "processing-video-frames")
+                _emit_stage(stage_callback, 'processing-video-frames')
                 next_frame_idx = 0
                 frame_buffer = {}
                 frames_written = 0
@@ -767,16 +777,18 @@ def _swap_face_video(
 
             except Exception as e:
                 with processing_error:
-                    error_container["error"] = e
-                print(f"[ERROR] 写入线程异常: {str(e)}")
+                    error_container['error'] = e
+                print(f'[ERROR] 写入线程异常: {str(e)}')
                 stop_event.set()
 
-        read_thread = threading.Thread(target=read_frames, name="VideoReader")
+        read_thread = threading.Thread(target=read_frames, name='VideoReader')
         process_threads = [
-            threading.Thread(target=process_frames, args=(i,), name=f"VideoProcessor-{i}")
+            threading.Thread(
+                target=process_frames, args=(i,), name=f'VideoProcessor-{i}'
+            )
             for i in range(num_workers)
         ]
-        write_thread = threading.Thread(target=write_frames, name="VideoWriter")
+        write_thread = threading.Thread(target=write_frames, name='VideoWriter')
 
         read_thread.start()
         for t in process_threads:
@@ -789,30 +801,30 @@ def _swap_face_video(
         write_thread.join()
 
         with processing_error:
-            if error_container["error"] is not None:
-                raise error_container["error"]
+            if error_container['error'] is not None:
+                raise error_container['error']
 
-        print("[INFO] 视频处理完成:")
-        print(f"  - 总帧数: {stats['frame_count']}")
-        print(f"  - 成功换脸: {stats['processed_count']}")
-        print(f"  - 跳过/失败: {stats['failed_count']}")
+        print('[INFO] 视频处理完成:')
+        print(f'  - 总帧数: {stats["frame_count"]}')
+        print(f'  - 成功换脸: {stats["processed_count"]}')
+        print(f'  - 跳过/失败: {stats["failed_count"]}')
 
         if progress_callback:
             try:
-                final_count = total_frames if total_frames > 0 else stats["frame_count"]
+                final_count = total_frames if total_frames > 0 else stats['frame_count']
                 progress_callback(
                     frame_count=final_count,
                     total_frames=final_count,
-                    elapsed_seconds=max(0.0, time.time() - stats["start_time"]),
+                    elapsed_seconds=max(0.0, time.time() - stats['start_time']),
                 )
             except Exception as e:
-                print(f"[WARN] progress_callback(final) failed: {str(e)}")
+                print(f'[WARN] progress_callback(final) failed: {str(e)}')
 
         return save_path
 
     except Exception as e:
         stop_event.set()
-        _log_error("_swap_face_video", e)
+        _log_error('_swap_face_video', e)
         raise
 
     finally:
@@ -822,10 +834,10 @@ def _swap_face_video(
 
         if cap is not None:
             cap.release()
-            print("[INFO] 释放视频读取器")
+            print('[INFO] 释放视频读取器')
         if writer is not None:
             writer.release()
-            print("[INFO] 释放视频写入器")
+            print('[INFO] 释放视频写入器')
 
 
 def _swap_face(input_path, face_path):
@@ -834,7 +846,7 @@ def _swap_face(input_path, face_path):
     reference_face = _get_one_face(input_path)
     destination_face = _get_one_face(face_path)
     if reference_face is None or destination_face is None:
-        raise RuntimeError("no-face-detected")
+        raise RuntimeError('no-face-detected')
     with _tf_lock:
         out = _tf.swap_face(
             vision_frame=vision,
@@ -842,7 +854,7 @@ def _swap_face(input_path, face_path):
             destination_face=destination_face,
         )
     if out is None:
-        raise RuntimeError("swap-failed")
+        raise RuntimeError('swap-failed')
     return out
 
 
@@ -858,7 +870,7 @@ def _read_image(img_path: str):
     data = np.fromfile(img_path, dtype=np.uint8)
     img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
     if img is None:
-        raise RuntimeError("image-decode-failed")
+        raise RuntimeError('image-decode-failed')
 
     # 兼容 16-bit PNG/TIFF 等：统一转换成 uint8
     if img.dtype != np.uint8:
@@ -875,9 +887,9 @@ def _read_image(img_path: str):
 def _write_image(img_path: str, img):
     """Write an image to a file."""
     if img is None:
-        raise RuntimeError("swap-failed")
+        raise RuntimeError('swap-failed')
 
-    suffix = (os.path.splitext(img_path)[-1] or ".png").lower()
+    suffix = (os.path.splitext(img_path)[-1] or '.png').lower()
 
     def _try_write(path: str, ext: str) -> bool:
         """Try to write an image to a file."""
@@ -891,44 +903,46 @@ def _write_image(img_path: str, img):
     if _try_write(img_path, suffix):
         return img_path
 
-    fallback_path = os.path.splitext(img_path)[0] + ".png"
-    if _try_write(fallback_path, ".png"):
+    fallback_path = os.path.splitext(img_path)[0] + '.png'
+    if _try_write(fallback_path, '.png'):
         return fallback_path
 
-    raise RuntimeError("output-write-failed")
+    raise RuntimeError('output-write-failed')
 
 
 def _normalize_regions(regions, width, height):
     """Normalize face regions to pixel coordinates."""
     normalized = []
-    _debug_log(f"[DEBUG] _normalize_regions: regions={regions}, 图片尺寸={width}x{height}")
+    _debug_log(
+        f'[DEBUG] _normalize_regions: regions={regions}, 图片尺寸={width}x{height}'
+    )
     if not regions:
-        _debug_log("[DEBUG] regions 为空或 None")
+        _debug_log('[DEBUG] regions 为空或 None')
         return normalized
     for i, region in enumerate(regions):
-        _debug_log(f"[DEBUG] 处理 region[{i}]: type={type(region)}, value={region}")
+        _debug_log(f'[DEBUG] 处理 region[{i}]: type={type(region)}, value={region}')
         if not isinstance(region, dict):
-            _debug_log(f"[DEBUG] region[{i}] 不是 dict，跳过")
+            _debug_log(f'[DEBUG] region[{i}] 不是 dict，跳过')
             continue
         try:
-            x = int(region.get("x", 0))
-            y = int(region.get("y", 0))
-            w = int(region.get("width", 0))
-            h = int(region.get("height", 0))
-            _debug_log(f"[DEBUG] region[{i}] 解析: x={x}, y={y}, w={w}, h={h}")
+            x = int(region.get('x', 0))
+            y = int(region.get('y', 0))
+            w = int(region.get('width', 0))
+            h = int(region.get('height', 0))
+            _debug_log(f'[DEBUG] region[{i}] 解析: x={x}, y={y}, w={w}, h={h}')
         except (TypeError, ValueError) as e:
-            _debug_log(f"[DEBUG] region[{i}] 解析失败: {e}")
+            _debug_log(f'[DEBUG] region[{i}] 解析失败: {e}')
             continue
         if w <= 0 or h <= 0:
-            _debug_log(f"[DEBUG] region[{i}] w 或 h <= 0，跳过")
+            _debug_log(f'[DEBUG] region[{i}] w 或 h <= 0，跳过')
             continue
         x = max(0, min(x, width - 1))
         y = max(0, min(y, height - 1))
         w = max(1, min(w, width - x))
         h = max(1, min(h, height - y))
-        _debug_log(f"[DEBUG] region[{i}] 规范化后: x={x}, y={y}, w={w}, h={h}")
+        _debug_log(f'[DEBUG] region[{i}] 规范化后: x={x}, y={y}, w={w}, h={h}')
         normalized.append((x, y, w, h))
-    _debug_log(f"[DEBUG] 最终 normalized: {normalized}")
+    _debug_log(f'[DEBUG] 最终 normalized: {normalized}')
     return normalized
 
 
@@ -978,15 +992,15 @@ def _normalize_regions_with_face_source(regions, width, height):
         if not isinstance(region, dict):
             continue
 
-        face_source_id = region.get("faceSourceId")
+        face_source_id = region.get('faceSourceId')
         if not face_source_id:
             continue
 
         try:
-            x = int(region.get("x", 0))
-            y = int(region.get("y", 0))
-            w = int(region.get("width", 0))
-            h = int(region.get("height", 0))
+            x = int(region.get('x', 0))
+            y = int(region.get('y', 0))
+            w = int(region.get('width', 0))
+            h = int(region.get('height', 0))
         except (TypeError, ValueError):
             continue
 
@@ -1000,11 +1014,11 @@ def _normalize_regions_with_face_source(regions, width, height):
 
         normalized.append(
             {
-                "x": x,
-                "y": y,
-                "width": w,
-                "height": h,
-                "faceSourceId": str(face_source_id),
+                'x': x,
+                'y': y,
+                'width': w,
+                'height': h,
+                'faceSourceId': str(face_source_id),
             }
         )
 
@@ -1014,35 +1028,37 @@ def _normalize_regions_with_face_source(regions, width, height):
 def _get_output_file_path(file_name):
     """Get the output file path."""
     base_name, ext = os.path.splitext(file_name)
-    return base_name + "_output" + ext
+    return base_name + '_output' + ext
 
 
 def _get_output_video_path(file_name):
     """Get the output video path."""
     base_name, _ = os.path.splitext(file_name)
-    return base_name + "_output.mp4"
+    return base_name + '_output.mp4'
 
 
 @lru_cache(maxsize=1)
 def _resolve_ffmpeg_binary() -> str | None:
     """优先解析 ffmpeg 可执行文件路径（支持打包目录兜底）。"""
-    env_ffmpeg = os.environ.get("MAGIC_FFMPEG_PATH")
+    env_ffmpeg = os.environ.get('MAGIC_FFMPEG_PATH')
     if env_ffmpeg and os.path.exists(env_ffmpeg):
         return env_ffmpeg
 
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = shutil.which('ffmpeg')
     if ffmpeg:
         return ffmpeg
 
-    exe_dir = os.path.dirname(os.path.abspath(sys.executable or ""))
-    candidate_names = ["ffmpeg.exe", "ffmpeg"] if os.name == "nt" else ["ffmpeg"]
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable or ''))
+    candidate_names = ['ffmpeg.exe', 'ffmpeg'] if os.name == 'nt' else ['ffmpeg']
     for name in candidate_names:
         candidate = os.path.join(exe_dir, name)
         if os.path.exists(candidate):
             return candidate
 
     # 开发环境兜底：项目根目录下若放置了 ffmpeg
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+    base_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
+    )
     for name in candidate_names:
         candidate = os.path.join(base_dir, name)
         if os.path.exists(candidate):
@@ -1054,24 +1070,24 @@ def _resolve_ffmpeg_binary() -> str | None:
 @lru_cache(maxsize=1)
 def _resolve_ffprobe_binary() -> str | None:
     """优先解析 ffprobe 可执行文件路径（支持与 ffmpeg 同目录）。"""
-    env_ffprobe = os.environ.get("MAGIC_FFPROBE_PATH")
+    env_ffprobe = os.environ.get('MAGIC_FFPROBE_PATH')
     if env_ffprobe and os.path.exists(env_ffprobe):
         return env_ffprobe
 
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = shutil.which('ffprobe')
     if ffprobe:
         return ffprobe
 
     ffmpeg = _resolve_ffmpeg_binary()
     if ffmpeg:
         sibling = os.path.join(
-            os.path.dirname(ffmpeg), "ffprobe.exe" if os.name == "nt" else "ffprobe"
+            os.path.dirname(ffmpeg), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe'
         )
         if os.path.exists(sibling):
             return sibling
 
-    exe_dir = os.path.dirname(os.path.abspath(sys.executable or ""))
-    candidate_names = ["ffprobe.exe", "ffprobe"] if os.name == "nt" else ["ffprobe"]
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable or ''))
+    candidate_names = ['ffprobe.exe', 'ffprobe'] if os.name == 'nt' else ['ffprobe']
     for name in candidate_names:
         candidate = os.path.join(exe_dir, name)
         if os.path.exists(candidate):
@@ -1096,62 +1112,62 @@ def _resolve_total_frames(input_video_path: str, fps: float, current_total: int)
 
     ffprobe = _resolve_ffprobe_binary()
     if not ffprobe:
-        print("[WARN] 未找到 ffprobe，无法回退估算总帧数")
+        print('[WARN] 未找到 ffprobe，无法回退估算总帧数')
         return 0
 
     try:
         cmd = [
             ffprobe,
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=nb_frames,duration:format=duration",
-            "-of",
-            "json",
+            '-v',
+            'error',
+            '-select_streams',
+            'v:0',
+            '-show_entries',
+            'stream=nb_frames,duration:format=duration',
+            '-of',
+            'json',
             input_video_path,
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if proc.returncode != 0 or not proc.stdout:
-            print("[WARN] ffprobe 获取总帧数失败，继续使用未知总帧数")
+            print('[WARN] ffprobe 获取总帧数失败，继续使用未知总帧数')
             return 0
 
         payload = json.loads(proc.stdout)
         stream = {}
-        streams = payload.get("streams")
+        streams = payload.get('streams')
         if isinstance(streams, list) and streams:
             if isinstance(streams[0], dict):
                 stream = streams[0]
 
-        nb_frames_raw = stream.get("nb_frames")
-        if nb_frames_raw not in (None, "", "N/A"):
+        nb_frames_raw = stream.get('nb_frames')
+        if nb_frames_raw not in (None, '', 'N/A'):
             try:
                 nb_frames = int(float(nb_frames_raw))
                 if nb_frames > 0:
-                    print(f"[INFO] ffprobe 检测总帧数: {nb_frames}")
+                    print(f'[INFO] ffprobe 检测总帧数: {nb_frames}')
                     return nb_frames
             except Exception:
                 pass
 
-        duration_raw = stream.get("duration")
-        if duration_raw in (None, "", "N/A"):
-            fmt = payload.get("format")
+        duration_raw = stream.get('duration')
+        if duration_raw in (None, '', 'N/A'):
+            fmt = payload.get('format')
             if isinstance(fmt, dict):
-                duration_raw = fmt.get("duration")
+                duration_raw = fmt.get('duration')
 
-        if duration_raw not in (None, "", "N/A"):
+        if duration_raw not in (None, '', 'N/A'):
             try:
                 duration = float(duration_raw)
             except Exception:
                 duration = 0.0
             if duration > 0 and fps and fps > 0:
                 estimated = max(1, int(round(duration * fps)))
-                print(f"[INFO] ffprobe 通过时长估算总帧数: {estimated}")
+                print(f'[INFO] ffprobe 通过时长估算总帧数: {estimated}')
                 return estimated
 
     except Exception as e:
-        print(f"[WARN] ffprobe 回退估算总帧数异常: {str(e)}")
+        print(f'[WARN] ffprobe 回退估算总帧数异常: {str(e)}')
 
     return 0
 
@@ -1160,33 +1176,33 @@ def _input_has_audio_stream(input_video_path: str) -> bool | None:
     """检测输入视频是否包含音轨。True/False 表示可确定，None 表示无法判断。"""
     ffprobe = _resolve_ffprobe_binary()
     if not ffprobe:
-        print("[WARN] 未找到 ffprobe，无法预检输入视频音轨")
+        print('[WARN] 未找到 ffprobe，无法预检输入视频音轨')
         return None
 
     try:
         cmd = [
             ffprobe,
-            "-v",
-            "error",
-            "-select_streams",
-            "a:0",
-            "-show_entries",
-            "stream=index",
-            "-of",
-            "json",
+            '-v',
+            'error',
+            '-select_streams',
+            'a:0',
+            '-show_entries',
+            'stream=index',
+            '-of',
+            'json',
             input_video_path,
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if proc.returncode != 0:
-            print("[WARN] ffprobe 预检音轨失败，将继续尝试复用音频")
+            print('[WARN] ffprobe 预检音轨失败，将继续尝试复用音频')
             return None
 
-        payload = json.loads(proc.stdout or "{}")
-        streams = payload.get("streams")
+        payload = json.loads(proc.stdout or '{}')
+        streams = payload.get('streams')
         if isinstance(streams, list):
             return len(streams) > 0
     except Exception as e:
-        print(f"[WARN] ffprobe 预检音轨异常: {str(e)}")
+        print(f'[WARN] ffprobe 预检音轨异常: {str(e)}')
     return None
 
 
@@ -1194,42 +1210,42 @@ def _mux_audio_or_raise(input_video_path: str, output_video_path: str):
     """原视频有音轨时，音频复用失败应明确报错；无音轨时允许跳过。"""
     has_audio = _input_has_audio_stream(input_video_path)
     if has_audio is False:
-        print("[INFO] 原视频无音轨，跳过音频复用")
+        print('[INFO] 原视频无音轨，跳过音频复用')
         return
 
     try:
         _try_mux_audio(input_video_path, output_video_path)
     except Exception as e:
-        print(f"[ERROR] 音频复用失败: {str(e)}")
-        raise RuntimeError("audio-mux-failed") from e
+        print(f'[ERROR] 音频复用失败: {str(e)}')
+        raise RuntimeError('audio-mux-failed') from e
 
 
 def _try_mux_audio(input_video_path: str, output_video_path: str):
     """使用 ffmpeg 将原视频音轨复用到输出视频（优先 copy，失败回退 aac 转码）。"""
     ffmpeg = _resolve_ffmpeg_binary()
     if not ffmpeg:
-        raise RuntimeError("ffmpeg-not-found")
+        raise RuntimeError('ffmpeg-not-found')
 
-    tmp_path = os.path.splitext(output_video_path)[0] + "_mux_tmp.mp4"
+    tmp_path = os.path.splitext(output_video_path)[0] + '_mux_tmp.mp4'
     errors = []
 
-    for audio_codec in ("copy", "aac"):
+    for audio_codec in ('copy', 'aac'):
         cmd = [
             ffmpeg,
-            "-y",
-            "-i",
+            '-y',
+            '-i',
             output_video_path,
-            "-i",
+            '-i',
             input_video_path,
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a?",
-            "-c:v",
-            "copy",
-            "-c:a",
+            '-map',
+            '0:v:0',
+            '-map',
+            '1:a?',
+            '-c:v',
+            'copy',
+            '-c:a',
             audio_codec,
-            "-shortest",
+            '-shortest',
             tmp_path,
         ]
 
@@ -1238,8 +1254,8 @@ def _try_mux_audio(input_video_path: str, output_video_path: str):
             os.replace(tmp_path, output_video_path)
             return
 
-        err_tail = (proc.stderr or "")[-320:]
-        errors.append(f"{audio_codec}: {err_tail}")
+        err_tail = (proc.stderr or '')[-320:]
+        errors.append(f'{audio_codec}: {err_tail}')
 
         if os.path.exists(tmp_path):
             try:
@@ -1247,13 +1263,13 @@ def _try_mux_audio(input_video_path: str, output_video_path: str):
             except Exception:
                 pass
 
-    raise RuntimeError("ffmpeg failed: " + " | ".join(errors))
+    raise RuntimeError('ffmpeg failed: ' + ' | '.join(errors))
 
 
 def _get_model_path(file_name: str):
     """Get the full path for a model file."""
     return os.path.abspath(
-        os.path.join(os.path.dirname(__file__), os.pardir, "models", file_name)
+        os.path.join(os.path.dirname(__file__), os.pardir, 'models', file_name)
     )
 
 
@@ -1272,33 +1288,31 @@ def detect_face_boxes_in_image(input_path, regions=None):
             new_w = int(width * scale)
             new_h = int(height * scale)
             vision_resized = cv2.resize(vision, (new_w, new_h))
-            print(f"[INFO] 图片过大 ({width}x{height})，缩放至 {new_w}x{new_h} 进行检测")
+            print(
+                f'[INFO] 图片过大 ({width}x{height})，缩放至 {new_w}x{new_h} 进行检测'
+            )
 
             # 缩放 regions
             search_areas_resized = []
             if regions:
                 normalized = _normalize_regions(regions, width, height)
                 for x, y, w, h in normalized:
-                    search_areas_resized.append((
-                        int(x * scale),
-                        int(y * scale),
-                        int(w * scale),
-                        int(h * scale)
-                    ))
+                    search_areas_resized.append(
+                        (int(x * scale), int(y * scale), int(w * scale), int(h * scale))
+                    )
             else:
                 search_areas_resized = [(0, 0, new_w, new_h)]
 
-            boxes_resized = _detect_face_boxes_in_frame(vision_resized, search_areas_resized, _tf, _tf_lock)
+            boxes_resized = _detect_face_boxes_in_frame(
+                vision_resized, search_areas_resized, _tf, _tf_lock
+            )
 
             # 映射回原图坐标
             boxes = []
             for bx, by, bw, bh in boxes_resized:
-                boxes.append((
-                    int(bx / scale),
-                    int(by / scale),
-                    int(bw / scale),
-                    int(bh / scale)
-                ))
+                boxes.append(
+                    (int(bx / scale), int(by / scale), int(bw / scale), int(bh / scale))
+                )
         else:
             search_areas = (
                 _normalize_regions(regions, width, height)
@@ -1307,9 +1321,9 @@ def detect_face_boxes_in_image(input_path, regions=None):
             )
             boxes = _detect_face_boxes_in_frame(vision, search_areas, _tf, _tf_lock)
 
-        return [{"x": x, "y": y, "width": w, "height": h} for x, y, w, h in boxes]
+        return [{'x': x, 'y': y, 'width': w, 'height': h} for x, y, w, h in boxes]
     except Exception as e:
-        _log_error("detect_face_boxes_in_image", e)
+        _log_error('detect_face_boxes_in_image', e)
         raise
 
 
@@ -1319,7 +1333,7 @@ def detect_face_boxes_in_video(input_path, key_frame_ms=0, regions=None):
     try:
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
-            raise RuntimeError("video-open-failed")
+            raise RuntimeError('video-open-failed')
 
         fps = cap.get(cv2.CAP_PROP_FPS)
         if not fps or fps <= 0:
@@ -1338,7 +1352,7 @@ def detect_face_boxes_in_video(input_path, key_frame_ms=0, regions=None):
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
         ok, frame = cap.read()
         if not ok or frame is None:
-            raise RuntimeError("video-frame-read-failed")
+            raise RuntimeError('video-frame-read-failed')
 
         if width <= 0 or height <= 0:
             height, width = frame.shape[:2]
@@ -1351,13 +1365,15 @@ def detect_face_boxes_in_video(input_path, key_frame_ms=0, regions=None):
         boxes = _detect_face_boxes_in_frame(frame, search_areas, _tf, _tf_lock)
 
         return {
-            "regions": [{"x": x, "y": y, "width": w, "height": h} for x, y, w, h in boxes],
-            "frameWidth": width,
-            "frameHeight": height,
-            "frameIndex": frame_index,
+            'regions': [
+                {'x': x, 'y': y, 'width': w, 'height': h} for x, y, w, h in boxes
+            ],
+            'frameWidth': width,
+            'frameHeight': height,
+            'frameIndex': frame_index,
         }
     except Exception as e:
-        _log_error("detect_face_boxes_in_video", e)
+        _log_error('detect_face_boxes_in_video', e)
         raise
     finally:
         if cap is not None:
@@ -1372,7 +1388,7 @@ def swap_face_video_by_sources(
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
-    gpu_provider="auto",
+    gpu_provider='auto',
 ):
     """Swap faces in a video using multiple face sources.
 
@@ -1380,9 +1396,9 @@ def swap_face_video_by_sources(
     Supports GPU acceleration and progress callbacks.
     """
     try:
-        _emit_stage(stage_callback, "validating-input")
+        _emit_stage(stage_callback, 'validating-input')
         if not os.path.exists(input_path):
-            raise FileNotFoundError("file-not-found")
+            raise FileNotFoundError('file-not-found')
 
         save_path = _get_output_video_path(input_path)
         output_path = _swap_face_video_by_sources(
@@ -1398,15 +1414,15 @@ def swap_face_video_by_sources(
         )
 
         if not output_path or not os.path.exists(output_path):
-            raise RuntimeError("video-output-missing")
+            raise RuntimeError('video-output-missing')
 
-        _emit_stage(stage_callback, "muxing-audio")
+        _emit_stage(stage_callback, 'muxing-audio')
         _mux_audio_or_raise(input_path, output_path)
 
-        _emit_stage(stage_callback, "finalizing")
+        _emit_stage(stage_callback, 'finalizing')
         return output_path
     except Exception as e:
-        _log_error("swap_face_video_by_sources", e)
+        _log_error('swap_face_video_by_sources', e)
         raise
 
 
@@ -1419,7 +1435,7 @@ def _swap_face_video_by_sources(
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
-    gpu_provider="auto",
+    gpu_provider='auto',
 ):
     """
     多人换脸视频处理（使用多线程架构）
@@ -1437,7 +1453,7 @@ def _swap_face_video_by_sources(
     queue_size = 8 if use_gpu else 5
 
     print(
-        f"[INFO] 多人换脸使用 {num_workers} 个处理线程（CPU核数={cpu_count}），队列大小: {queue_size}"
+        f'[INFO] 多人换脸使用 {num_workers} 个处理线程（CPU核数={cpu_count}），队列大小: {queue_size}'
     )
 
     # 多线程队列
@@ -1457,7 +1473,7 @@ def _swap_face_video_by_sources(
         item,
         *,
         timeout=1,
-        warn_prefix="队列已满，等待中...",
+        warn_prefix='队列已满，等待中...',
     ) -> bool:
         """Put an item in a queue with stop signal support."""
         wait_count = 0
@@ -1468,7 +1484,7 @@ def _swap_face_video_by_sources(
             except queue.Full:
                 wait_count += 1
                 if wait_count % 5 == 0:
-                    print(f"[WARN] {warn_prefix} (已等待约 {wait_count} 秒)")
+                    print(f'[WARN] {warn_prefix} (已等待约 {wait_count} 秒)')
         return False
 
     def _mark_worker_done():
@@ -1479,12 +1495,12 @@ def _swap_face_video_by_sources(
                 workers_done_event.set()
 
     try:
-        _emit_stage(stage_callback, "opening-video")
+        _emit_stage(stage_callback, 'opening-video')
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
-            raise RuntimeError("video-open-failed")
+            raise RuntimeError('video-open-failed')
 
-        _emit_stage(stage_callback, "reading-video-metadata")
+        _emit_stage(stage_callback, 'reading-video-metadata')
         fps = cap.get(cv2.CAP_PROP_FPS)
         if not fps or fps <= 0:
             fps = 25.0
@@ -1497,34 +1513,34 @@ def _swap_face_video_by_sources(
         if width <= 0 or height <= 0:
             ok, first_frame = cap.read()
             if not ok or first_frame is None:
-                raise RuntimeError("video-open-failed")
+                raise RuntimeError('video-open-failed')
             height, width = first_frame.shape[:2]
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
         normalized_regions = _normalize_regions_with_face_source(regions, width, height)
         if not normalized_regions:
-            raise RuntimeError("invalid-face-source-binding")
+            raise RuntimeError('invalid-face-source-binding')
 
-        _emit_stage(stage_callback, "extracting-target-face")
+        _emit_stage(stage_callback, 'extracting-target-face')
 
         gpu_pool_size = _resolve_gpu_pool_size(num_workers) if use_gpu else 1
         if use_gpu:
-            _emit_stage(stage_callback, "gpu-initializing")
+            _emit_stage(stage_callback, 'gpu-initializing')
         tf_pool, using_gpu, selected_provider = _get_tf_pool(
             use_gpu=use_gpu,
             gpu_provider=gpu_provider,
             pool_size=gpu_pool_size,
         )
         if using_gpu:
-            _emit_stage(stage_callback, "gpu-enabled")
+            _emit_stage(stage_callback, 'gpu-enabled')
             print(
-                f"[INFO] 当前 GPU Provider: {selected_provider}, 实例池={len(tf_pool)}, worker={num_workers}"
+                f'[INFO] 当前 GPU Provider: {selected_provider}, 实例池={len(tf_pool)}, worker={num_workers}'
             )
         elif use_gpu:
-            _emit_stage(stage_callback, "gpu-fallback-cpu")
-            print(f"[INFO] 已回退 CPU: worker={num_workers}")
+            _emit_stage(stage_callback, 'gpu-fallback-cpu')
+            print(f'[INFO] 已回退 CPU: worker={num_workers}')
         else:
-            _emit_stage(stage_callback, "using-cpu")
+            _emit_stage(stage_callback, 'using-cpu')
 
         bootstrap_tf, bootstrap_lock = tf_pool[0]
         destination_faces = {}
@@ -1533,13 +1549,13 @@ def _swap_face_video_by_sources(
             with bootstrap_lock:
                 destination_face = bootstrap_tf.get_one_face(face_img)
             if destination_face is None:
-                raise RuntimeError("no-face-detected")
+                raise RuntimeError('no-face-detected')
             destination_faces[str(source_id)] = destination_face
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
         if not writer.isOpened():
-            raise RuntimeError("video-write-failed")
+            raise RuntimeError('video-write-failed')
 
         key_frame_index = 0
         if key_frame_ms and fps > 0:
@@ -1550,21 +1566,17 @@ def _swap_face_video_by_sources(
         cap.set(cv2.CAP_PROP_POS_FRAMES, key_frame_index)
         ok, key_frame = cap.read()
         if not ok or key_frame is None:
-            raise RuntimeError("video-frame-read-failed")
+            raise RuntimeError('video-frame-read-failed')
 
-        _emit_stage(stage_callback, "building-face-tracks")
+        _emit_stage(stage_callback, 'building-face-tracks')
         key_detections = _get_faces_with_boxes(key_frame, bootstrap_tf, bootstrap_lock)
         tracks = _build_tracks_from_seed_regions(normalized_regions, key_detections)
         if not tracks:
-            raise RuntimeError("no-face-in-selected-regions")
+            raise RuntimeError('no-face-in-selected-regions')
 
         # 共享的轨迹数据（需要线程安全）
         tracks_lock = threading.Lock()
-        stats = {
-            'frame_count': 0,
-            'processed_faces': 0,
-            'start_time': time.time()
-        }
+        stats = {'frame_count': 0, 'processed_faces': 0, 'start_time': time.time()}
         stats_lock = threading.Lock()
 
         # 读取线程
@@ -1581,7 +1593,7 @@ def _swap_face_video_by_sources(
                         read_queue,
                         (frame_idx, frame),
                         timeout=1,
-                        warn_prefix="读取队列已满，等待处理线程消费",
+                        warn_prefix='读取队列已满，等待处理线程消费',
                     ):
                         return
                     frame_idx += 1
@@ -1590,13 +1602,13 @@ def _swap_face_video_by_sources(
                         read_queue,
                         (None, None),
                         timeout=1,
-                        warn_prefix="读取队列已满，等待投递结束信号",
+                        warn_prefix='读取队列已满，等待投递结束信号',
                     ):
                         break
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
-                print(f"[ERROR] 读取线程异常: {str(e)}")
+                print(f'[ERROR] 读取线程异常: {str(e)}')
                 stop_event.set()
                 _clear_queue(read_queue)
 
@@ -1605,7 +1617,7 @@ def _swap_face_video_by_sources(
             """Process frames for face swapping."""
             worker_tf, worker_lock = tf_pool[worker_id % len(tf_pool)]
             try:
-                _emit_stage(stage_callback, "processing-video-frames")
+                _emit_stage(stage_callback, 'processing-video-frames')
                 while not stop_event.is_set():
                     try:
                         frame_idx, frame = read_queue.get(timeout=1)
@@ -1626,10 +1638,12 @@ def _swap_face_video_by_sources(
                                 progress_callback(
                                     frame_count=current_frame,
                                     total_frames=total_frames,
-                                    elapsed_seconds=max(0.0, time.time() - stats['start_time']),
+                                    elapsed_seconds=max(
+                                        0.0, time.time() - stats['start_time']
+                                    ),
                                 )
                         except Exception as e:
-                            print(f"[WARN] progress_callback failed: {str(e)}")
+                            print(f'[WARN] progress_callback failed: {str(e)}')
 
                     # 人脸检测
                     detections = _get_faces_with_boxes(frame, worker_tf, worker_lock)
@@ -1645,8 +1659,8 @@ def _swap_face_video_by_sources(
                             if track is None:
                                 continue
                             detection = detections[det_idx]
-                            track["box"] = detection["box"]
-                            track["missed"] = 0
+                            track['box'] = detection['box']
+                            track['missed'] = 0
                             matched_track_ids.add(track_id)
 
                         # 清理过期轨迹
@@ -1654,9 +1668,9 @@ def _swap_face_video_by_sources(
                         for track_id, track in tracks.items():
                             if track_id in matched_track_ids:
                                 continue
-                            track["missed"] = int(track.get("missed", 0)) + 1
+                            track['missed'] = int(track.get('missed', 0)) + 1
                             # 容忍更长时间的短暂丢脸，避免某个目标被过早清理后不再参与换脸
-                            if track["missed"] > 300:
+                            if track['missed'] > 300:
                                 stale_track_ids.append(track_id)
 
                         for track_id in stale_track_ids:
@@ -1671,12 +1685,12 @@ def _swap_face_video_by_sources(
                             continue
 
                         detection = detections[det_idx]
-                        source_id = track.get("faceSourceId")
+                        source_id = track.get('faceSourceId')
                         destination_face = destination_faces.get(str(source_id))
                         if destination_face is None:
                             continue
 
-                        reference_face = detection.get("face")
+                        reference_face = detection.get('face')
                         if reference_face is None:
                             continue
 
@@ -1692,21 +1706,23 @@ def _swap_face_video_by_sources(
                                 with stats_lock:
                                     stats['processed_faces'] += 1
                         except Exception as e:
-                            print(f"[WARN] 帧{current_frame} 轨迹{track_id} 换脸失败: {str(e)}")
+                            print(
+                                f'[WARN] 帧{current_frame} 轨迹{track_id} 换脸失败: {str(e)}'
+                            )
 
                     out = _normalize_output_frame(out, width, height)
                     if not _queue_put_with_stop(
                         write_queue,
                         (frame_idx, out),
                         timeout=1,
-                        warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
+                        warn_prefix=f'写入队列已满，Worker-{worker_id} 等待中',
                     ):
                         break
 
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
-                print(f"[ERROR] 处理线程 Worker-{worker_id} 异常: {str(e)}")
+                print(f'[ERROR] 处理线程 Worker-{worker_id} 异常: {str(e)}')
                 stop_event.set()
             finally:
                 _mark_worker_done()
@@ -1751,16 +1767,18 @@ def _swap_face_video_by_sources(
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
-                print(f"[ERROR] 写入线程异常: {str(e)}")
+                print(f'[ERROR] 写入线程异常: {str(e)}')
                 stop_event.set()
 
         # 启动线程（移除 daemon=True 以确保线程正确完成）
-        read_thread = threading.Thread(target=read_frames, name="VideoReader")
+        read_thread = threading.Thread(target=read_frames, name='VideoReader')
         process_threads = [
-            threading.Thread(target=process_frames, args=(i,), name=f"VideoProcessor-{i}")
+            threading.Thread(
+                target=process_frames, args=(i,), name=f'VideoProcessor-{i}'
+            )
             for i in range(num_workers)
         ]
-        write_thread = threading.Thread(target=write_frames, name="VideoWriter")
+        write_thread = threading.Thread(target=write_frames, name='VideoWriter')
 
         read_thread.start()
         for t in process_threads:
@@ -1788,16 +1806,16 @@ def _swap_face_video_by_sources(
                     elapsed_seconds=max(0.0, time.time() - stats['start_time']),
                 )
             except Exception as e:
-                print(f"[WARN] progress_callback(final) failed: {str(e)}")
+                print(f'[WARN] progress_callback(final) failed: {str(e)}')
 
         print(
-            f"[INFO] 视频多人换脸完成: 总帧={stats['frame_count']}, 成功换脸人次={stats['processed_faces']}, 轨迹数={len(tracks)}"
+            f'[INFO] 视频多人换脸完成: 总帧={stats["frame_count"]}, 成功换脸人次={stats["processed_faces"]}, 轨迹数={len(tracks)}'
         )
         return save_path
 
     except Exception as e:
         stop_event.set()
-        _log_error("_swap_face_video_by_sources", e)
+        _log_error('_swap_face_video_by_sources', e)
         raise
     finally:
         stop_event.set()
@@ -1837,7 +1855,7 @@ def _detect_face_boxes_in_frame(frame, search_areas, tf_instance=None, tf_lock=N
         crop = frame[y : y + h, x : x + w]
         detections = _get_faces_with_boxes(crop, tf_instance, tf_lock)
         for det in detections:
-            bx, by, bw, bh = det["box"]
+            bx, by, bw, bh = det['box']
             gx = x + bx
             gy = y + by
             sq = _expand_square_box(gx, gy, bw, bh, frame_w, frame_h)
@@ -1858,7 +1876,7 @@ def _get_faces_with_boxes(frame, tf_instance=None, tf_lock=None):
 
     faces = []
     with tf_lock:
-        if hasattr(tf_instance, "get_many_faces"):
+        if hasattr(tf_instance, 'get_many_faces'):
             try:
                 many = tf_instance.get_many_faces(frame)
                 if many:
@@ -1880,7 +1898,7 @@ def _get_faces_with_boxes(frame, tf_instance=None, tf_lock=None):
         box = _extract_face_box(face, frame_w, frame_h)
         if box is None:
             continue
-        out.append({"face": face, "box": box})
+        out.append({'face': face, 'box': box})
     return out
 
 
@@ -1888,10 +1906,10 @@ def _extract_face_box(face_obj, frame_w, frame_h):
     """Extract face box coordinates."""
     candidates = [
         face_obj,
-        getattr(face_obj, "bbox", None),
-        getattr(face_obj, "box", None),
-        getattr(face_obj, "rect", None),
-        getattr(face_obj, "bounding_box", None),
+        getattr(face_obj, 'bbox', None),
+        getattr(face_obj, 'box', None),
+        getattr(face_obj, 'rect', None),
+        getattr(face_obj, 'bounding_box', None),
     ]
 
     for item in candidates:
@@ -1900,7 +1918,7 @@ def _extract_face_box(face_obj, frame_w, frame_h):
             return box
 
     if isinstance(face_obj, dict):
-        for key in ("bbox", "box", "rect", "bounding_box"):
+        for key in ('bbox', 'box', 'rect', 'bounding_box'):
             box = _parse_box_like(face_obj.get(key), frame_w, frame_h)
             if box is not None:
                 return box
@@ -1914,17 +1932,17 @@ def _parse_box_like(raw, frame_w, frame_h):
         return None
 
     if isinstance(raw, dict):
-        if all(k in raw for k in ("x", "y", "width", "height")):
-            x = _to_int(raw.get("x"))
-            y = _to_int(raw.get("y"))
-            w = _to_int(raw.get("width"))
-            h = _to_int(raw.get("height"))
+        if all(k in raw for k in ('x', 'y', 'width', 'height')):
+            x = _to_int(raw.get('x'))
+            y = _to_int(raw.get('y'))
+            w = _to_int(raw.get('width'))
+            h = _to_int(raw.get('height'))
             return _clamp_box(x, y, w, h, frame_w, frame_h)
-        if all(k in raw for k in ("x1", "y1", "x2", "y2")):
-            x1 = _to_float(raw.get("x1"))
-            y1 = _to_float(raw.get("y1"))
-            x2 = _to_float(raw.get("x2"))
-            y2 = _to_float(raw.get("y2"))
+        if all(k in raw for k in ('x1', 'y1', 'x2', 'y2')):
+            x1 = _to_float(raw.get('x1'))
+            y1 = _to_float(raw.get('y1'))
+            x2 = _to_float(raw.get('x2'))
+            y2 = _to_float(raw.get('y2'))
             return _from_xyxy(x1, y1, x2, y2, frame_w, frame_h)
 
     if isinstance(raw, (list, tuple, np.ndarray)) and len(raw) >= 4:
@@ -1942,10 +1960,12 @@ def _parse_box_like(raw, frame_w, frame_h):
         if c > a and d > b:
             return _from_xyxy(a, b, c, d, frame_w, frame_h)
 
-        return _clamp_box(_to_int(a), _to_int(b), _to_int(c), _to_int(d), frame_w, frame_h)
+        return _clamp_box(
+            _to_int(a), _to_int(b), _to_int(c), _to_int(d), frame_w, frame_h
+        )
 
     # 对象字段尝试
-    attrs = vars(raw) if hasattr(raw, "__dict__") else {}
+    attrs = vars(raw) if hasattr(raw, '__dict__') else {}
     if attrs:
         return _parse_box_like(attrs, frame_w, frame_h)
 
@@ -2086,14 +2106,14 @@ def _build_tracks_from_seed_regions(seed_regions, detections):
     track_id = 1
 
     for region in seed_regions:
-        region_box = (region["x"], region["y"], region["width"], region["height"])
+        region_box = (region['x'], region['y'], region['width'], region['height'])
         best_idx = -1
         best_iou = 0.0
 
         for idx, det in enumerate(detections):
             if idx in used_det:
                 continue
-            iou = _iou(region_box, det["box"])
+            iou = _iou(region_box, det['box'])
             if iou > best_iou:
                 best_iou = iou
                 best_idx = idx
@@ -2103,7 +2123,7 @@ def _build_tracks_from_seed_regions(seed_regions, detections):
             for idx, det in enumerate(detections):
                 if idx in used_det:
                     continue
-                dist = _center_distance(region_box, det["box"])
+                dist = _center_distance(region_box, det['box'])
                 if best_dist is None or dist < best_dist:
                     best_dist = dist
                     best_idx = idx
@@ -2111,15 +2131,15 @@ def _build_tracks_from_seed_regions(seed_regions, detections):
         # 若关键帧未匹配到检测框，回退使用用户选区本身作为初始轨迹框
         if best_idx >= 0:
             used_det.add(best_idx)
-            init_box = detections[best_idx]["box"]
+            init_box = detections[best_idx]['box']
         else:
             init_box = region_box
 
         tracks[track_id] = {
-            "trackId": track_id,
-            "faceSourceId": str(region["faceSourceId"]),
-            "box": init_box,
-            "missed": 0,
+            'trackId': track_id,
+            'faceSourceId': str(region['faceSourceId']),
+            'box': init_box,
+            'missed': 0,
         }
         track_id += 1
 
@@ -2135,9 +2155,9 @@ def _match_tracks_to_detections(tracks, detections):
     candidate_pairs = []
 
     for tid in track_ids:
-        tbox = tracks[tid]["box"]
+        tbox = tracks[tid]['box']
         for didx, det in enumerate(detections):
-            iou = _iou(tbox, det["box"])
+            iou = _iou(tbox, det['box'])
             if iou > 0.05:
                 candidate_pairs.append((iou, tid, didx))
 
@@ -2158,13 +2178,13 @@ def _match_tracks_to_detections(tracks, detections):
     for tid in track_ids:
         if tid in matched_tracks:
             continue
-        tbox = tracks[tid]["box"]
+        tbox = tracks[tid]['box']
         best_idx = -1
         best_dist = None
         for didx, det in enumerate(detections):
             if didx in matched_dets:
                 continue
-            dist = _center_distance(tbox, det["box"])
+            dist = _center_distance(tbox, det['box'])
             if best_dist is None or dist < best_dist:
                 best_dist = dist
                 best_idx = didx
@@ -2185,7 +2205,7 @@ def swap_face_deep(input_path, face_paths, regions=None):
     """Perform deep face swap with multiple target faces."""
     try:
         if not isinstance(face_paths, list) or len(face_paths) == 0:
-            raise RuntimeError("missing-params")
+            raise RuntimeError('missing-params')
 
         save_path = _get_output_file_path(input_path)
         input_img = _read_image(input_path)
@@ -2193,12 +2213,12 @@ def swap_face_deep(input_path, face_paths, regions=None):
 
         destination_faces = _load_destination_faces(face_paths, _tf, _tf_lock)
         if not destination_faces:
-            raise RuntimeError("no-face-detected")
+            raise RuntimeError('no-face-detected')
 
         if regions:
             normalized_regions = _normalize_regions(regions, width, height)
             if not normalized_regions:
-                raise RuntimeError("invalid-regions")
+                raise RuntimeError('invalid-regions')
         else:
             normalized_regions = _sort_boxes_by_position(
                 _detect_face_boxes_in_frame(
@@ -2209,12 +2229,14 @@ def swap_face_deep(input_path, face_paths, regions=None):
                 )
             )
             if not normalized_regions:
-                raise RuntimeError("no-face-detected")
+                raise RuntimeError('no-face-detected')
 
         output_img = input_img.copy()
         swapped_count = 0
 
-        for index, (x, y, w, h) in enumerate(_sort_boxes_by_position(normalized_regions)):
+        for index, (x, y, w, h) in enumerate(
+            _sort_boxes_by_position(normalized_regions)
+        ):
             crop = input_img[y : y + h, x : x + w]
             if crop.size == 0:
                 continue
@@ -2240,11 +2262,11 @@ def swap_face_deep(input_path, face_paths, regions=None):
         if swapped_count == 0 and regions:
             return _write_image(save_path, output_img)
         if swapped_count == 0:
-            raise RuntimeError("no-face-detected")
+            raise RuntimeError('no-face-detected')
         return _write_image(save_path, output_img)
 
     except Exception as e:
-        _log_error("swap_face_deep", e)
+        _log_error('swap_face_deep', e)
         raise
 
 
@@ -2256,7 +2278,7 @@ def swap_face_video_deep(
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
-    gpu_provider="auto",
+    gpu_provider='auto',
     segment_duration_sec=12,
     segment_overlap_frames=6,
 ):
@@ -2266,15 +2288,15 @@ def swap_face_video_deep(
     across video segments. Supports multiple face sources.
     """
     try:
-        _emit_stage(stage_callback, "validating-input")
+        _emit_stage(stage_callback, 'validating-input')
         if not os.path.exists(input_path):
-            raise FileNotFoundError("file-not-found")
+            raise FileNotFoundError('file-not-found')
         if not isinstance(face_paths, list) or len(face_paths) == 0:
-            raise RuntimeError("missing-params")
+            raise RuntimeError('missing-params')
 
         for face_path in face_paths:
             if not isinstance(face_path, str) or not os.path.exists(face_path):
-                raise FileNotFoundError("file-not-found")
+                raise FileNotFoundError('file-not-found')
 
         save_path = _get_output_video_path(input_path)
         output_path = _swap_face_video_deep(
@@ -2292,15 +2314,15 @@ def swap_face_video_deep(
         )
 
         if not output_path or not os.path.exists(output_path):
-            raise RuntimeError("video-output-missing")
+            raise RuntimeError('video-output-missing')
 
-        _emit_stage(stage_callback, "muxing-audio")
+        _emit_stage(stage_callback, 'muxing-audio')
         _mux_audio_or_raise(input_path, output_path)
 
-        _emit_stage(stage_callback, "finalizing")
+        _emit_stage(stage_callback, 'finalizing')
         return output_path
     except Exception as e:
-        _log_error("swap_face_video_deep", e)
+        _log_error('swap_face_video_deep', e)
         raise
 
 
@@ -2313,7 +2335,7 @@ def _swap_face_video_deep(
     progress_callback=None,
     stage_callback=None,
     use_gpu=False,
-    gpu_provider="auto",
+    gpu_provider='auto',
     segment_duration_sec=12,
     segment_overlap_frames=6,
 ):
@@ -2321,12 +2343,12 @@ def _swap_face_video_deep(
     cap = None
     temp_dir = None
     try:
-        _emit_stage(stage_callback, "opening-video")
+        _emit_stage(stage_callback, 'opening-video')
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
-            raise RuntimeError("video-open-failed")
+            raise RuntimeError('video-open-failed')
 
-        _emit_stage(stage_callback, "reading-video-metadata")
+        _emit_stage(stage_callback, 'reading-video-metadata')
         fps = cap.get(cv2.CAP_PROP_FPS)
         if not fps or fps <= 0:
             fps = 25.0
@@ -2339,50 +2361,56 @@ def _swap_face_video_deep(
         if width <= 0 or height <= 0:
             ok, first_frame = cap.read()
             if not ok or first_frame is None:
-                raise RuntimeError("video-open-failed")
+                raise RuntimeError('video-open-failed')
             height, width = first_frame.shape[:2]
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-        normalized_regions = _normalize_regions(regions, width, height) if regions else []
+        normalized_regions = (
+            _normalize_regions(regions, width, height) if regions else []
+        )
         if regions and not normalized_regions:
-            raise RuntimeError("invalid-regions")
+            raise RuntimeError('invalid-regions')
 
-        _emit_stage(stage_callback, "extracting-target-face")
+        _emit_stage(stage_callback, 'extracting-target-face')
         gpu_pool_size = _resolve_gpu_pool_size(1) if use_gpu else 1
         if use_gpu:
-            _emit_stage(stage_callback, "gpu-initializing")
+            _emit_stage(stage_callback, 'gpu-initializing')
         tf_pool, using_gpu, selected_provider = _get_tf_pool(
             use_gpu=use_gpu,
             gpu_provider=gpu_provider,
             pool_size=gpu_pool_size,
         )
         if using_gpu:
-            _emit_stage(stage_callback, "gpu-enabled")
-            print(f"[INFO] 深度换脸启用 GPU Provider: {selected_provider}")
+            _emit_stage(stage_callback, 'gpu-enabled')
+            print(f'[INFO] 深度换脸启用 GPU Provider: {selected_provider}')
         elif use_gpu:
-            _emit_stage(stage_callback, "gpu-fallback-cpu")
+            _emit_stage(stage_callback, 'gpu-fallback-cpu')
         else:
-            _emit_stage(stage_callback, "using-cpu")
+            _emit_stage(stage_callback, 'using-cpu')
 
         bootstrap_tf, bootstrap_lock = tf_pool[0]
-        destination_faces = _load_destination_faces(face_paths, bootstrap_tf, bootstrap_lock)
+        destination_faces = _load_destination_faces(
+            face_paths, bootstrap_tf, bootstrap_lock
+        )
         if not destination_faces:
-            raise RuntimeError("no-face-detected")
+            raise RuntimeError('no-face-detected')
 
         if total_frames <= 0:
-            raise RuntimeError("video-open-failed")
+            raise RuntimeError('video-open-failed')
 
-        segment_frames = max(1, int(round(max(1, int(segment_duration_sec or 12)) * fps)))
+        segment_frames = max(
+            1, int(round(max(1, int(segment_duration_sec or 12)) * fps))
+        )
         overlap_frames = max(0, int(segment_overlap_frames or 0))
         segments = _plan_video_segments(total_frames, segment_frames, overlap_frames)
 
-        temp_dir = tempfile.mkdtemp(prefix="magicmirror_deep_segments_")
+        temp_dir = tempfile.mkdtemp(prefix='magicmirror_deep_segments_')
         max_workers = min(
             len(segments),
             max(1, min(multiprocessing.cpu_count(), 4 if not use_gpu else 2)),
         )
 
-        _emit_stage(stage_callback, "processing-video-segments")
+        _emit_stage(stage_callback, 'processing-video-segments')
         started_at = time.time()
         completed_frames = 0
         segment_results = {}
@@ -2408,8 +2436,8 @@ def _swap_face_video_deep(
             for future in as_completed(future_to_segment):
                 segment = future_to_segment[future]
                 result = future.result()
-                segment_results[segment["index"]] = result
-                completed_frames += int(result.get("framesWritten", 0) or 0)
+                segment_results[segment['index']] = result
+                completed_frames += int(result.get('framesWritten', 0) or 0)
                 if progress_callback:
                     try:
                         progress_callback(
@@ -2418,22 +2446,22 @@ def _swap_face_video_deep(
                             elapsed_seconds=max(0.0, time.time() - started_at),
                         )
                     except Exception as e:
-                        print(f"[WARN] progress_callback failed: {str(e)}")
+                        print(f'[WARN] progress_callback failed: {str(e)}')
 
         ordered_segment_paths = [
-            segment_results[index]["path"]
+            segment_results[index]['path']
             for index in sorted(segment_results.keys())
-            if segment_results.get(index) and segment_results[index].get("path")
+            if segment_results.get(index) and segment_results[index].get('path')
         ]
         if not ordered_segment_paths:
-            raise RuntimeError("video-output-missing")
+            raise RuntimeError('video-output-missing')
 
-        _emit_stage(stage_callback, "merging-video-segments")
+        _emit_stage(stage_callback, 'merging-video-segments')
         _concat_video_segments(ordered_segment_paths, save_path, fps, width, height)
         return save_path
 
     except Exception as e:
-        _log_error("_swap_face_video_deep", e)
+        _log_error('_swap_face_video_deep', e)
         raise
     finally:
         if cap is not None:
@@ -2452,14 +2480,14 @@ def _load_destination_faces(face_paths, tf_instance=None, tf_lock=None):
     destination_faces = []
     for face_path in face_paths:
         if isinstance(face_path, dict):
-            face_path = face_path.get("path")
+            face_path = face_path.get('path')
         if not isinstance(face_path, str) or not face_path:
             continue
         face_img = _read_image(face_path)
         with tf_lock:
             destination_face = tf_instance.get_one_face(face_img)
         if destination_face is None:
-            print(f"[WARN] 目标脸素材未检测到人脸，已跳过: {face_path}")
+            print(f'[WARN] 目标脸素材未检测到人脸，已跳过: {face_path}')
             continue
         destination_faces.append(destination_face)
     return destination_faces
@@ -2475,8 +2503,8 @@ def _sort_detections_by_position(detections):
     return sorted(
         detections or [],
         key=lambda item: (
-            int(item.get("box", (0, 0, 0, 0))[1]),
-            int(item.get("box", (0, 0, 0, 0))[0]),
+            int(item.get('box', (0, 0, 0, 0))[1]),
+            int(item.get('box', (0, 0, 0, 0))[0]),
         ),
     )
 
@@ -2495,7 +2523,7 @@ def _build_deep_tracks_from_seed_regions(seed_regions, detections, target_count)
         for det_idx, det in enumerate(detections or []):
             if det_idx in used_det:
                 continue
-            iou = _iou(region_box, det["box"])
+            iou = _iou(region_box, det['box'])
             if iou > best_iou:
                 best_iou = iou
                 best_idx = det_idx
@@ -2505,22 +2533,22 @@ def _build_deep_tracks_from_seed_regions(seed_regions, detections, target_count)
             for det_idx, det in enumerate(detections or []):
                 if det_idx in used_det:
                     continue
-                dist = _center_distance(region_box, det["box"])
+                dist = _center_distance(region_box, det['box'])
                 if best_dist is None or dist < best_dist:
                     best_dist = dist
                     best_idx = det_idx
 
         if best_idx >= 0:
             used_det.add(best_idx)
-            init_box = detections[best_idx]["box"]
+            init_box = detections[best_idx]['box']
         else:
             init_box = region_box
 
         tracks[track_id] = {
-            "trackId": track_id,
-            "targetIndex": index % max(1, int(target_count or 1)),
-            "box": init_box,
-            "missed": 0,
+            'trackId': track_id,
+            'targetIndex': index % max(1, int(target_count or 1)),
+            'box': init_box,
+            'missed': 0,
         }
         track_id += 1
 
@@ -2533,10 +2561,10 @@ def _build_deep_tracks_from_detections(detections, target_count):
     sorted_detections = _sort_detections_by_position(detections)
     for index, det in enumerate(sorted_detections, start=1):
         tracks[index] = {
-            "trackId": index,
-            "targetIndex": (index - 1) % max(1, int(target_count or 1)),
-            "box": det["box"],
-            "missed": 0,
+            'trackId': index,
+            'targetIndex': (index - 1) % max(1, int(target_count or 1)),
+            'box': det['box'],
+            'missed': 0,
         }
     return tracks
 
@@ -2558,11 +2586,11 @@ def _plan_video_segments(total_frames, segment_frames, overlap_frames):
         read_end = min(total_frames, core_end + overlap_frames)
         segments.append(
             {
-                "index": index,
-                "coreStart": core_start,
-                "coreEnd": core_end,
-                "readStart": read_start,
-                "readEnd": read_end,
+                'index': index,
+                'coreStart': core_start,
+                'coreEnd': core_end,
+                'readStart': read_start,
+                'readEnd': read_end,
             }
         )
         index += 1
@@ -2580,28 +2608,28 @@ def _process_deep_video_segment(
     height,
     temp_dir,
     use_gpu=False,
-    gpu_provider="auto",
+    gpu_provider='auto',
 ):
     """Process a single deep video segment."""
     cap = None
     writer = None
     try:
-        segment_index = int(segment["index"])
-        core_start = int(segment["coreStart"])
-        core_end = int(segment["coreEnd"])
-        read_start = int(segment["readStart"])
-        read_end = int(segment["readEnd"])
+        segment_index = int(segment['index'])
+        core_start = int(segment['coreStart'])
+        core_end = int(segment['coreEnd'])
+        read_start = int(segment['readStart'])
+        read_end = int(segment['readEnd'])
 
-        temp_output_path = os.path.join(temp_dir, f"segment_{segment_index:04d}.mp4")
+        temp_output_path = os.path.join(temp_dir, f'segment_{segment_index:04d}.mp4')
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
-            raise RuntimeError("video-open-failed")
+            raise RuntimeError('video-open-failed')
         cap.set(cv2.CAP_PROP_POS_FRAMES, read_start)
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
         if not writer.isOpened():
-            raise RuntimeError("video-write-failed")
+            raise RuntimeError('video-write-failed')
 
         tf_pool, _, _ = _get_tf_pool(
             use_gpu=use_gpu,
@@ -2647,8 +2675,8 @@ def _process_deep_video_segment(
                 track = tracks.get(track_id)
                 if track is None:
                     continue
-                track["box"] = detections[detection_index]["box"]
-                track["missed"] = 0
+                track['box'] = detections[detection_index]['box']
+                track['missed'] = 0
                 matched_track_ids.add(track_id)
                 matched_detection_ids.add(detection_index)
 
@@ -2656,8 +2684,8 @@ def _process_deep_video_segment(
             for track_id, track in tracks.items():
                 if track_id in matched_track_ids:
                     continue
-                track["missed"] = int(track.get("missed", 0)) + 1
-                if int(track["missed"]) > track_missed_limit:
+                track['missed'] = int(track.get('missed', 0)) + 1
+                if int(track['missed']) > track_missed_limit:
                     stale_track_ids.append(track_id)
 
             for track_id in stale_track_ids:
@@ -2671,10 +2699,10 @@ def _process_deep_video_segment(
                     track_id = next_track_id
                     next_track_id += 1
                     tracks[track_id] = {
-                        "trackId": track_id,
-                        "targetIndex": (track_id - 1) % max(1, len(destination_faces)),
-                        "box": detection["box"],
-                        "missed": 0,
+                        'trackId': track_id,
+                        'targetIndex': (track_id - 1) % max(1, len(destination_faces)),
+                        'box': detection['box'],
+                        'missed': 0,
                     }
                     new_matches.append((track_id, detection_index))
 
@@ -2683,11 +2711,11 @@ def _process_deep_video_segment(
                 track = tracks.get(track_id)
                 if track is None:
                     continue
-                reference_face = detections[detection_index].get("face")
+                reference_face = detections[detection_index].get('face')
                 if reference_face is None:
                     continue
                 destination_face = destination_faces[
-                    int(track.get("targetIndex", 0)) % len(destination_faces)
+                    int(track.get('targetIndex', 0)) % len(destination_faces)
                 ]
                 with worker_lock:
                     swapped = worker_tf.swap_face(
@@ -2705,10 +2733,10 @@ def _process_deep_video_segment(
 
             frame_index += 1
 
-        return {"path": temp_output_path, "framesWritten": frames_written}
+        return {'path': temp_output_path, 'framesWritten': frames_written}
 
     except Exception as e:
-        _log_error("_process_deep_video_segment", e)
+        _log_error('_process_deep_video_segment', e)
         raise
     finally:
         if cap is not None:
@@ -2722,16 +2750,16 @@ def _concat_video_segments(segment_paths, output_path, fps, width, height):
     writer = None
     caps = []
     try:
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         if not writer.isOpened():
-            raise RuntimeError("video-write-failed")
+            raise RuntimeError('video-write-failed')
 
         for segment_path in segment_paths:
             cap = cv2.VideoCapture(segment_path)
             caps.append(cap)
             if not cap.isOpened():
-                raise RuntimeError("video-open-failed")
+                raise RuntimeError('video-open-failed')
 
             while True:
                 ok, frame = cap.read()
@@ -2740,10 +2768,10 @@ def _concat_video_segments(segment_paths, output_path, fps, width, height):
                 writer.write(_normalize_output_frame(frame, width, height))
 
         if not os.path.exists(output_path):
-            raise RuntimeError("video-output-missing")
+            raise RuntimeError('video-output-missing')
         return output_path
     except Exception as e:
-        _log_error("_concat_video_segments", e)
+        _log_error('_concat_video_segments', e)
         raise
     finally:
         for cap in caps:

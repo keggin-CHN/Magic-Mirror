@@ -41,33 +41,33 @@ app = Bottle()
 # https://github.com/bottlepy/bottle/issues/881#issuecomment-244024649
 app.plugins[0].json_dumps = lambda *args, **kwargs: json.dumps(
     *args, ensure_ascii=False, **kwargs
-).encode("utf8")
+).encode('utf8')
 
 ALLOWED_IMAGE_EXTS = {
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".webp",
-    ".bmp",
-    ".tif",
-    ".tiff",
+    '.jpg',
+    '.jpeg',
+    '.png',
+    '.webp',
+    '.bmp',
+    '.tif',
+    '.tiff',
 }
 
 ALLOWED_VIDEO_EXTS = {
-    ".mp4",
-    ".mov",
-    ".avi",
-    ".mkv",
-    ".webm",
-    ".m4v",
+    '.mp4',
+    '.mov',
+    '.avi',
+    '.mkv',
+    '.webm',
+    '.m4v',
 }
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-WEB_DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, "data", "web"))
-UPLOADS_DIR = os.path.abspath(os.path.join(WEB_DATA_DIR, "uploads"))
-LIBRARY_DIR = os.path.abspath(os.path.join(WEB_DATA_DIR, "library"))
-CONFIG_PATH = os.path.join(WEB_DATA_DIR, "config.json")
-DIST_DIR = os.path.join(BASE_DIR, "dist-web")
+WEB_DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, 'data', 'web'))
+UPLOADS_DIR = os.path.abspath(os.path.join(WEB_DATA_DIR, 'uploads'))
+LIBRARY_DIR = os.path.abspath(os.path.join(WEB_DATA_DIR, 'library'))
+CONFIG_PATH = os.path.join(WEB_DATA_DIR, 'config.json')
+DIST_DIR = os.path.join(BASE_DIR, 'dist-web')
 
 TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
@@ -77,7 +77,7 @@ RESULT_TTL_SECONDS = 4 * 3600
 PROGRESS_TTL_SECONDS = 6 * 3600
 MAX_UPLOAD_BYTES_IMAGE = 50 * 1024 * 1024
 MAX_UPLOAD_BYTES_VIDEO = 2 * 1024 * 1024 * 1024
-SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._\-]+")
+SAFE_FILENAME_PATTERN = re.compile(r'[^A-Za-z0-9._\-]+')
 
 TOKENS: Dict[str, float] = {}
 TOKENS_LOCK = threading.RLock()
@@ -96,14 +96,15 @@ VIDEO_TASK_CANCELLED_LOCK = threading.RLock()
 VIDEO_TASK_CONFIGS: Dict[str, Dict[str, object]] = {}
 VIDEO_TASK_CONFIGS_LOCK = threading.RLock()
 VIDEO_TASK_CONFIG_TTL_SECONDS = 7 * 24 * 3600
-VIDEO_TASK_CONFIG_TOKEN_PREFIX = "cfg1"
+VIDEO_TASK_CONFIG_TOKEN_PREFIX = 'cfg1'
 VIDEO_TASK_CONFIG_SECRET = os.environ.get(
-    "VIDEO_TASK_CONFIG_SECRET", "magic-mirror-config-secret"
+    'VIDEO_TASK_CONFIG_SECRET', 'magic-mirror-config-secret'
 )
 
 _LIBRARY_CACHE_LOCK = threading.RLock()
 _LIBRARY_CACHE_MTIME: Optional[int] = None
 _LIBRARY_CACHE_ITEMS: List[Dict[str, str]] = []
+
 
 def _ensure_dirs():
     """Create required data directories if they do not exist."""
@@ -118,15 +119,15 @@ _ensure_dirs()
 def _load_config() -> dict:
     """Load or create the server configuration file with default password."""
     if not os.path.exists(CONFIG_PATH):
-        _save_config({"password": "123456"})
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        _save_config({'password': '123456'})
+    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 
 def _save_config(cfg: dict) -> None:
     """Persist the server configuration to disk."""
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
@@ -153,10 +154,10 @@ def _cleanup_tokens() -> None:
 
 def _extract_token() -> Optional[str]:
     """Extract the authentication token from the request."""
-    auth = request.headers.get("Authorization", "")
-    if auth.lower().startswith("bearer "):
+    auth = request.headers.get('Authorization', '')
+    if auth.lower().startswith('bearer '):
         return auth[7:].strip()
-    return request.headers.get("X-Token") or request.query.get("token")
+    return request.headers.get('X-Token') or request.query.get('token')
 
 
 def _require_auth() -> bool:
@@ -182,52 +183,52 @@ def _ext(path: str) -> str:
 def _validate_file(path: str, allowed_exts: set, *, missing_code: str):
     """Validate a file exists and has an allowed extension."""
     if not path:
-        raise RuntimeError("missing-params")
+        raise RuntimeError('missing-params')
     if not os.path.exists(path):
-        raise FileNotFoundError("file-not-found")
+        raise FileNotFoundError('file-not-found')
     if _ext(path) not in allowed_exts:
         raise RuntimeError(missing_code)
 
 
 def _simplify_task_error(err: object) -> str:
     """Simplify a task error to a human-readable string."""
-    msg = (str(err) if err is not None else "").lower()
+    msg = (str(err) if err is not None else '').lower()
     codes = [
-        "missing-params",
-        "missing-face-sources",
-        "invalid-face-source-binding",
-        "face-source-not-found",
-        "file-not-found",
-        "file-too-large",
-        "invalid-path",
-        "unsupported-image-format",
-        "unsupported-video-format",
-        "unsupported-file-format",
-        "image-decode-failed",
-        "no-face-detected",
-        "no-face-in-selected-regions",
-        "swap-failed",
-        "video-open-failed",
-        "video-write-failed",
-        "video-output-missing",
-        "audio-mux-failed",
-        "video-frame-read-failed",
-        "output-write-failed",
-        "invalid-regions",
-        "config-mismatch",
-        "config-not-found",
+        'missing-params',
+        'missing-face-sources',
+        'invalid-face-source-binding',
+        'face-source-not-found',
+        'file-not-found',
+        'file-too-large',
+        'invalid-path',
+        'unsupported-image-format',
+        'unsupported-video-format',
+        'unsupported-file-format',
+        'image-decode-failed',
+        'no-face-detected',
+        'no-face-in-selected-regions',
+        'swap-failed',
+        'video-open-failed',
+        'video-write-failed',
+        'video-output-missing',
+        'audio-mux-failed',
+        'video-frame-read-failed',
+        'output-write-failed',
+        'invalid-regions',
+        'config-mismatch',
+        'config-not-found',
     ]
     for code in codes:
         if code in msg:
             return code
-    return "internal"
+    return 'internal'
 
 
 def _sanitize_filename(name: str) -> str:
     """Sanitize a filename by removing unsafe characters and limiting length."""
-    base = os.path.basename(name or "upload")
-    base = base.replace(" ", "_")
-    cleaned = SAFE_FILENAME_PATTERN.sub("_", base).strip("._-") or "upload"
+    base = os.path.basename(name or 'upload')
+    base = base.replace(' ', '_')
+    cleaned = SAFE_FILENAME_PATTERN.sub('_', base).strip('._-') or 'upload'
     if len(cleaned) > 200:
         root, ext = os.path.splitext(cleaned)
         cleaned = root[: 200 - len(ext)] + ext
@@ -246,7 +247,7 @@ def _is_path_within(parent: str, child: str) -> bool:
 
 def _check_upload_size(upload_file, max_bytes: int) -> bool:
     """Check upload file size without reading entire content."""
-    raw = getattr(upload_file, "file", None)
+    raw = getattr(upload_file, 'file', None)
     if raw is None:
         return True
     try:
@@ -262,14 +263,14 @@ def _check_upload_size(upload_file, max_bytes: int) -> bool:
 def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None):
     """Save an uploaded file to the destination directory."""
     if max_bytes is not None and not _check_upload_size(upload_file, max_bytes):
-        raise RuntimeError("file-too-large")
+        raise RuntimeError('file-too-large')
     filename = _sanitize_filename(upload_file.filename)
     ext = os.path.splitext(filename)[1].lower()
     file_id = uuid.uuid4().hex
-    safe_name = f"{file_id}{ext}" if ext else file_id
+    safe_name = f'{file_id}{ext}' if ext else file_id
     save_path = os.path.abspath(os.path.join(dest_dir, safe_name))
     if not _is_path_within(dest_dir, save_path):
-        raise RuntimeError("invalid-path")
+        raise RuntimeError('invalid-path')
     upload_file.save(save_path, overwrite=True)
     return file_id, save_path, safe_name
 
@@ -277,7 +278,7 @@ def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None)
 def _register_upload(file_id: str, path: str, kind: str) -> None:
     """Register an uploaded file for later retrieval."""
     with UPLOADS_LOCK:
-        UPLOADS[file_id] = {"path": path, "kind": kind, "createdAt": time.time()}
+        UPLOADS[file_id] = {'path': path, 'kind': kind, 'createdAt': time.time()}
 
 
 def _clone_json_payload(payload):
@@ -304,10 +305,10 @@ def _register_result(result_path: str, delete_paths: List[str]) -> str:
     result_id = uuid.uuid4().hex
     with RESULTS_LOCK:
         RESULTS[result_id] = {
-            "path": result_path,
-            "delete_paths": delete_paths,
-            "name": os.path.basename(result_path),
-            "createdAt": time.time(),
+            'path': result_path,
+            'delete_paths': delete_paths,
+            'name': os.path.basename(result_path),
+            'createdAt': time.time(),
         }
     return result_id
 
@@ -316,14 +317,14 @@ def _get_upload_path(file_id: str) -> Optional[str]:
     """Get the file path for an uploaded file."""
     with UPLOADS_LOCK:
         item = UPLOADS.get(file_id)
-        return item.get("path") if item else None
+        return item.get('path') if item else None
 
 
 def _get_upload_kind(file_id: str) -> Optional[str]:
     """Get the file kind for an uploaded file."""
     with UPLOADS_LOCK:
         item = UPLOADS.get(file_id)
-        return item.get("kind") if item else None
+        return item.get('kind') if item else None
 
 
 def _get_result_info(file_id: str) -> Optional[Dict[str, object]]:
@@ -336,7 +337,7 @@ def _get_result_info(file_id: str) -> Optional[Dict[str, object]]:
 def _remove_upload_by_path(path: str) -> None:
     """Remove an upload registration by path."""
     with UPLOADS_LOCK:
-        to_remove = [key for key, item in UPLOADS.items() if item.get("path") == path]
+        to_remove = [key for key, item in UPLOADS.items() if item.get('path') == path]
         for key in to_remove:
             UPLOADS.pop(key, None)
 
@@ -361,12 +362,12 @@ def _cleanup_expired_uploads() -> None:
         expired_ids = [
             fid
             for fid, entry in UPLOADS.items()
-            if now - float(entry.get("createdAt", now)) > UPLOAD_TTL_SECONDS
+            if now - float(entry.get('createdAt', now)) > UPLOAD_TTL_SECONDS
         ]
         for fid in expired_ids:
             entry = UPLOADS.pop(fid, None)
             if entry:
-                p = entry.get("path")
+                p = entry.get('path')
                 if isinstance(p, str):
                     expired_paths.append(p)
     for p in expired_paths:
@@ -381,12 +382,12 @@ def _cleanup_expired_results() -> None:
         expired_ids = [
             rid
             for rid, entry in RESULTS.items()
-            if now - float(entry.get("createdAt", now)) > RESULT_TTL_SECONDS
+            if now - float(entry.get('createdAt', now)) > RESULT_TTL_SECONDS
         ]
         for rid in expired_ids:
             entry = RESULTS.pop(rid, None)
             if entry:
-                expired_delete_lists.append(list(entry.get("delete_paths") or []))
+                expired_delete_lists.append(list(entry.get('delete_paths') or []))
     for paths in expired_delete_lists:
         for p in paths:
             _safe_delete(p)
@@ -395,16 +396,16 @@ def _cleanup_expired_results() -> None:
 def _cleanup_expired_progress() -> None:
     """Remove finished task progress records older than PROGRESS_TTL_SECONDS."""
     now = time.time()
-    finished_states = {"success", "failed", "cancelled"}
+    finished_states = {'success', 'failed', 'cancelled'}
     with VIDEO_TASK_PROGRESS_LOCK:
         to_remove = []
         for task_id in list(VIDEO_TASK_PROGRESS.keys()):
             state = VIDEO_TASK_PROGRESS.get(task_id) or {}
-            status = state.get("status")
-            finished_at = state.get("_finishedAt")
+            status = state.get('status')
+            finished_at = state.get('_finishedAt')
             if status in finished_states:
                 if finished_at is None:
-                    state["_finishedAt"] = now
+                    state['_finishedAt'] = now
                     VIDEO_TASK_PROGRESS[task_id] = state
                 elif now - float(finished_at) > PROGRESS_TTL_SECONDS:
                     to_remove.append(task_id)
@@ -423,9 +424,9 @@ def _cleanup_orphan_upload_files() -> None:
     now = time.time()
     with UPLOADS_LOCK:
         known_paths = {
-            os.path.abspath(str(entry.get("path", "")))
+            os.path.abspath(str(entry.get('path', '')))
             for entry in UPLOADS.values()
-            if entry.get("path")
+            if entry.get('path')
         }
     try:
         for name in os.listdir(UPLOADS_DIR):
@@ -463,7 +464,7 @@ def _maybe_run_gc() -> None:
         _cleanup_expired_progress()
         _cleanup_orphan_upload_files()
     except Exception:
-        print("[WEB] GC failed:", traceback.format_exc())
+        print('[WEB] GC failed:', traceback.format_exc())
 
 
 # ─── End GC ───────────────────────────────────────────────────────────────────
@@ -504,9 +505,9 @@ def _list_library_items() -> List[Dict[str, str]]:
                 continue
             items.append(
                 {
-                    "id": entry.name,
-                    "name": entry.name,
-                    "url": f"/api/library/{entry.name}",
+                    'id': entry.name,
+                    'name': entry.name,
+                    'url': f'/api/library/{entry.name}',
                 }
             )
     except OSError:
@@ -533,9 +534,9 @@ def _get_library_path(item_id: str) -> Optional[str]:
 
 def _set_video_task_progress(task_id: str, **updates):
     """Update the progress of a video task."""
-    status = updates.get("status")
-    if status in {"success", "failed", "cancelled"} and "_finishedAt" not in updates:
-        updates["_finishedAt"] = time.time()
+    status = updates.get('status')
+    if status in {'success', 'failed', 'cancelled'} and '_finishedAt' not in updates:
+        updates['_finishedAt'] = time.time()
     with VIDEO_TASK_PROGRESS_LOCK:
         state = VIDEO_TASK_PROGRESS.get(task_id, {})
         state.update(updates)
@@ -549,13 +550,13 @@ def _get_video_task_progress(task_id: str):
         state = VIDEO_TASK_PROGRESS.get(task_id)
         if not state:
             return {
-                "status": "idle",
-                "progress": 0,
-                "etaSeconds": None,
-                "stage": None,
+                'status': 'idle',
+                'progress': 0,
+                'etaSeconds': None,
+                'stage': None,
             }
         public_state = state.copy()
-    public_state.pop("_finishedAt", None)
+    public_state.pop('_finishedAt', None)
     return public_state
 
 
@@ -579,6 +580,7 @@ def _is_video_task_cancelled(task_id: str) -> bool:
 
 def _run_video_task_async(task_id: str, task_callable, on_completion):
     """Run a video task asynchronously in a background thread."""
+
     def _worker():
         """Background worker thread for async tasks."""
         res = None
@@ -590,11 +592,16 @@ def _run_video_task_async(task_id: str, task_callable, on_completion):
         try:
             on_completion(res, err)
         except Exception:
-            print("[ERROR] web video task completion callback failed:\n", traceback.format_exc())
+            print(
+                '[ERROR] web video task completion callback failed:\n',
+                traceback.format_exc(),
+            )
         finally:
             _clear_video_task_cancelled(task_id)
 
-    thread = threading.Thread(target=_worker, name=f"WebVideoTask-{task_id}", daemon=True)
+    thread = threading.Thread(
+        target=_worker, name=f'WebVideoTask-{task_id}', daemon=True
+    )
     thread.start()
 
 
@@ -605,20 +612,22 @@ def _cleanup_video_task_configs() -> None:
         expired = [
             config_id
             for config_id, item in VIDEO_TASK_CONFIGS.items()
-            if now - float(item.get("createdAt", 0)) > VIDEO_TASK_CONFIG_TTL_SECONDS
+            if now - float(item.get('createdAt', 0)) > VIDEO_TASK_CONFIG_TTL_SECONDS
         ]
         for config_id in expired:
             VIDEO_TASK_CONFIGS.pop(config_id, None)
 
 
-def _store_video_task_config(payload: Dict[str, object], config_id: Optional[str] = None) -> str:
+def _store_video_task_config(
+    payload: Dict[str, object], config_id: Optional[str] = None
+) -> str:
     """Store a video task configuration."""
     _cleanup_video_task_configs()
     next_id = str(config_id or _build_video_task_config_token(payload))
     with VIDEO_TASK_CONFIGS_LOCK:
         VIDEO_TASK_CONFIGS[next_id] = {
-            "createdAt": time.time(),
-            "config": _clone_json_payload(payload),
+            'createdAt': time.time(),
+            'config': _clone_json_payload(payload),
         }
     return next_id
 
@@ -631,8 +640,8 @@ def _get_video_task_config(config_id: str) -> Optional[Dict[str, object]]:
     with VIDEO_TASK_CONFIGS_LOCK:
         item = VIDEO_TASK_CONFIGS.get(str(config_id))
         if item:
-            item["createdAt"] = time.time()
-            config = item.get("config")
+            item['createdAt'] = time.time()
+            config = item.get('config')
             if isinstance(config, dict):
                 return _clone_json_payload(config)
 
@@ -644,7 +653,7 @@ def _extract_stored_path(file_entry):
     if isinstance(file_entry, str) and file_entry:
         return file_entry
     if isinstance(file_entry, dict):
-        path = file_entry.get("path")
+        path = file_entry.get('path')
         if isinstance(path, str) and path:
             return path
     return None
@@ -659,11 +668,11 @@ def _extract_stored_face_sources(face_sources):
     for source in face_sources:
         if not isinstance(source, dict):
             return None
-        source_id = source.get("id")
+        source_id = source.get('id')
         source_path = _extract_stored_path(source)
         if source_id is None or not source_path:
             return None
-        resolved.append({"id": str(source_id), "path": source_path})
+        resolved.append({'id': str(source_id), 'path': source_path})
 
     return resolved or None
 
@@ -683,34 +692,34 @@ def _resolve_face_reference_path(face_ref: str) -> Optional[str]:
 def _resolve_target_face_items(target_faces) -> List[Dict[str, str]]:
     """Resolve target face items to file paths."""
     if not isinstance(target_faces, list) or len(target_faces) == 0:
-        raise RuntimeError("missing-params")
+        raise RuntimeError('missing-params')
 
     resolved: List[Dict[str, str]] = []
     for index, target in enumerate(target_faces):
-        target_id = f"target-{index + 1}"
+        target_id = f'target-{index + 1}'
         target_ref = None
 
         if isinstance(target, str):
             target_ref = target
         elif isinstance(target, dict):
-            target_id = str(target.get("id") or target_id)
-            target_ref = target.get("path") or target.get("id")
+            target_id = str(target.get('id') or target_id)
+            target_ref = target.get('path') or target.get('id')
         else:
-            raise RuntimeError("missing-params")
+            raise RuntimeError('missing-params')
 
         if not target_ref:
-            raise RuntimeError("missing-params")
+            raise RuntimeError('missing-params')
 
         target_path = _resolve_face_reference_path(str(target_ref))
         if not target_path:
-            raise FileNotFoundError("file-not-found")
+            raise FileNotFoundError('file-not-found')
 
         _validate_file(
             target_path,
             ALLOWED_IMAGE_EXTS,
-            missing_code="unsupported-image-format",
+            missing_code='unsupported-image-format',
         )
-        resolved.append({"id": str(target_id), "path": target_path})
+        resolved.append({'id': str(target_id), 'path': target_path})
 
     return resolved
 
@@ -729,18 +738,18 @@ def _build_video_task_config_payload(
     regions=None,
     key_frame_ms: int = 0,
     use_gpu: bool = False,
-    gpu_provider: str = "auto",
+    gpu_provider: str = 'auto',
 ) -> Dict[str, object]:
     """Build the config payload for a video task."""
     payload: Dict[str, object] = {
-        "inputVideo": {
-            "path": input_path,
-            "sha256": compute_file_sha256(input_path),
+        'inputVideo': {
+            'path': input_path,
+            'sha256': compute_file_sha256(input_path),
         },
-        "regions": regions if isinstance(regions, list) else None,
-        "keyFrameMs": max(0, int(key_frame_ms or 0)),
-        "useGpu": bool(use_gpu),
-        "gpuProvider": str(gpu_provider or "auto").strip().lower(),
+        'regions': regions if isinstance(regions, list) else None,
+        'keyFrameMs': max(0, int(key_frame_ms or 0)),
+        'useGpu': bool(use_gpu),
+        'gpuProvider': str(gpu_provider or 'auto').strip().lower(),
     }
 
     if isinstance(face_sources, list) and len(face_sources) > 0:
@@ -748,49 +757,49 @@ def _build_video_task_config_payload(
         source_map = source_map or {}
         for source in face_sources:
             if not isinstance(source, dict):
-                raise RuntimeError("missing-face-sources")
-            source_id = source.get("id")
+                raise RuntimeError('missing-face-sources')
+            source_id = source.get('id')
             if source_id is None:
-                raise RuntimeError("missing-face-sources")
+                raise RuntimeError('missing-face-sources')
             source_path = source_map.get(str(source_id))
             if not source_path:
-                raise RuntimeError("missing-face-sources")
+                raise RuntimeError('missing-face-sources')
             normalized_sources.append(
                 {
-                    "id": str(source_id),
-                    "path": source_path,
-                    "sha256": compute_file_sha256(source_path),
+                    'id': str(source_id),
+                    'path': source_path,
+                    'sha256': compute_file_sha256(source_path),
                 }
             )
-        payload["faceSources"] = normalized_sources
+        payload['faceSources'] = normalized_sources
     elif isinstance(target_faces, list) and len(target_faces) > 0:
         normalized_targets = []
         for idx, target in enumerate(target_faces):
             if not isinstance(target, dict):
-                raise RuntimeError("missing-params")
-            target_id = target.get("id")
-            target_path = target.get("path")
+                raise RuntimeError('missing-params')
+            target_id = target.get('id')
+            target_path = target.get('path')
             if not target_path:
-                raise RuntimeError("missing-params")
+                raise RuntimeError('missing-params')
             normalized_targets.append(
                 {
-                    "id": str(target_id or f"target-{idx + 1}"),
-                    "path": target_path,
-                    "sha256": compute_file_sha256(target_path),
+                    'id': str(target_id or f'target-{idx + 1}'),
+                    'path': target_path,
+                    'sha256': compute_file_sha256(target_path),
                 }
             )
-        payload["targetFaces"] = normalized_targets
-        payload["deepSwapMode"] = bool(deep_swap_mode)
-        payload["segmentDurationSec"] = max(1, int(segment_duration_sec or 1))
-        payload["segmentOverlapFrames"] = max(0, int(segment_overlap_frames or 0))
+        payload['targetFaces'] = normalized_targets
+        payload['deepSwapMode'] = bool(deep_swap_mode)
+        payload['segmentDurationSec'] = max(1, int(segment_duration_sec or 1))
+        payload['segmentOverlapFrames'] = max(0, int(segment_overlap_frames or 0))
     else:
         if not target_face_path:
-            raise RuntimeError("missing-params")
+            raise RuntimeError('missing-params')
         if target_face_id is not None:
-            payload["targetFaceId"] = str(target_face_id)
-        payload["targetFace"] = {
-            "path": target_face_path,
-            "sha256": compute_file_sha256(target_face_path),
+            payload['targetFaceId'] = str(target_face_id)
+        payload['targetFace'] = {
+            'path': target_face_path,
+            'sha256': compute_file_sha256(target_face_path),
         }
 
     return payload
@@ -806,31 +815,35 @@ def _ensure_video_task_config_matches(
 ) -> None:
     """Ensure a video task config matches expectations."""
     expected_input_sha256 = get_expected_input_video_sha256(config)
-    if expected_input_sha256 and not verify_file_sha256(input_path, expected_input_sha256):
-        raise RuntimeError("config-mismatch")
+    if expected_input_sha256 and not verify_file_sha256(
+        input_path, expected_input_sha256
+    ):
+        raise RuntimeError('config-mismatch')
 
     expected_target_sha256 = get_expected_target_face_sha256(config)
     if expected_target_sha256:
-        if not target_face_path or not verify_file_sha256(target_face_path, expected_target_sha256):
-            raise RuntimeError("config-mismatch")
+        if not target_face_path or not verify_file_sha256(
+            target_face_path, expected_target_sha256
+        ):
+            raise RuntimeError('config-mismatch')
 
     expected_target_face_sha256_map = get_expected_target_faces_sha256_map(config)
     if expected_target_face_sha256_map:
         if not isinstance(target_face_map, dict):
-            raise RuntimeError("config-mismatch")
+            raise RuntimeError('config-mismatch')
         for target_id, expected_sha256 in expected_target_face_sha256_map.items():
             target_path = target_face_map.get(str(target_id))
             if not target_path or not verify_file_sha256(target_path, expected_sha256):
-                raise RuntimeError("config-mismatch")
+                raise RuntimeError('config-mismatch')
 
     expected_source_sha256_map = get_expected_face_source_sha256_map(config)
     if expected_source_sha256_map:
         if not isinstance(source_map, dict):
-            raise RuntimeError("config-mismatch")
+            raise RuntimeError('config-mismatch')
         for source_id, expected_sha256 in expected_source_sha256_map.items():
             source_path = source_map.get(str(source_id))
             if not source_path or not verify_file_sha256(source_path, expected_sha256):
-                raise RuntimeError("config-mismatch")
+                raise RuntimeError('config-mismatch')
 
 
 def _cleanup_result(result_id: str, delete_paths: List[str]) -> None:
@@ -845,7 +858,7 @@ def _cleanup_result(result_id: str, delete_paths: List[str]) -> None:
 def _stream_and_cleanup(path: str, result_id: str, delete_paths: List[str]):
     """Stream a file and clean up after download."""
     try:
-        with open(path, "rb") as f:
+        with open(path, 'rb') as f:
             while True:
                 chunk = f.read(1024 * 1024)
                 if not chunk:
@@ -856,178 +869,176 @@ def _stream_and_cleanup(path: str, result_id: str, delete_paths: List[str]):
 
 
 # Enable CORS
-@app.hook("after_request")
+@app.hook('after_request')
 def enable_cors():
     """Configure CORS headers for all responses."""
-    response.set_header("Access-Control-Allow-Origin", "*")
+    response.set_header('Access-Control-Allow-Origin', '*')
+    response.set_header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
     response.set_header(
-        "Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS"
-    )
-    response.set_header(
-        "Access-Control-Allow-Headers", "Authorization,Content-Type,X-Token"
+        'Access-Control-Allow-Headers', 'Authorization,Content-Type,X-Token'
     )
 
 
-@app.hook("before_request")
+@app.hook('before_request')
 def _trigger_gc_hook():
     """Throttled memory/disk cleanup, triggered by incoming requests."""
     _maybe_run_gc()
 
 
-@app.route("/api/<path:path>", method=["OPTIONS"])
+@app.route('/api/<path:path>', method=['OPTIONS'])
 def handle_options(path):
     """Handle CORS preflight OPTIONS requests."""
     response.status = 200
     return {}
 
 
-@app.get("/api/status")
+@app.get('/api/status')
 def status():
     """Return the server status."""
-    return {"status": "running"}
+    return {'status': 'running'}
 
 
-@app.post("/api/prepare")
+@app.post('/api/prepare')
 def prepare():
     """Prepare a file for face detection."""
-    if request.method == "OPTIONS":
+    if request.method == 'OPTIONS':
         return {}
-    return {"success": load_models()}
+    return {'success': load_models()}
 
 
-@app.post("/api/login")
+@app.post('/api/login')
 def login():
     """Authenticate and return a token."""
-    if request.method == "OPTIONS":
+    if request.method == 'OPTIONS':
         return {}
     body = request.json or {}
-    password = str(body.get("password", "")).strip()
+    password = str(body.get('password', '')).strip()
     cfg = _load_config()
-    if password != cfg.get("password"):
+    if password != cfg.get('password'):
         response.status = 401
-        return {"error": "invalid-credential"}
+        return {'error': 'invalid-credential'}
     token = _issue_token()
-    return {"token": token}
+    return {'token': token}
 
 
-@app.post("/api/credential")
+@app.post('/api/credential')
 def update_credential():
     """Update the server password."""
-    if request.method == "OPTIONS":
+    if request.method == 'OPTIONS':
         return {}
     if not _require_auth():
-        return {"error": "unauthorized"}
+        return {'error': 'unauthorized'}
     body = request.json or {}
-    new_password = str(body.get("password", "")).strip()
+    new_password = str(body.get('password', '')).strip()
     if not new_password:
         response.status = 400
-        return {"error": "missing-params"}
-    _save_config({"password": new_password})
-    return {"success": True}
+        return {'error': 'missing-params'}
+    _save_config({'password': new_password})
+    return {'success': True}
 
 
-@app.get("/api/library")
+@app.get('/api/library')
 def list_library():
     """List all items in the face library."""
     if not _require_auth():
-        return {"error": "unauthorized"}
-    return {"items": _list_library_items()}
+        return {'error': 'unauthorized'}
+    return {'items': _list_library_items()}
 
 
-@app.post("/api/library/upload")
+@app.post('/api/library/upload')
 def upload_library():
     """Upload a new face to the library."""
-    if request.method == "OPTIONS":
+    if request.method == 'OPTIONS':
         return {}
     if not _require_auth():
-        return {"error": "unauthorized"}
-    upload_file = request.files.get("file")
+        return {'error': 'unauthorized'}
+    upload_file = request.files.get('file')
     if not upload_file:
         response.status = 400
-        return {"error": "missing-params"}
-    ext = _ext(upload_file.filename or "")
+        return {'error': 'missing-params'}
+    ext = _ext(upload_file.filename or '')
     if ext not in ALLOWED_IMAGE_EXTS:
         response.status = 400
-        return {"error": "unsupported-image-format"}
+        return {'error': 'unsupported-image-format'}
     try:
         _, save_path, safe_name = _save_upload(
             upload_file, LIBRARY_DIR, max_bytes=MAX_UPLOAD_BYTES_IMAGE
         )
     except RuntimeError as e:
         response.status = 400
-        return {"error": _simplify_task_error(e)}
+        return {'error': _simplify_task_error(e)}
     _invalidate_library_cache()
     return {
-        "id": safe_name,
-        "name": safe_name,
-        "url": f"/api/library/{safe_name}",
+        'id': safe_name,
+        'name': safe_name,
+        'url': f'/api/library/{safe_name}',
     }
 
 
-@app.get("/api/library/<filename>")
+@app.get('/api/library/<filename>')
 def get_library_file(filename):
     """Retrieve a face library file."""
-    safe_name = os.path.basename(filename or "")
+    safe_name = os.path.basename(filename or '')
     path = os.path.abspath(os.path.join(LIBRARY_DIR, safe_name))
     if not _is_path_within(LIBRARY_DIR, path) or not os.path.exists(path):
         response.status = 404
-        return {"error": "file-not-found"}
+        return {'error': 'file-not-found'}
     if _ext(path) not in ALLOWED_IMAGE_EXTS:
         response.status = 404
-        return {"error": "file-not-found"}
+        return {'error': 'file-not-found'}
     return static_file(os.path.basename(path), root=os.path.dirname(path))
 
 
-@app.post("/api/upload")
+@app.post('/api/upload')
 def upload_file():
     """Upload a file for processing."""
-    if request.method == "OPTIONS":
+    if request.method == 'OPTIONS':
         return {}
     if not _require_auth():
-        return {"error": "unauthorized"}
-    upload_file = request.files.get("file")
+        return {'error': 'unauthorized'}
+    upload_file = request.files.get('file')
     if not upload_file:
         response.status = 400
-        return {"error": "missing-params"}
-    ext = _ext(upload_file.filename or "")
+        return {'error': 'missing-params'}
+    ext = _ext(upload_file.filename or '')
     if ext in ALLOWED_IMAGE_EXTS:
-        kind = "image"
+        kind = 'image'
         max_bytes = MAX_UPLOAD_BYTES_IMAGE
     elif ext in ALLOWED_VIDEO_EXTS:
-        kind = "video"
+        kind = 'video'
         max_bytes = MAX_UPLOAD_BYTES_VIDEO
     else:
         response.status = 400
-        return {"error": "unsupported-file-format"}
+        return {'error': 'unsupported-file-format'}
     try:
         file_id, save_path, _ = _save_upload(
             upload_file, UPLOADS_DIR, max_bytes=max_bytes
         )
     except RuntimeError as e:
         response.status = 400
-        return {"error": _simplify_task_error(e)}
+        return {'error': _simplify_task_error(e)}
     _register_upload(file_id, save_path, kind)
     return {
-        "fileId": file_id,
-        "url": f"/api/file/{file_id}",
-        "type": kind,
-        "name": upload_file.filename or "upload",
+        'fileId': file_id,
+        'url': f'/api/file/{file_id}',
+        'type': kind,
+        'name': upload_file.filename or 'upload',
     }
 
 
-@app.get("/api/file/<file_id>")
+@app.get('/api/file/<file_id>')
 def get_file(file_id):
     """Retrieve an uploaded file."""
     if not _require_auth():
-        return {"error": "unauthorized"}
+        return {'error': 'unauthorized'}
     path = _get_upload_path(file_id)
     if not path:
         info = _get_result_info(file_id)
         if info:
-            path = info.get("path")
+            path = info.get('path')
     if not path or not os.path.exists(path):
         response.status = 404
-        return {"error": "file-not-found"}
+        return {'error': 'file-not-found'}
     abs_path = os.path.abspath(str(path))
     if not (
         _is_path_within(UPLOADS_DIR, abs_path)
@@ -1035,86 +1046,86 @@ def get_file(file_id):
         or _is_path_within(WEB_DATA_DIR, abs_path)
     ):
         response.status = 404
-        return {"error": "file-not-found"}
-    response.set_header("Cache-Control", "no-store")
+        return {'error': 'file-not-found'}
+    response.set_header('Cache-Control', 'no-store')
     return static_file(os.path.basename(abs_path), root=os.path.dirname(abs_path))
 
 
-@app.get("/api/download/<file_id>")
+@app.get('/api/download/<file_id>')
 def download_file(file_id):
     """Download a result file."""
     if not _require_auth():
-        return {"error": "unauthorized"}
+        return {'error': 'unauthorized'}
     info = _get_result_info(file_id)
     if not info:
         response.status = 404
-        return {"error": "file-not-found"}
-    path = info.get("path")
-    delete_paths = list(info.get("delete_paths") or [])
+        return {'error': 'file-not-found'}
+    path = info.get('path')
+    delete_paths = list(info.get('delete_paths') or [])
     if not path or not os.path.exists(path):
         response.status = 404
-        return {"error": "file-not-found"}
-    filename = info.get("name") or os.path.basename(path)
-    content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        return {'error': 'file-not-found'}
+    filename = info.get('name') or os.path.basename(path)
+    content_type = mimetypes.guess_type(path)[0] or 'application/octet-stream'
     response.content_type = content_type
-    response.set_header("Content-Disposition", f'attachment; filename="{filename}"')
+    response.set_header('Content-Disposition', f'attachment; filename="{filename}"')
     return _stream_and_cleanup(path, file_id, delete_paths)
 
 
-@app.route("/api/task/detect-faces", method=["POST", "OPTIONS"])
+@app.route('/api/task/detect-faces', method=['POST', 'OPTIONS'])
 def detect_faces_for_image():
     """Detect faces in an uploaded image."""
-    if request.method == "OPTIONS":
+    if request.method == 'OPTIONS':
         return {}
     if not _require_auth():
-        return {"error": "unauthorized"}
+        return {'error': 'unauthorized'}
     try:
         body = request.json or {}
-        input_id = body.get("inputFileId")
-        regions = body.get("regions")
+        input_id = body.get('inputFileId')
+        regions = body.get('regions')
         input_path = _get_upload_path(input_id)
         if not input_path:
             response.status = 400
-            return {"error": "file-not-found"}
+            return {'error': 'file-not-found'}
         _validate_file(
             input_path,
             ALLOWED_IMAGE_EXTS,
-            missing_code="unsupported-image-format",
+            missing_code='unsupported-image-format',
         )
         if regions is not None and not isinstance(regions, list):
             response.status = 400
-            return {"error": "missing-params"}
+            return {'error': 'missing-params'}
         result = detect_face_boxes_in_image(input_path, regions=regions)
-        return {"regions": result}
+        return {'regions': result}
     except Exception as e:
         response.status = 500
-        return {"error": _simplify_task_error(e)}
+        return {'error': _simplify_task_error(e)}
 
 
-@app.route("/api/task/video/detect-faces", method=["POST", "OPTIONS"])
+@app.route('/api/task/video/detect-faces', method=['POST', 'OPTIONS'])
 def detect_faces_for_video():
     """Detect faces in a video file."""
-    if request.method == "OPTIONS":
+    if request.method == 'OPTIONS':
         return {}
     if not _require_auth():
-        return {"error": "unauthorized"}
+        return {'error': 'unauthorized'}
     try:
         body = request.json or {}
-        input_id = body.get("inputFileId")
-        key_frame_ms = body.get("keyFrameMs", 0)
-        regions = body.get("regions")
+        input_id = body.get('inputFileId')
+        key_frame_ms = body.get('keyFrameMs', 0)
+        regions = body.get('regions')
         input_path = _get_upload_path(input_id)
         if not input_path:
             response.status = 400
-            return {"error": "file-not-found"}
+            return {'error': 'file-not-found'}
         _validate_file(
             input_path,
             ALLOWED_VIDEO_EXTS,
-            missing_code="unsupported-video-format",
+            missing_code='unsupported-video-format',
         )
         if regions is not None and not isinstance(regions, list):
             response.status = 400
-            return {"error": "missing-params"}
+            return {'error': 'missing-params'}
         try:
             key_frame_ms = int(float(key_frame_ms or 0))
         except (TypeError, ValueError):
@@ -1127,78 +1138,80 @@ def detect_faces_for_video():
         return result
     except Exception as e:
         response.status = 500
-        return {"error": _simplify_task_error(e)}
+        return {'error': _simplify_task_error(e)}
 
 
-@app.route("/api/task", method=["POST", "OPTIONS"])
+@app.route('/api/task', method=['POST', 'OPTIONS'])
 def create_task():
     """Create a new face swap task."""
-    if request.method == "OPTIONS":
+    if request.method == 'OPTIONS':
         return {}
     if not _require_auth():
-        return {"error": "unauthorized"}
+        return {'error': 'unauthorized'}
     try:
         body = request.json or {}
-        task_id = body.get("id")
-        input_id = body.get("inputFileId")
-        regions = body.get("regions")
-        target_face_id = body.get("targetFaceId")
-        face_sources = body.get("faceSources")
-        target_faces = body.get("targetFaces")
-        deep_swap_mode = bool(body.get("deepSwapMode", False))
-        has_face_sources = "faceSources" in body
-        has_target_faces = "targetFaces" in body or deep_swap_mode
+        task_id = body.get('id')
+        input_id = body.get('inputFileId')
+        regions = body.get('regions')
+        target_face_id = body.get('targetFaceId')
+        face_sources = body.get('faceSources')
+        target_faces = body.get('targetFaces')
+        deep_swap_mode = bool(body.get('deepSwapMode', False))
+        has_face_sources = 'faceSources' in body
+        has_target_faces = 'targetFaces' in body or deep_swap_mode
 
         if not all([task_id, input_id]):
             response.status = 400
-            return {"error": "missing-params"}
+            return {'error': 'missing-params'}
         input_path = _get_upload_path(input_id)
         if not input_path:
             response.status = 400
-            return {"error": "file-not-found"}
+            return {'error': 'file-not-found'}
         try:
             _validate_file(
                 input_path,
                 ALLOWED_IMAGE_EXTS,
-                missing_code="unsupported-image-format",
+                missing_code='unsupported-image-format',
             )
         except (RuntimeError, FileNotFoundError) as e:
             response.status = 400
-            return {"error": _simplify_task_error(e)}
+            return {'error': _simplify_task_error(e)}
 
         if has_face_sources and has_target_faces:
             response.status = 400
-            return {"error": "missing-params"}
+            return {'error': 'missing-params'}
 
         if has_face_sources:
             if not isinstance(face_sources, list) or len(face_sources) == 0:
                 response.status = 400
-                return {"error": "missing-face-sources"}
+                return {'error': 'missing-face-sources'}
             source_map = {}
             for source in face_sources:
                 if not isinstance(source, dict):
                     response.status = 400
-                    return {"error": "missing-face-sources"}
-                source_id = source.get("id")
+                    return {'error': 'missing-face-sources'}
+                source_id = source.get('id')
                 source_path = _get_library_path(str(source_id))
                 if not source_id or not source_path:
                     response.status = 400
-                    return {"error": "missing-face-sources"}
+                    return {'error': 'missing-face-sources'}
                 source_map[str(source_id)] = source_path
             if regions:
                 if not isinstance(regions, list):
                     response.status = 400
-                    return {"error": "invalid-face-source-binding"}
+                    return {'error': 'invalid-face-source-binding'}
                 for region in regions:
                     if not isinstance(region, dict):
                         response.status = 400
-                        return {"error": "invalid-face-source-binding"}
-                    source_id = region.get("faceSourceId")
+                        return {'error': 'invalid-face-source-binding'}
+                    source_id = region.get('faceSourceId')
                     if not source_id or str(source_id) not in source_map:
                         response.status = 400
-                        return {"error": "invalid-face-source-binding"}
+                        return {'error': 'invalid-face-source-binding'}
                 res, err = AsyncTask.run(
-                    lambda: swap_face_regions_by_sources(input_path, source_map, regions),
+                    lambda: swap_face_regions_by_sources(
+                        input_path, source_map, regions
+                    ),
                     task_id=task_id,
                 )
             else:
@@ -1212,12 +1225,12 @@ def create_task():
                 target_face_items = _resolve_target_face_items(target_faces)
             except (RuntimeError, FileNotFoundError) as e:
                 response.status = 400
-                return {"error": _simplify_task_error(e)}
+                return {'error': _simplify_task_error(e)}
 
             res, err = AsyncTask.run(
                 lambda: swap_face_deep(
                     input_path,
-                    [item["path"] for item in target_face_items],
+                    [item['path'] for item in target_face_items],
                     regions=regions,
                 ),
                 task_id=task_id,
@@ -1225,20 +1238,20 @@ def create_task():
         else:
             if not target_face_id:
                 response.status = 400
-                return {"error": "missing-params"}
+                return {'error': 'missing-params'}
             target_face_path = _get_library_path(str(target_face_id))
             if not target_face_path:
                 response.status = 400
-                return {"error": "file-not-found"}
+                return {'error': 'file-not-found'}
             try:
                 _validate_file(
                     target_face_path,
                     ALLOWED_IMAGE_EXTS,
-                    missing_code="unsupported-image-format",
+                    missing_code='unsupported-image-format',
                 )
             except (RuntimeError, FileNotFoundError) as e:
                 response.status = 400
-                return {"error": _simplify_task_error(e)}
+                return {'error': _simplify_task_error(e)}
             if regions:
                 res, err = AsyncTask.run(
                     lambda: swap_face_regions(input_path, target_face_path, regions),
@@ -1251,59 +1264,59 @@ def create_task():
                 )
         if res:
             result_id = _register_result(res, [input_path, res])
-            return {"resultFileId": result_id, "resultUrl": f"/api/file/{result_id}"}
+            return {'resultFileId': result_id, 'resultUrl': f'/api/file/{result_id}'}
         response.status = 500
-        return {"error": _simplify_task_error(err)}
+        return {'error': _simplify_task_error(err)}
     except Exception as e:
-        print("[ERROR] create_task failed:", str(e), "\n", traceback.format_exc())
+        print('[ERROR] create_task failed:', str(e), '\n', traceback.format_exc())
         response.status = 500
-        return {"error": _simplify_task_error(e)}
+        return {'error': _simplify_task_error(e)}
 
 
-@app.route("/api/task/video/gpu-modes", method=["GET", "OPTIONS"])
+@app.route('/api/task/video/gpu-modes', method=['GET', 'OPTIONS'])
 def get_video_gpu_modes():
     """Return available GPU acceleration modes."""
-    if request.method == "OPTIONS":
+    if request.method == 'OPTIONS':
         return {}
     if not _require_auth():
-        return {"error": "unauthorized"}
+        return {'error': 'unauthorized'}
 
     try:
         return get_gpu_acceleration_modes()
     except Exception as e:
         response.status = 500
         return {
-            "modes": [{"id": "cpu", "name": "CPU"}],
-            "availableProviders": [],
-            "error": _simplify_task_error(e),
+            'modes': [{'id': 'cpu', 'name': 'CPU'}],
+            'availableProviders': [],
+            'error': _simplify_task_error(e),
         }
 
 
-@app.route("/api/task/video", method=["POST", "OPTIONS"])
+@app.route('/api/task/video', method=['POST', 'OPTIONS'])
 def create_video_task():
     """Create a new video face swap task."""
-    if request.method == "OPTIONS":
+    if request.method == 'OPTIONS':
         return {}
     if not _require_auth():
-        return {"error": "unauthorized"}
+        return {'error': 'unauthorized'}
     task_id = None
     try:
         body = request.json or {}
-        task_id = body.get("id")
-        input_id = body.get("inputFileId")
-        target_face_id = body.get("targetFaceId")
-        target_faces = body.get("targetFaces")
-        regions = body.get("regions")
-        face_sources = body.get("faceSources")
-        deep_swap_mode = bool(body.get("deepSwapMode", False))
-        segment_duration_sec = body.get("segmentDurationSec", 12)
-        segment_overlap_frames = body.get("segmentOverlapFrames", 6)
-        key_frame_ms = body.get("keyFrameMs", 0)
-        use_gpu = body.get("useGpu", False)
-        gpu_provider = str(body.get("gpuProvider", "auto") or "auto").strip().lower()
-        config_id = body.get("configId")
-        generate_config_id = bool(body.get("generateConfigId", False))
-        dry_run_config_only = bool(body.get("dryRunConfigOnly", False))
+        task_id = body.get('id')
+        input_id = body.get('inputFileId')
+        target_face_id = body.get('targetFaceId')
+        target_faces = body.get('targetFaces')
+        regions = body.get('regions')
+        face_sources = body.get('faceSources')
+        deep_swap_mode = bool(body.get('deepSwapMode', False))
+        segment_duration_sec = body.get('segmentDurationSec', 12)
+        segment_overlap_frames = body.get('segmentOverlapFrames', 6)
+        key_frame_ms = body.get('keyFrameMs', 0)
+        use_gpu = body.get('useGpu', False)
+        gpu_provider = str(body.get('gpuProvider', 'auto') or 'auto').strip().lower()
+        config_id = body.get('configId')
+        generate_config_id = bool(body.get('generateConfigId', False))
+        dry_run_config_only = bool(body.get('dryRunConfigOnly', False))
 
         stored_config = None
         stored_target_face_path = None
@@ -1311,49 +1324,55 @@ def create_video_task():
             stored_config = _get_video_task_config(str(config_id))
             if not isinstance(stored_config, dict):
                 response.status = 400
-                return {"error": "config-not-found"}
+                return {'error': 'config-not-found'}
 
-            stored_target_face_path = _extract_stored_path(stored_config.get("targetFace"))
+            stored_target_face_path = _extract_stored_path(
+                stored_config.get('targetFace')
+            )
 
             if target_face_id is None:
-                target_face_id = stored_config.get("targetFaceId")
-            if target_faces is None and "targetFaces" in stored_config:
-                target_faces = _extract_stored_face_sources(stored_config.get("targetFaces"))
-            if face_sources is None and "faceSources" in stored_config:
-                face_sources = stored_config.get("faceSources")
-            if regions is None and "regions" in stored_config:
-                regions = stored_config.get("regions")
-            if "deepSwapMode" not in body:
-                deep_swap_mode = bool(stored_config.get("deepSwapMode", deep_swap_mode))
-            if "segmentDurationSec" not in body:
+                target_face_id = stored_config.get('targetFaceId')
+            if target_faces is None and 'targetFaces' in stored_config:
+                target_faces = _extract_stored_face_sources(
+                    stored_config.get('targetFaces')
+                )
+            if face_sources is None and 'faceSources' in stored_config:
+                face_sources = stored_config.get('faceSources')
+            if regions is None and 'regions' in stored_config:
+                regions = stored_config.get('regions')
+            if 'deepSwapMode' not in body:
+                deep_swap_mode = bool(stored_config.get('deepSwapMode', deep_swap_mode))
+            if 'segmentDurationSec' not in body:
                 segment_duration_sec = stored_config.get(
-                    "segmentDurationSec", segment_duration_sec
+                    'segmentDurationSec', segment_duration_sec
                 )
-            if "segmentOverlapFrames" not in body:
+            if 'segmentOverlapFrames' not in body:
                 segment_overlap_frames = stored_config.get(
-                    "segmentOverlapFrames", segment_overlap_frames
+                    'segmentOverlapFrames', segment_overlap_frames
                 )
-            if "keyFrameMs" not in body:
-                key_frame_ms = stored_config.get("keyFrameMs", key_frame_ms)
-            if "useGpu" not in body:
-                use_gpu = bool(stored_config.get("useGpu", use_gpu))
-            if "gpuProvider" not in body:
-                gpu_provider = str(
-                    stored_config.get("gpuProvider", gpu_provider) or gpu_provider
-                ).strip().lower()
+            if 'keyFrameMs' not in body:
+                key_frame_ms = stored_config.get('keyFrameMs', key_frame_ms)
+            if 'useGpu' not in body:
+                use_gpu = bool(stored_config.get('useGpu', use_gpu))
+            if 'gpuProvider' not in body:
+                gpu_provider = (
+                    str(stored_config.get('gpuProvider', gpu_provider) or gpu_provider)
+                    .strip()
+                    .lower()
+                )
 
-        if gpu_provider in ("dml", "directml"):
-            gpu_provider = "directml"
-        elif gpu_provider == "cuda":
-            gpu_provider = "cuda"
-        elif gpu_provider == "cpu":
-            gpu_provider = "cpu"
+        if gpu_provider in ('dml', 'directml'):
+            gpu_provider = 'directml'
+        elif gpu_provider == 'cuda':
+            gpu_provider = 'cuda'
+        elif gpu_provider == 'cpu':
+            gpu_provider = 'cpu'
         else:
-            gpu_provider = "auto"
+            gpu_provider = 'auto'
 
-        if gpu_provider == "cpu":
+        if gpu_provider == 'cpu':
             use_gpu = False
-        elif gpu_provider in ("directml", "cuda"):
+        elif gpu_provider in ('directml', 'cuda'):
             use_gpu = True
 
         try:
@@ -1379,20 +1398,20 @@ def create_video_task():
 
         if not all([task_id, input_id]):
             response.status = 400
-            return {"error": "missing-params"}
+            return {'error': 'missing-params'}
         input_path = _get_upload_path(input_id)
         if not input_path:
             response.status = 400
-            return {"error": "file-not-found"}
+            return {'error': 'file-not-found'}
         try:
             _validate_file(
                 input_path,
                 ALLOWED_VIDEO_EXTS,
-                missing_code="unsupported-video-format",
+                missing_code='unsupported-video-format',
             )
         except (RuntimeError, FileNotFoundError) as e:
             response.status = 400
-            return {"error": _simplify_task_error(e)}
+            return {'error': _simplify_task_error(e)}
 
         source_map: Optional[Dict[str, str]] = None
         target_face_path: Optional[str] = None
@@ -1401,43 +1420,43 @@ def create_video_task():
 
         if has_face_sources and has_target_faces:
             response.status = 400
-            return {"error": "missing-params"}
+            return {'error': 'missing-params'}
 
         if has_face_sources:
             if not isinstance(face_sources, list) or len(face_sources) == 0:
                 response.status = 400
-                return {"error": "missing-face-sources"}
+                return {'error': 'missing-face-sources'}
             source_map = {}
             for source in face_sources:
                 if not isinstance(source, dict):
                     response.status = 400
-                    return {"error": "missing-face-sources"}
-                source_id = source.get("id")
+                    return {'error': 'missing-face-sources'}
+                source_id = source.get('id')
                 source_path = _get_library_path(str(source_id))
                 if not source_id or not source_path:
                     response.status = 400
-                    return {"error": "missing-face-sources"}
+                    return {'error': 'missing-face-sources'}
                 source_map[str(source_id)] = source_path
             if not isinstance(regions, list) or len(regions) == 0:
                 response.status = 400
-                return {"error": "invalid-face-source-binding"}
+                return {'error': 'invalid-face-source-binding'}
             for region in regions:
                 if not isinstance(region, dict):
                     response.status = 400
-                    return {"error": "invalid-face-source-binding"}
-                source_id = region.get("faceSourceId")
+                    return {'error': 'invalid-face-source-binding'}
+                source_id = region.get('faceSourceId')
                 if not source_id or str(source_id) not in source_map:
                     response.status = 400
-                    return {"error": "invalid-face-source-binding"}
+                    return {'error': 'invalid-face-source-binding'}
         elif has_target_faces:
             try:
                 target_face_items = _resolve_target_face_items(target_faces)
             except (RuntimeError, FileNotFoundError) as e:
                 response.status = 400
-                return {"error": _simplify_task_error(e)}
+                return {'error': _simplify_task_error(e)}
 
             target_face_map = {
-                str(item.get("id")): str(item.get("path"))
+                str(item.get('id')): str(item.get('path'))
                 for item in (target_face_items or [])
             }
         else:
@@ -1445,23 +1464,23 @@ def create_video_task():
                 target_face_path = _get_library_path(str(target_face_id))
                 if not target_face_path:
                     response.status = 400
-                    return {"error": "file-not-found"}
+                    return {'error': 'file-not-found'}
             elif stored_target_face_path:
                 target_face_path = stored_target_face_path
 
             if not target_face_path:
                 response.status = 400
-                return {"error": "missing-params"}
+                return {'error': 'missing-params'}
 
             try:
                 _validate_file(
                     target_face_path,
                     ALLOWED_IMAGE_EXTS,
-                    missing_code="unsupported-image-format",
+                    missing_code='unsupported-image-format',
                 )
             except (RuntimeError, FileNotFoundError) as e:
                 response.status = 400
-                return {"error": _simplify_task_error(e)}
+                return {'error': _simplify_task_error(e)}
 
         if config_id:
             try:
@@ -1474,13 +1493,15 @@ def create_video_task():
                 )
             except RuntimeError as e:
                 response.status = 400
-                return {"error": _simplify_task_error(e)}
+                return {'error': _simplify_task_error(e)}
 
         try:
             config_payload = _build_video_task_config_payload(
                 input_path=input_path,
                 target_face_path=target_face_path,
-                target_face_id=str(target_face_id) if target_face_id is not None else None,
+                target_face_id=str(target_face_id)
+                if target_face_id is not None
+                else None,
                 target_faces=target_face_items if has_target_faces else None,
                 deep_swap_mode=deep_swap_mode,
                 segment_duration_sec=segment_duration_sec,
@@ -1494,7 +1515,7 @@ def create_video_task():
             )
         except (RuntimeError, FileNotFoundError) as e:
             response.status = 400
-            return {"error": _simplify_task_error(e)}
+            return {'error': _simplify_task_error(e)}
 
         active_config_id: Optional[str] = None
         if config_id:
@@ -1508,17 +1529,17 @@ def create_video_task():
             if not active_config_id:
                 active_config_id = _store_video_task_config(config_payload)
             return {
-                "task_id": task_id,
-                "status": "config-only",
-                "configId": active_config_id,
+                'task_id': task_id,
+                'status': 'config-only',
+                'configId': active_config_id,
             }
 
         _set_video_task_progress(
             task_id,
-            status="queued",
+            status='queued',
             progress=0,
             etaSeconds=None,
-            stage="queued",
+            stage='queued',
             frameCount=0,
             totalFrames=0,
             error=None,
@@ -1532,10 +1553,10 @@ def create_video_task():
             """Handle stage events during video processing."""
             if _is_video_task_cancelled(task_id):
                 return
-            print(f"[INFO] 视频处理阶段: {stage}")
+            print(f'[INFO] 视频处理阶段: {stage}')
             _set_video_task_progress(
                 task_id,
-                status="running",
+                status='running',
                 stage=stage,
                 error=None,
             )
@@ -1554,7 +1575,7 @@ def create_video_task():
                     eta_seconds = max(0, int(frames_remaining / processing_speed))
             _set_video_task_progress(
                 task_id,
-                status="running",
+                status='running',
                 progress=round(progress, 2),
                 etaSeconds=eta_seconds,
                 frameCount=frame_count,
@@ -1576,7 +1597,7 @@ def create_video_task():
         elif has_target_faces:
             task_callable = lambda: swap_face_video_deep(
                 input_path,
-                [item["path"] for item in (target_face_items or [])],
+                [item['path'] for item in (target_face_items or [])],
                 regions=regions,
                 key_frame_ms=key_frame_ms,
                 progress_callback=_on_progress,
@@ -1601,27 +1622,27 @@ def create_video_task():
         def _on_completion(res, err):
             """Handle completion events after video processing."""
             if _is_video_task_cancelled(task_id):
-                print(f"[WEB] 视频换脸任务已取消，忽略完成回调: task_id={task_id}")
+                print(f'[WEB] 视频换脸任务已取消，忽略完成回调: task_id={task_id}')
                 return
 
             if res:
                 result_id = _register_result(res, [input_path, res])
                 _set_video_task_progress(
                     task_id,
-                    status="success",
+                    status='success',
                     progress=100,
                     etaSeconds=0,
-                    stage="done",
+                    stage='done',
                     error=None,
                     resultFileId=result_id,
-                    resultUrl=f"/api/file/{result_id}",
+                    resultUrl=f'/api/file/{result_id}',
                 )
             else:
                 final_error = _simplify_task_error(err)
                 _set_video_task_progress(
                     task_id,
-                    status="failed",
-                    stage="failed",
+                    status='failed',
+                    stage='failed',
                     error=final_error,
                     etaSeconds=None,
                 )
@@ -1631,86 +1652,86 @@ def create_video_task():
         except Exception as e:
             _set_video_task_progress(
                 task_id,
-                status="failed",
-                stage="failed",
+                status='failed',
+                stage='failed',
                 error=_simplify_task_error(e),
                 etaSeconds=None,
             )
             response.status = 500
-            return {"error": _simplify_task_error(e)}
-        payload = {"task_id": task_id, "status": "queued"}
+            return {'error': _simplify_task_error(e)}
+        payload = {'task_id': task_id, 'status': 'queued'}
         if active_config_id:
-            payload["configId"] = active_config_id
+            payload['configId'] = active_config_id
         return payload
     except Exception as e:
-        print("[ERROR] create_video_task failed:", str(e), "\n", traceback.format_exc())
+        print('[ERROR] create_video_task failed:', str(e), '\n', traceback.format_exc())
         if task_id:
             _set_video_task_progress(
                 task_id,
-                status="failed",
-                stage="failed",
+                status='failed',
+                stage='failed',
                 error=_simplify_task_error(e),
                 etaSeconds=None,
             )
         response.status = 500
-        return {"error": _simplify_task_error(e)}
+        return {'error': _simplify_task_error(e)}
 
 
-@app.get("/api/task/video/progress/<task_id>")
+@app.get('/api/task/video/progress/<task_id>')
 def get_video_task_progress(task_id):
     """Return the progress of a video task."""
-    response.set_header("Cache-Control", "no-store")
+    response.set_header('Cache-Control', 'no-store')
     if not _require_auth():
-        return {"error": "unauthorized"}
+        return {'error': 'unauthorized'}
     return _get_video_task_progress(task_id)
 
 
-@app.delete("/api/task/<task_id>")
+@app.delete('/api/task/<task_id>')
 def cancel_task(task_id):
     """Cancel a running task."""
     if not _require_auth():
-        return {"error": "unauthorized"}
+        return {'error': 'unauthorized'}
     AsyncTask.cancel(task_id)
     _mark_video_task_cancelled(task_id)
     _set_video_task_progress(
         task_id,
-        status="cancelled",
-        stage="cancelled",
+        status='cancelled',
+        stage='cancelled',
         etaSeconds=None,
-        error="cancelled",
+        error='cancelled',
     )
-    return {"success": True}
+    return {'success': True}
 
 
-@app.get("/")
+@app.get('/')
 def web_index():
     """Serve the main web page."""
     if os.path.isdir(DIST_DIR):
-        return static_file("index.html", root=DIST_DIR)
+        return static_file('index.html', root=DIST_DIR)
     response.status = 404
-    return "web dist not found"
+    return 'web dist not found'
 
 
-@app.get("/<filepath:path>")
+@app.get('/<filepath:path>')
 def web_assets(filepath):
     """Serve static web assets."""
     if os.path.isdir(DIST_DIR):
         candidate = os.path.join(DIST_DIR, filepath)
         if os.path.exists(candidate) and os.path.isfile(candidate):
             return static_file(filepath, root=DIST_DIR)
-        return static_file("index.html", root=DIST_DIR)
+        return static_file('index.html', root=DIST_DIR)
     response.status = 404
-    return "web dist not found"
+    return 'web dist not found'
 
 
 class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
     daemon_threads = True
 
 
-if __name__ == "__main__":
-    host = os.environ.get("WEB_HOST", "0.0.0.0")
-    port = int(os.environ.get("WEB_PORT", "8033"))
-    print(f"[WEB] starting server on {host}:{port}")
+if __name__ == '__main__':
+    host = os.environ.get('WEB_HOST', '0.0.0.0')
+    port = int(os.environ.get('WEB_PORT', '8033'))
+    print(f'[WEB] starting server on {host}:{port}')
     httpd = make_server(
         host,
         port,
