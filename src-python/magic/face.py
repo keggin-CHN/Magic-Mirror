@@ -66,6 +66,7 @@ def _clear_queue(q):
         print(f"[WARN] 清空队列失败: {str(e)}")
 
 
+    """Load all ONNX models (face detector, swapper, enhancer) into the global TinyFace instance."""
 def load_models():
     try:
         _tf.config.face_detector_model = _get_model_path("scrfd_2.5g.onnx")
@@ -90,6 +91,7 @@ def _get_available_execution_providers():
         return []
 
 
+    """Return available GPU acceleration modes (CPU, DirectML, CUDA) for the frontend."""
 def get_gpu_acceleration_modes():
     """返回当前环境可用的加速模式，供前端在视频换脸前选择。"""
     available_providers = _get_available_execution_providers()
@@ -248,12 +250,14 @@ def _emit_stage(stage_callback, stage: str):
         print(f"[WARN] stage_callback failed: {str(e)}")
 
 
+    """Swap the face in input_path with the face from face_path (single face, single target)."""
 def swap_face(input_path, face_path):
     save_path = _get_output_file_path(input_path)
     output_img = _swap_face(input_path, face_path)
     return _write_image(save_path, output_img)
 
 
+    """Swap faces in specific regions of the input image."""
 def swap_face_regions(input_path, face_path, regions):
     try:
         _debug_log("[DEBUG] swap_face_regions 被调用")
@@ -313,6 +317,7 @@ def swap_face_regions(input_path, face_path, regions):
         raise
 
 
+    """Swap faces using different source faces for different regions."""
 def swap_face_regions_by_sources(input_path, face_sources, regions):
     try:
         save_path = _get_output_file_path(input_path)
@@ -370,6 +375,7 @@ def swap_face_regions_by_sources(input_path, face_sources, regions):
         raise
 
 
+    """Process a video file, swapping faces frame by frame with progress tracking."""
 def swap_face_video(
     input_path,
     face_path,
