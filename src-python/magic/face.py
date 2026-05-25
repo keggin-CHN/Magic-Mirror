@@ -1,16 +1,16 @@
 import json
+import multiprocessing
 import os
+import queue
 import shutil
 import subprocess
 import sys
-import threading
-import traceback
-from functools import lru_cache
-import time
-import queue
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import multiprocessing
 import tempfile
+import threading
+import time
+import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 
 import cv2
 import numpy as np
@@ -268,12 +268,12 @@ def swap_face_regions(input_path, face_path, regions):
         _debug_log(f"[DEBUG] input_path: {input_path}")
         _debug_log(f"[DEBUG] face_path: {face_path}")
         _debug_log(f"[DEBUG] regions 类型: {type(regions)}, 值: {regions}")
-        
+
         save_path = _get_output_file_path(input_path)
         input_img = _read_image(input_path)
         height, width = input_img.shape[:2]
         _debug_log(f"[DEBUG] 图片尺寸: {width}x{height}")
-        
+
         normalized_regions = _normalize_regions(regions, width, height)
         _debug_log(f"[DEBUG] normalized_regions: {normalized_regions}")
 
@@ -1273,7 +1273,7 @@ def detect_face_boxes_in_image(input_path, regions=None):
             new_h = int(height * scale)
             vision_resized = cv2.resize(vision, (new_w, new_h))
             print(f"[INFO] 图片过大 ({width}x{height})，缩放至 {new_w}x{new_h} 进行检测")
-            
+
             # 缩放 regions
             search_areas_resized = []
             if regions:
@@ -1287,9 +1287,9 @@ def detect_face_boxes_in_image(input_path, regions=None):
                     ))
             else:
                 search_areas_resized = [(0, 0, new_w, new_h)]
-            
+
             boxes_resized = _detect_face_boxes_in_frame(vision_resized, search_areas_resized, _tf, _tf_lock)
-            
+
             # 映射回原图坐标
             boxes = []
             for bx, by, bw, bh in boxes_resized:
@@ -1426,7 +1426,7 @@ def _swap_face_video_by_sources(
     """
     cap = None
     writer = None
-    
+
     # 关键修复：
     # 多人视频换脸依赖 tracks（跨帧状态）按时间顺序更新。
     # 若使用多处理线程并发，不同帧会乱序更新同一份 tracks，导致轨迹错配/丢失，
@@ -1435,15 +1435,15 @@ def _swap_face_video_by_sources(
     cpu_count = multiprocessing.cpu_count()
     num_workers = 1
     queue_size = 8 if use_gpu else 5
-    
+
     print(
         f"[INFO] 多人换脸使用 {num_workers} 个处理线程（CPU核数={cpu_count}），队列大小: {queue_size}"
     )
-    
+
     # 多线程队列
     read_queue = queue.Queue(maxsize=queue_size)
     write_queue = queue.PriorityQueue(maxsize=queue_size)
-    
+
     # 控制标志
     stop_event = threading.Event()
     processing_error = threading.Lock()
@@ -1477,7 +1477,7 @@ def _swap_face_video_by_sources(
             workers_done_count['count'] += 1
             if workers_done_count['count'] >= num_workers:
                 workers_done_event.set()
-    
+
     try:
         _emit_stage(stage_callback, "opening-video")
         cap = cv2.VideoCapture(input_path)
@@ -1611,14 +1611,14 @@ def _swap_face_video_by_sources(
                         frame_idx, frame = read_queue.get(timeout=1)
                     except queue.Empty:
                         continue
-                    
+
                     if frame_idx is None:
                         break
-                    
+
                     with stats_lock:
                         stats['frame_count'] += 1
                         current_frame = stats['frame_count']
-                    
+
                     # 进度回调
                     if progress_callback and current_frame % 5 == 0:
                         try:
@@ -1630,15 +1630,15 @@ def _swap_face_video_by_sources(
                                 )
                         except Exception as e:
                             print(f"[WARN] progress_callback failed: {str(e)}")
-                    
+
                     # 人脸检测
                     detections = _get_faces_with_boxes(frame, worker_tf, worker_lock)
-                    
+
                     # 匹配轨迹（需要锁保护）
                     with tracks_lock:
                         matches = _match_tracks_to_detections(tracks, detections)
                         matched_track_ids = set()
-                        
+
                         # 更新轨迹
                         for track_id, det_idx in matches:
                             track = tracks.get(track_id)
@@ -1648,7 +1648,7 @@ def _swap_face_video_by_sources(
                             track["box"] = detection["box"]
                             track["missed"] = 0
                             matched_track_ids.add(track_id)
-                        
+
                         # 清理过期轨迹
                         stale_track_ids = []
                         for track_id, track in tracks.items():
@@ -1658,10 +1658,10 @@ def _swap_face_video_by_sources(
                             # 容忍更长时间的短暂丢脸，避免某个目标被过早清理后不再参与换脸
                             if track["missed"] > 300:
                                 stale_track_ids.append(track_id)
-                        
+
                         for track_id in stale_track_ids:
                             tracks.pop(track_id, None)
-                    
+
                     # 换脸处理
                     out = frame
                     for track_id, det_idx in matches:
@@ -1669,17 +1669,17 @@ def _swap_face_video_by_sources(
                             track = tracks.get(track_id)
                         if track is None:
                             continue
-                        
+
                         detection = detections[det_idx]
                         source_id = track.get("faceSourceId")
                         destination_face = destination_faces.get(str(source_id))
                         if destination_face is None:
                             continue
-                        
+
                         reference_face = detection.get("face")
                         if reference_face is None:
                             continue
-                        
+
                         try:
                             with worker_lock:
                                 swapped = worker_tf.swap_face(
@@ -1693,7 +1693,7 @@ def _swap_face_video_by_sources(
                                     stats['processed_faces'] += 1
                         except Exception as e:
                             print(f"[WARN] 帧{current_frame} 轨迹{track_id} 换脸失败: {str(e)}")
-                    
+
                     out = _normalize_output_frame(out, width, height)
                     if not _queue_put_with_stop(
                         write_queue,
@@ -1702,7 +1702,7 @@ def _swap_face_video_by_sources(
                         warn_prefix=f"写入队列已满，Worker-{worker_id} 等待中",
                     ):
                         break
-                    
+
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
@@ -1717,7 +1717,7 @@ def _swap_face_video_by_sources(
                 next_frame_idx = 0
                 frame_buffer = {}
                 frames_written = 0
-                
+
                 while True:
                     if stop_event.is_set() and write_queue.empty():
                         break
@@ -1733,21 +1733,21 @@ def _swap_face_video_by_sources(
                                 frame_buffer.clear()
                             break
                         continue
-                    
+
                     frame_buffer[frame_idx] = frame
-                    
+
                     while next_frame_idx in frame_buffer:
                         writer.write(frame_buffer.pop(next_frame_idx))
                         frames_written += 1
                         next_frame_idx += 1
-                    
+
                     if (
                         total_frames > 0
                         and frames_written >= total_frames
                         and workers_done_event.is_set()
                     ):
                         break
-                        
+
             except Exception as e:
                 with processing_error:
                     error_container['error'] = e
@@ -1761,18 +1761,18 @@ def _swap_face_video_by_sources(
             for i in range(num_workers)
         ]
         write_thread = threading.Thread(target=write_frames, name="VideoWriter")
-        
+
         read_thread.start()
         for t in process_threads:
             t.start()
         write_thread.start()
-        
+
         # 等待所有线程完成
         read_thread.join()
         for t in process_threads:
             t.join()
         write_thread.join()
-        
+
         # 检查是否有错误
         with processing_error:
             if error_container['error'] is not None:
@@ -1801,11 +1801,11 @@ def _swap_face_video_by_sources(
         raise
     finally:
         stop_event.set()
-        
+
         # 清空队列，避免线程阻塞
         _clear_queue(read_queue)
         _clear_queue(write_queue)
-        
+
         if cap is not None:
             cap.release()
         if writer is not None:
@@ -1855,7 +1855,7 @@ def _get_faces_with_boxes(frame, tf_instance=None, tf_lock=None):
         tf_instance = _tf
     if tf_lock is None:
         tf_lock = _tf_lock
-    
+
     faces = []
     with tf_lock:
         if hasattr(tf_instance, "get_many_faces"):

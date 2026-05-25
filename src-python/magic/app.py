@@ -3,7 +3,6 @@ import os
 import threading
 import time
 import traceback
-import uuid
 
 from async_tasks import AsyncTask
 from bottle import Bottle, request, response
@@ -455,7 +454,7 @@ def prepare():
     # 处理 OPTIONS 预检请求
     if request.method == "OPTIONS":
         return {}
-    
+
     return {"success": load_models()}
 
 
@@ -1052,7 +1051,7 @@ def create_video_task():
 # 使用异步任务处理，避免阻塞请求线程
 # 前端通过轮询获取进度和最终结果
 
-        
+
         def _on_completion(res, err):
             """Handle completion events after video processing."""
             if _is_video_task_cancelled(task_id):
@@ -1090,7 +1089,7 @@ def create_video_task():
             )
             response.status = 500
             return {"error": _simplify_task_error(e)}
-        
+
         payload = {"task_id": task_id, "status": "queued"}
         if active_config_id:
             payload["configId"] = active_config_id

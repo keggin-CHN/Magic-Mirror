@@ -12,7 +12,6 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from async_tasks import AsyncTask
 from bottle import Bottle, request, response, static_file
-
 from magic.face import (
     detect_face_boxes_in_image,
     detect_face_boxes_in_video,
@@ -480,6 +479,7 @@ def _invalidate_library_cache() -> None:
 
 def _list_library_items() -> List[Dict[str, str]]:
     """List all items in the face library."""
+    global _LIBRARY_CACHE_MTIME, _LIBRARY_CACHE_ITEMS
     if not os.path.isdir(LIBRARY_DIR):
         _invalidate_library_cache()
         return []

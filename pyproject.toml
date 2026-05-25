@@ -1,9 +1,9 @@
-[lint]
+[tool.ruff.lint]
 select = ["E", "F", "W", "I"]
-ignore = ["E501"]  # Line length - handled by formatter
+ignore = ["E501", "E731"]  # E501: line length, E731: lambda style
 
-[lint.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 
-[format]
+[tool.ruff.format]
 quote-style = "single"
