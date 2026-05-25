@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - "src-python/**"
+      - "tests/**"
       - ".github/workflows/lint.yml"
   pull_request:
     paths:
       - "src-python/**"
+      - "tests/**"
       - ".github/workflows/lint.yml"
   workflow_dispatch:
 
@@ -21,9 +23,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install linters
-        run: pip install ruff
+      - name: Install dependencies
+        run: pip install ruff pytest
       - name: Run ruff check
-        run: ruff check src-python/
+        run: ruff check src-python/ tests/
       - name: Run ruff format check
-        run: ruff format --check src-python/
+        run: ruff format --check src-python/ tests/
+      - name: Run tests
+        run: python -m pytest tests/ -v
