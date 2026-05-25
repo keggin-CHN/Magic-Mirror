@@ -14,6 +14,9 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src-python'))
 
 from magic.task_config import (
+    _normalize_gpu_provider,
+    _normalize_sha256,
+    _extract_sha256,
     b64url_decode,
     b64url_encode,
     build_video_task_config_token,
@@ -171,3 +174,55 @@ class TestCanonicalizeVideoTaskConfig:
             canonicalize_video_task_config(None)
         with pytest.raises(RuntimeError, match='missing-params'):
             canonicalize_video_task_config('not-a-dict')
+
+
+class TestNormalizeGpuProvider:
+    """Tests for _normalize_gpu_provider from task_config."""
+
+    def test_auto(self) -> None:
+        assert _normalize_gpu_provider('auto') == 'auto'
+
+    def test_cuda(self) -> None:
+        assert _normalize_gpu_provider('cuda') == 'cuda'
+
+    def test_dml(self) -> None:
+        assert _normalize_gpu_provider('dml') == 'directml'
+
+    def test_directml(self) -> None:
+        assert _normalize_gpu_provider('directml') == 'directml'
+
+    def test_cpu(self) -> None:
+        assert _normalize_gpu_provider('cpu') == 'cpu'
+
+    def test_none_defaults_to_auto(self) -> None:
+        assert _normalize_gpu_provider(None) == 'auto'
+
+    def test_empty_defaults_to_auto(self) -> None:
+        assert _normalize_gpu_provider('') == 'auto'
+
+    def test_case_insensitive(self) -> None:
+        assert _normalize_gpu_provider('CUDA') == 'cuda'
+        assert _normalize_gpu_provider('  CPU  ') == 'cpu'
+
+
+class TestExtractSha256:
+    """Tests for _extract_sha256 from task_config."""
+
+    def test_valid_hex(self) -> None:
+        h = hashlib.sha256(b'test').hexdigest()
+        result = _extract_sha256({'sha256': h})
+        assert result == h
+
+    def test_not_dict(self) -> None:
+        assert _extract_sha256('string') is None
+        assert _extract_sha256(42) is None
+        assert _extract_sha256(None) is None
+
+    def test_missing_sha256(self) -> None:
+        assert _extract_sha256({'other': 'value'}) is None
+
+    def test_invalid_hex(self) -> None:
+        assert _extract_sha256({'sha256': 'not-hex!'}) is None
+
+    def test_wrong_length(self) -> None:
+        assert _extract_sha256({'sha256': 'abcd1234'}) is None
