@@ -1527,6 +1527,7 @@ def create_video_task():
 
         _clear_video_task_cancelled(task_id)
 
+            """Handle stage events during video processing."""
         def _on_stage(stage: str):
             if _is_video_task_cancelled(task_id):
                 return
@@ -1538,6 +1539,7 @@ def create_video_task():
                 error=None,
             )
 
+            """Handle progress events during video processing."""
         def _on_progress(frame_count: int, total_frames: int, elapsed_seconds: float):
             if _is_video_task_cancelled(task_id):
                 return
@@ -1595,6 +1597,7 @@ def create_video_task():
                 gpu_provider=gpu_provider,
             )
 
+            """Handle completion events after video processing."""
         def _on_completion(res, err):
             if _is_video_task_cancelled(task_id):
                 print(f"[WEB] 视频换脸任务已取消，忽略完成回调: task_id={task_id}")

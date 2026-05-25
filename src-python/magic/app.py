@@ -264,6 +264,7 @@ def _extract_stored_face_sources(face_sources):
     return resolved or None
 
 
+    """Build the config payload for a video task."""
 def _build_video_task_config_payload(
     *,
     input_video: str,
@@ -337,6 +338,7 @@ def _build_video_task_config_payload(
     return payload
 
 
+    """Ensure a video task config matches expectations."""
 def _ensure_video_task_config_matches(
     config: dict,
     input_video: str,
@@ -373,6 +375,7 @@ def _ensure_video_task_config_matches(
                 raise RuntimeError("config-mismatch")
 
 
+    """Get the file extension from a path."""
 def _ext(path: str) -> str:
     return os.path.splitext(path)[1].lower()
 
@@ -408,6 +411,7 @@ def _simplify_task_error(err: object) -> str:
     return "internal"
 
 
+    """Validate a file exists and has an allowed extension."""
 def _validate_file(path: str, allowed_exts: set[str], *, missing_code: str):
     if not path:
         raise RuntimeError("missing-params")
@@ -973,6 +977,7 @@ def create_video_task():
         _clear_video_task_cancelled(task_id)
 
         # 定义回调函数（必须在 task_callable 之前定义）
+            """Handle stage events during video processing."""
         def _on_stage(stage: str):
             if _is_video_task_cancelled(task_id):
                 return
@@ -984,6 +989,7 @@ def create_video_task():
                 error=None,
             )
 
+            """Handle progress events during video processing."""
         def _on_progress(frame_count: int, total_frames: int, elapsed_seconds: float):
             if _is_video_task_cancelled(task_id):
                 return
@@ -1046,6 +1052,7 @@ def create_video_task():
 # 前端通过轮询获取进度和最终结果
 
         
+            """Handle completion events after video processing."""
         def _on_completion(res, err):
             if _is_video_task_cancelled(task_id):
                 return
