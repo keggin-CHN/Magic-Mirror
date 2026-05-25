@@ -14,9 +14,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src-python'))
 
 from magic.task_config import (
-    _normalize_gpu_provider,
-    _normalize_sha256,
     _extract_sha256,
+    _normalize_gpu_provider,
     b64url_decode,
     b64url_encode,
     build_video_task_config_token,
