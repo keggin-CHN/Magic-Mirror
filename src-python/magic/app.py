@@ -111,6 +111,7 @@ def _maybe_gc_progress() -> None:
         pass
 
 
+    """Update the progress of a video task."""
 def _set_video_task_progress(task_id: str, **updates):
     status = updates.get("status")
     if status in {"success", "failed", "cancelled"} and "_finishedAt" not in updates:
@@ -121,6 +122,7 @@ def _set_video_task_progress(task_id: str, **updates):
         VIDEO_TASK_PROGRESS[task_id] = state
 
 
+    """Get the current progress of a video task."""
 def _get_video_task_progress(task_id: str):
     _maybe_gc_progress()
     with VIDEO_TASK_PROGRESS_LOCK:
@@ -132,21 +134,25 @@ def _get_video_task_progress(task_id: str):
     return public_state
 
 
+    """Mark a video task as cancelled."""
 def _mark_video_task_cancelled(task_id: str):
     with VIDEO_TASK_CANCELLED_LOCK:
         VIDEO_TASK_CANCELLED.add(task_id)
 
 
+    """Clear the cancelled status of a video task."""
 def _clear_video_task_cancelled(task_id: str):
     with VIDEO_TASK_CANCELLED_LOCK:
         VIDEO_TASK_CANCELLED.discard(task_id)
 
 
+    """Check if a video task has been cancelled."""
 def _is_video_task_cancelled(task_id: str) -> bool:
     with VIDEO_TASK_CANCELLED_LOCK:
         return task_id in VIDEO_TASK_CANCELLED
 
 
+    """Run a video task asynchronously in a background thread."""
 def _run_video_task_async(task_id: str, task_callable, on_completion):
     def _worker():
         res = None
@@ -166,14 +172,17 @@ def _run_video_task_async(task_id: str, task_callable, on_completion):
     thread.start()
 
 
+    """Deep clone a JSON-serializable payload."""
 def _clone_json_payload(payload):
     return json.loads(json.dumps(payload, ensure_ascii=False))
 
 
+    """Build a signed config token for a video task."""
 def _build_video_task_config_token(payload: dict) -> str:
     return build_video_task_config_token(payload, VIDEO_TASK_CONFIG_SECRET)
 
 
+    """Parse and verify a video task config token."""
 def _parse_video_task_config_token(config_id: str):
     return parse_video_task_config_token(
         str(config_id),
@@ -182,6 +191,7 @@ def _parse_video_task_config_token(config_id: str):
     )
 
 
+    """Clean up expired video task configurations."""
 def _cleanup_video_task_configs():
     now = time.time()
     with VIDEO_TASK_CONFIGS_LOCK:
@@ -194,6 +204,7 @@ def _cleanup_video_task_configs():
             VIDEO_TASK_CONFIGS.pop(config_id, None)
 
 
+    """Store a video task configuration and return its ID."""
 def _store_video_task_config(payload: dict, config_id: str | None = None) -> str:
     _cleanup_video_task_configs()
     if not isinstance(payload, dict):
@@ -208,6 +219,7 @@ def _store_video_task_config(payload: dict, config_id: str | None = None) -> str
     return next_id
 
 
+    """Get a stored video task configuration."""
 def _get_video_task_config(config_id: str):
     if not config_id:
         return None
@@ -223,6 +235,7 @@ def _get_video_task_config(config_id: str):
     return _parse_video_task_config_token(str(config_id))
 
 
+    """Extract the file path from a stored entry."""
 def _extract_stored_path(file_entry):
     if isinstance(file_entry, str) and file_entry:
         return file_entry
@@ -233,6 +246,7 @@ def _extract_stored_path(file_entry):
     return None
 
 
+    """Extract face source paths from stored entries."""
 def _extract_stored_face_sources(face_sources):
     if not isinstance(face_sources, list):
         return None
