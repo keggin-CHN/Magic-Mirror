@@ -2316,6 +2316,7 @@ def _swap_face_video_deep(
     segment_duration_sec=12,
     segment_overlap_frames=6,
 ):
+    """Internal implementation for deep video face swapping."""
     cap = None
     temp_dir = None
     try:
@@ -2580,6 +2581,7 @@ def _process_deep_video_segment(
     use_gpu=False,
     gpu_provider="auto",
 ):
+    """Process a single deep video segment."""
     cap = None
     writer = None
     try:
