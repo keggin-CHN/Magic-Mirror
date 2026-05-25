@@ -389,6 +389,11 @@ def swap_face_video(
     use_gpu=False,
     gpu_provider="auto",
 ):
+    """Swap faces in a video file.
+
+    Detects faces in the input video and replaces them with the specified face image.
+    Supports GPU acceleration, custom regions, and progress callbacks.
+    """
     try:
         _emit_stage(stage_callback, "validating-input")
         print(
@@ -1367,6 +1372,11 @@ def swap_face_video_by_sources(
     use_gpu=False,
     gpu_provider="auto",
 ):
+    """Swap faces in a video using multiple face sources.
+
+    Each region can use a different face source for replacement.
+    Supports GPU acceleration and progress callbacks.
+    """
     try:
         _emit_stage(stage_callback, "validating-input")
         if not os.path.exists(input_path):
@@ -2247,6 +2257,11 @@ def swap_face_video_deep(
     segment_duration_sec=12,
     segment_overlap_frames=6,
 ):
+    """Deep swap faces in a video with advanced tracking.
+
+    Uses temporal tracking and face re-identification for consistent results
+    across video segments. Supports multiple face sources.
+    """
     try:
         _emit_stage(stage_callback, "validating-input")
         if not os.path.exists(input_path):
