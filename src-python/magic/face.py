@@ -1804,6 +1804,7 @@ def _swap_face_video_by_sources(
             writer.release()
 
 
+    """Normalize output frame dimensions."""
 def _normalize_output_frame(frame, width, height):
     out = frame
     if out is None:
@@ -1819,6 +1820,7 @@ def _normalize_output_frame(frame, width, height):
     return out
 
 
+    """Detect face boxes in a frame."""
 def _detect_face_boxes_in_frame(frame, search_areas, tf_instance=None, tf_lock=None):
     frame_h, frame_w = frame.shape[:2]
     boxes = []
@@ -1874,6 +1876,7 @@ def _get_faces_with_boxes(frame, tf_instance=None, tf_lock=None):
     return out
 
 
+    """Extract face box coordinates from a face object."""
 def _extract_face_box(face_obj, frame_w, frame_h):
     candidates = [
         face_obj,
@@ -1897,6 +1900,7 @@ def _extract_face_box(face_obj, frame_w, frame_h):
     return None
 
 
+    """Parse box-like coordinates from raw data."""
 def _parse_box_like(raw, frame_w, frame_h):
     if raw is None:
         return None
@@ -1940,6 +1944,7 @@ def _parse_box_like(raw, frame_w, frame_h):
     return None
 
 
+    """Convert xyxy format to xywh format."""
 def _from_xyxy(x1, y1, x2, y2, frame_w, frame_h):
     x = _to_int(min(x1, x2))
     y = _to_int(min(y1, y2))
@@ -1948,6 +1953,7 @@ def _from_xyxy(x1, y1, x2, y2, frame_w, frame_h):
     return _clamp_box(x, y, w, h, frame_w, frame_h)
 
 
+    """Clamp box coordinates to frame boundaries."""
 def _clamp_box(x, y, w, h, frame_w, frame_h):
     if frame_w <= 0 or frame_h <= 0:
         return None
@@ -1960,6 +1966,7 @@ def _clamp_box(x, y, w, h, frame_w, frame_h):
     return (x, y, w, h)
 
 
+    """Convert value to int safely."""
 def _to_int(value):
     try:
         return int(round(float(value)))
@@ -1967,6 +1974,7 @@ def _to_int(value):
         return 0
 
 
+    """Convert value to float safely."""
 def _to_float(value):
     try:
         return float(value)
@@ -1974,6 +1982,7 @@ def _to_float(value):
         return 0.0
 
 
+    """Expand a box to a square with given scale."""
 def _expand_square_box(x, y, w, h, max_w, max_h, scale=1.35, min_size=48):
     if w <= 0 or h <= 0:
         return None
@@ -2005,6 +2014,7 @@ def _expand_square_box(x, y, w, h, max_w, max_h, scale=1.35, min_size=48):
     return _clamp_box(left, top, size, size, max_w, max_h)
 
 
+    """Calculate intersection over union of two boxes."""
 def _iou(box_a, box_b):
     ax, ay, aw, ah = box_a
     bx, by, bw, bh = box_b
@@ -2028,6 +2038,7 @@ def _iou(box_a, box_b):
     return float(inter) / float(union)
 
 
+    """Remove duplicate boxes based on IoU threshold."""
 def _dedupe_boxes(boxes, iou_threshold=0.45):
     out = []
     for box in boxes:
@@ -2041,6 +2052,7 @@ def _dedupe_boxes(boxes, iou_threshold=0.45):
     return out
 
 
+    """Calculate center distance between two boxes."""
 def _center_distance(box_a, box_b):
     ax, ay, aw, ah = box_a
     bx, by, bw, bh = box_b
@@ -2051,6 +2063,7 @@ def _center_distance(box_a, box_b):
     return float(((acx - bcx) ** 2 + (acy - bcy) ** 2) ** 0.5)
 
 
+    """Build face tracks from seed regions."""
 def _build_tracks_from_seed_regions(seed_regions, detections):
     if not seed_regions:
         return {}
@@ -2105,6 +2118,7 @@ def _build_tracks_from_seed_regions(seed_regions, detections):
     return tracks
 
 
+    """Match existing tracks to new detections."""
 def _match_tracks_to_detections(tracks, detections):
     if not tracks or not detections:
         return []
@@ -2278,6 +2292,7 @@ def swap_face_video_deep(
         raise
 
 
+    """Internal implementation for deep video face swapping."""
 def _swap_face_video_deep(
     input_path,
     face_paths,
@@ -2415,6 +2430,7 @@ def _swap_face_video_deep(
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+    """Load destination face embeddings."""
 def _load_destination_faces(face_paths, tf_instance=None, tf_lock=None):
     if tf_instance is None:
         tf_instance = _tf
@@ -2437,10 +2453,12 @@ def _load_destination_faces(face_paths, tf_instance=None, tf_lock=None):
     return destination_faces
 
 
+    """Sort boxes by position (left-to-right, top-to-bottom)."""
 def _sort_boxes_by_position(boxes):
     return sorted(boxes or [], key=lambda item: (int(item[1]), int(item[0])))
 
 
+    """Sort detections by position."""
 def _sort_detections_by_position(detections):
     return sorted(
         detections or [],
@@ -2451,6 +2469,7 @@ def _sort_detections_by_position(detections):
     )
 
 
+    """Build deep tracks from seed regions."""
 def _build_deep_tracks_from_seed_regions(seed_regions, detections, target_count):
     tracks = {}
     used_det = set()
@@ -2496,6 +2515,7 @@ def _build_deep_tracks_from_seed_regions(seed_regions, detections, target_count)
     return tracks
 
 
+    """Build deep tracks from detections."""
 def _build_deep_tracks_from_detections(detections, target_count):
     tracks = {}
     sorted_detections = _sort_detections_by_position(detections)
@@ -2509,6 +2529,7 @@ def _build_deep_tracks_from_detections(detections, target_count):
     return tracks
 
 
+    """Plan video segments for processing."""
 def _plan_video_segments(total_frames, segment_frames, overlap_frames):
     segments = []
     if total_frames <= 0:
@@ -2537,6 +2558,7 @@ def _plan_video_segments(total_frames, segment_frames, overlap_frames):
     return segments
 
 
+    """Process a single deep video segment."""
 def _process_deep_video_segment(
     input_path,
     segment,
@@ -2683,6 +2705,7 @@ def _process_deep_video_segment(
             writer.release()
 
 
+    """Concatenate video segments into final output."""
 def _concat_video_segments(segment_paths, output_path, fps, width, height):
     writer = None
     caps = []
