@@ -125,6 +125,7 @@ def parse_video_task_config_token(
     *,
     legacy_ttl_seconds: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
+    """Parse and verify a video task config token."""
     if not isinstance(config_id, str):
         return None
 
