@@ -1459,6 +1459,7 @@ def _swap_face_video_by_sources(
         timeout=1,
         warn_prefix="队列已满，等待中...",
     ) -> bool:
+        """Put an item in a queue with stop signal support."""
         wait_count = 0
         while not stop_event.is_set():
             try:
