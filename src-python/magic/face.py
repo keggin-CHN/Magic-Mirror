@@ -66,6 +66,7 @@ def _clear_queue(q):
         print(f"[WARN] 清空队列失败: {str(e)}")
 
 
+    """Load the face detection and recognition models."""
 def load_models():
     try:
         _tf.config.face_detector_model = _get_model_path("scrfd_2.5g.onnx")
@@ -373,6 +374,7 @@ def swap_face_regions_by_sources(input_path, face_sources, regions):
         raise
 
 
+    """Swap faces in a video file."""
 def swap_face_video(
     input_path,
     face_path,
@@ -812,6 +814,7 @@ def _swap_face_video(
             print("[INFO] 释放视频写入器")
 
 
+    """Swap a face in a single image."""
 def _swap_face(input_path, face_path):
     vision = _read_image(input_path)
     reference_face = _get_one_face(input_path)
@@ -829,12 +832,14 @@ def _swap_face(input_path, face_path):
     return out
 
 
+    """Detect and return the first face in an image."""
 def _get_one_face(face_path: str):
     face_img = _read_image(face_path)
     with _tf_lock:
         return _tf.get_one_face(face_img)
 
 
+    """Read an image file and return it as numpy array."""
 def _read_image(img_path: str):
     data = np.fromfile(img_path, dtype=np.uint8)
     img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
@@ -853,6 +858,7 @@ def _read_image(img_path: str):
     return img
 
 
+    """Write an image to a file."""
 def _write_image(img_path: str, img):
     if img is None:
         raise RuntimeError("swap-failed")
@@ -1224,6 +1230,7 @@ def _try_mux_audio(input_video_path: str, output_video_path: str):
     raise RuntimeError("ffmpeg failed: " + " | ".join(errors))
 
 
+    """Get the full path for a model file."""
 def _get_model_path(file_name: str):
     return os.path.abspath(
         os.path.join(os.path.dirname(__file__), os.pardir, "models", file_name)
@@ -1337,6 +1344,7 @@ def detect_face_boxes_in_video(input_path, key_frame_ms=0, regions=None):
             cap.release()
 
 
+    """Swap faces in a video using multiple face sources."""
 def swap_face_video_by_sources(
     input_path,
     face_sources,
@@ -2197,6 +2205,7 @@ def swap_face_deep(input_path, face_paths, regions=None):
         raise
 
 
+    """Deep swap faces in a video with advanced tracking."""
 def swap_face_video_deep(
     input_path,
     face_paths,
