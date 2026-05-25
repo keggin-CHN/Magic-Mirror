@@ -107,6 +107,7 @@ _LIBRARY_CACHE_MTIME: Optional[int] = None
 _LIBRARY_CACHE_ITEMS: List[Dict[str, str]] = []
 
 def _ensure_dirs():
+    """Create required data directories if they do not exist."""
     os.makedirs(WEB_DATA_DIR, exist_ok=True)
     os.makedirs(UPLOADS_DIR, exist_ok=True)
     os.makedirs(LIBRARY_DIR, exist_ok=True)
@@ -116,6 +117,7 @@ _ensure_dirs()
 
 
 def _load_config() -> dict:
+    """Load or create the server configuration file with default password."""
     if not os.path.exists(CONFIG_PATH):
         _save_config({"password": "123456"})
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -123,6 +125,7 @@ def _load_config() -> dict:
 
 
 def _save_config(cfg: dict) -> None:
+    """Persist the server configuration to disk."""
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -215,6 +218,7 @@ def _simplify_task_error(err: object) -> str:
 
 
 def _sanitize_filename(name: str) -> str:
+    """Sanitize a filename by removing unsafe characters and limiting length."""
     base = os.path.basename(name or "upload")
     base = base.replace(" ", "_")
     cleaned = SAFE_FILENAME_PATTERN.sub("_", base).strip("._-") or "upload"

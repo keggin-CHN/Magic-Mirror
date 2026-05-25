@@ -249,12 +249,14 @@ def _emit_stage(stage_callback, stage: str):
 
 
 def swap_face(input_path, face_path):
+    """Swap a single face in an image using the target face."""
     save_path = _get_output_file_path(input_path)
     output_img = _swap_face(input_path, face_path)
     return _write_image(save_path, output_img)
 
 
 def swap_face_regions(input_path, face_path, regions):
+    """Swap faces in specific regions of an image."""
     try:
         _debug_log("[DEBUG] swap_face_regions 被调用")
         _debug_log(f"[DEBUG] input_path: {input_path}")
@@ -314,6 +316,7 @@ def swap_face_regions(input_path, face_path, regions):
 
 
 def swap_face_regions_by_sources(input_path, face_sources, regions):
+    """Swap faces using different source faces for each region."""
     try:
         save_path = _get_output_file_path(input_path)
         input_img = _read_image(input_path)
@@ -1228,6 +1231,7 @@ def _get_model_path(file_name: str):
 
 
 def detect_face_boxes_in_image(input_path, regions=None):
+    """Detect face bounding boxes in an image."""
     try:
         vision = _read_image(input_path)
         height, width = vision.shape[:2]
@@ -1283,6 +1287,7 @@ def detect_face_boxes_in_image(input_path, regions=None):
 
 
 def detect_face_boxes_in_video(input_path, key_frame_ms=0, regions=None):
+    """Detect face bounding boxes in video frames."""
     cap = None
     try:
         cap = cv2.VideoCapture(input_path)
@@ -2126,6 +2131,7 @@ def _match_tracks_to_detections(tracks, detections):
 
 
 def swap_face_deep(input_path, face_paths, regions=None):
+    """Perform deep face swap with multiple target faces."""
     try:
         if not isinstance(face_paths, list) or len(face_paths) == 0:
             raise RuntimeError("missing-params")
