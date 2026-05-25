@@ -175,10 +175,12 @@ def _require_auth() -> bool:
     return True
 
 
+    """Get the file extension from a path."""
 def _ext(path: str) -> str:
     return os.path.splitext(path)[1].lower()
 
 
+    """Validate a file exists and has an allowed extension."""
 def _validate_file(path: str, allowed_exts: set, *, missing_code: str):
     if not path:
         raise RuntimeError("missing-params")
@@ -188,6 +190,7 @@ def _validate_file(path: str, allowed_exts: set, *, missing_code: str):
         raise RuntimeError(missing_code)
 
 
+    """Simplify a task error to a human-readable string."""
 def _simplify_task_error(err: object) -> str:
     msg = (str(err) if err is not None else "").lower()
     codes = [
@@ -528,6 +531,7 @@ def _get_library_path(item_id: str) -> Optional[str]:
     return path
 
 
+    """Update the progress of a video task."""
 def _set_video_task_progress(task_id: str, **updates):
     status = updates.get("status")
     if status in {"success", "failed", "cancelled"} and "_finishedAt" not in updates:
@@ -538,6 +542,7 @@ def _set_video_task_progress(task_id: str, **updates):
         VIDEO_TASK_PROGRESS[task_id] = state
 
 
+    """Get the current progress of a video task."""
 def _get_video_task_progress(task_id: str):
     _maybe_run_gc()
     with VIDEO_TASK_PROGRESS_LOCK:
@@ -554,21 +559,25 @@ def _get_video_task_progress(task_id: str):
     return public_state
 
 
+    """Mark a video task as cancelled."""
 def _mark_video_task_cancelled(task_id: str):
     with VIDEO_TASK_CANCELLED_LOCK:
         VIDEO_TASK_CANCELLED.add(task_id)
 
 
+    """Clear the cancelled status of a video task."""
 def _clear_video_task_cancelled(task_id: str):
     with VIDEO_TASK_CANCELLED_LOCK:
         VIDEO_TASK_CANCELLED.discard(task_id)
 
 
+    """Check if a video task has been cancelled."""
 def _is_video_task_cancelled(task_id: str) -> bool:
     with VIDEO_TASK_CANCELLED_LOCK:
         return task_id in VIDEO_TASK_CANCELLED
 
 
+    """Run a video task asynchronously in a background thread."""
 def _run_video_task_async(task_id: str, task_callable, on_completion):
     def _worker():
         res = None
@@ -588,6 +597,7 @@ def _run_video_task_async(task_id: str, task_callable, on_completion):
     thread.start()
 
 
+    """Clean up expired video task configurations."""
 def _cleanup_video_task_configs() -> None:
     now = time.time()
     with VIDEO_TASK_CONFIGS_LOCK:
@@ -600,6 +610,7 @@ def _cleanup_video_task_configs() -> None:
             VIDEO_TASK_CONFIGS.pop(config_id, None)
 
 
+    """Store a video task configuration."""
 def _store_video_task_config(payload: Dict[str, object], config_id: Optional[str] = None) -> str:
     _cleanup_video_task_configs()
     next_id = str(config_id or _build_video_task_config_token(payload))
@@ -611,6 +622,7 @@ def _store_video_task_config(payload: Dict[str, object], config_id: Optional[str
     return next_id
 
 
+    """Get a stored video task configuration."""
 def _get_video_task_config(config_id: str) -> Optional[Dict[str, object]]:
     if not config_id:
         return None
@@ -626,6 +638,7 @@ def _get_video_task_config(config_id: str) -> Optional[Dict[str, object]]:
     return _parse_video_task_config_token(str(config_id))
 
 
+    """Extract the file path from a stored entry."""
 def _extract_stored_path(file_entry):
     if isinstance(file_entry, str) and file_entry:
         return file_entry
@@ -636,6 +649,7 @@ def _extract_stored_path(file_entry):
     return None
 
 
+    """Extract face source paths from stored entries."""
 def _extract_stored_face_sources(face_sources):
     if not isinstance(face_sources, list):
         return None
@@ -653,6 +667,7 @@ def _extract_stored_face_sources(face_sources):
     return resolved or None
 
 
+    """Resolve a face reference to a file path."""
 def _resolve_face_reference_path(face_ref: str) -> Optional[str]:
     if not face_ref:
         return None
@@ -664,6 +679,7 @@ def _resolve_face_reference_path(face_ref: str) -> Optional[str]:
     return None
 
 
+    """Resolve target face items to file paths."""
 def _resolve_target_face_items(target_faces) -> List[Dict[str, str]]:
     if not isinstance(target_faces, list) or len(target_faces) == 0:
         raise RuntimeError("missing-params")
@@ -698,6 +714,7 @@ def _resolve_target_face_items(target_faces) -> List[Dict[str, str]]:
     return resolved
 
 
+    """Build the config payload for a video task."""
 def _build_video_task_config_payload(
     *,
     input_path: str,
@@ -778,6 +795,7 @@ def _build_video_task_config_payload(
     return payload
 
 
+    """Ensure a video task config matches expectations."""
 def _ensure_video_task_config_matches(
     config: Dict[str, object],
     input_path: str,
@@ -814,6 +832,7 @@ def _ensure_video_task_config_matches(
                 raise RuntimeError("config-mismatch")
 
 
+    """Clean up a result and its associated files."""
 def _cleanup_result(result_id: str, delete_paths: List[str]) -> None:
     with RESULTS_LOCK:
         RESULTS.pop(result_id, None)
@@ -822,6 +841,7 @@ def _cleanup_result(result_id: str, delete_paths: List[str]) -> None:
         _remove_upload_by_path(path)
 
 
+    """Stream a file and clean up after download."""
 def _stream_and_cleanup(path: str, result_id: str, delete_paths: List[str]):
     try:
         with open(path, "rb") as f:
