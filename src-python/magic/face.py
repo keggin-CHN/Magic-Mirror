@@ -485,6 +485,7 @@ def _swap_face_video(
         timeout=1,
         warn_prefix="队列已满，等待中...",
     ) -> bool:
+        """Put an item in a queue with stop signal support."""
         wait_count = 0
         while not stop_event.is_set():
             try:
@@ -938,6 +939,7 @@ def _swap_face_in_regions_for_frame(
     worker_lock,
     destination_face,
 ):
+    """Swap faces in specified regions of a frame."""
     out = frame.copy()
     swapped_count = 0
 
