@@ -69,15 +69,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r src-python/requirements.txt
           pip install nuitka
+      - name: Cache model files
+        id: cache-models
+        uses: actions/cache@v4
+        with:
+          path: src-python/models
+          key: face-models-v1.0.0
       - name: Download model files
+        if: steps.cache-models.outputs.cache-hit != 'true'
         run: |
           mkdir -p src-python/models
           cd src-python/models
           BASE_URL="https://github.com/idootop/TinyFace/releases/download/models-1.0.0"
-          curl -# -O -L "${BASE_URL}/arcface_w600k_r50.onnx"
-          curl -# -O -L "${BASE_URL}/gfpgan_1.4.onnx"
-          curl -# -O -L "${BASE_URL}/inswapper_128_fp16.onnx"
-          curl -# -O -L "${BASE_URL}/scrfd_2.5g.onnx"
+          for model in arcface_w600k_r50.onnx gfpgan_1.4.onnx inswapper_128_fp16.onnx scrfd_2.5g.onnx; do
+            echo "Downloading ${model}..."
+            curl --fail --location --retry 5 --retry-delay 10 --progress-bar -O "${BASE_URL}/${model}"
+          done
       - name: Build web server binary
         run: |
           python -m nuitka --standalone --assume-yes-for-downloads \
