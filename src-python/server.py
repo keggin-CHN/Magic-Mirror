@@ -1,4 +1,5 @@
 import os
+import signal
 import sys
 import time
 import traceback
@@ -70,8 +71,20 @@ def _append_boot_log(text: str) -> None:
         pass
 
 
-class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
+class _GracefulWSGIServer(ThreadingMixIn, WSGIServer):
+    """Thread-per-request WSGI server with graceful shutdown support."""
     daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._shutting_down = False
+
+    def shutdown_graceful(self, signum, frame):
+        sig_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+        _append_boot_log(f"received {sig_name}, shutting down gracefully...")
+        self._shutting_down = True
+        self.shutdown()
 
 
 if __name__ == "__main__":
@@ -79,19 +92,32 @@ if __name__ == "__main__":
     _append_boot_log(f"exe={sys.executable}")
     _append_boot_log(f"cwd={os.getcwd()}")
     _append_boot_log(f"argv={sys.argv!r}")
+    _append_boot_log(f"pid={os.getpid()}")
+
+    host = os.environ.get("MIRROR_HOST", "0.0.0.0")
+    port = int(os.environ.get("MIRROR_PORT", "8023"))
 
     try:
         from magic.app import app
 
         _append_boot_log("import magic.app: OK")
-        _append_boot_log("starting threaded wsgi server on 0.0.0.0:8023")
+        _append_boot_log(f"starting threaded wsgi server on {host}:{port}")
         httpd = make_server(
-            "0.0.0.0",
-            8023,
+            host,
+            port,
             app,
-            server_class=_ThreadingWSGIServer,
+            server_class=_GracefulWSGIServer,
             handler_class=WSGIRequestHandler,
         )
+
+        # Register graceful shutdown handlers
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, httpd.shutdown_graceful)
+            except (OSError, ValueError):
+                pass
+
+        _append_boot_log(f"server ready on {host}:{port}")
         httpd.serve_forever()
     except Exception as e:
         _append_boot_log("boot failed:")

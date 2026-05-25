@@ -21,18 +21,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Cache Model Files
+        id: cache-models
+        uses: actions/cache@v4
+        with:
+          path: src-python/models
+          key: models-v1.0.0-${{ runner.os }}
       - name: Download Model Files
+        if: steps.cache-models.outputs.cache-hit != 'true'
         id: models
         run: |
           VERSION=$(awk -F ' = "' '/version =/ {print $2}' src-python/pyproject.toml | tr -d '"')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           mkdir -p src-python/models && cd src-python/models
           BASE_URL="https://github.com/idootop/TinyFace/releases/download/models-1.0.0"
-          curl --fail --location --retry 3 --retry-delay 5 --progress-bar -O "${BASE_URL}/arcface_w600k_r50.onnx"
-          curl --fail --location --retry 3 --retry-delay 5 --progress-bar -O "${BASE_URL}/gfpgan_1.4.onnx"
-          curl --fail --location --retry 3 --retry-delay 5 --progress-bar -O "${BASE_URL}/inswapper_128_fp16.onnx"
-          curl --fail --location --retry 3 --retry-delay 5 --progress-bar -O "${BASE_URL}/scrfd_2.5g.onnx"
+          for model in arcface_w600k_r50.onnx gfpgan_1.4.onnx inswapper_128_fp16.onnx scrfd_2.5g.onnx; do
+            echo "Downloading $model..."
+            curl --fail --location --retry 5 --retry-delay 10 --retry-max-time 60 --progress-bar -O "${BASE_URL}/${model}"
+            echo "  -> $(ls -lh $model | awk '{print $5}')"
+          done
           cd ${{ github.workspace }}
+      - name: Get version (cached)
+        if: steps.cache-models.outputs.cache-hit == 'true'
+        run: |
+          VERSION=$(awk -F ' = "' '/version =/ {print $2}' src-python/pyproject.toml | tr -d '"')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+        id: models-cached
       - name: Upload models
         uses: actions/upload-artifact@v4
         with:
@@ -40,7 +54,7 @@ jobs:
           path: src-python/models
           if-no-files-found: error
     outputs:
-      version: ${{ steps.models.outputs.version }}
+      version: ${{ steps.models.outputs.version || steps.models-cached.outputs.version }}
 
   build-for-windows:
     name: Windows
