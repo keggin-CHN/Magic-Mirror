@@ -6,16 +6,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY src-python/requirements.txt .
+COPY src-python/requirements-docker.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download model files
+# Download model files (with retries)
 RUN mkdir -p models && \
-    wget -q --show-progress -O models/det_500m.onnx \
+    wget -q --tries=3 --timeout=60 -O models/det_500m.onnx \
       "https://github.com/idootop/TinyFace/releases/download/models-1.0.0/det_500m.onnx" && \
-    wget -q --show-progress -O models/w600k_r50.onnx \
+    wget -q --tries=3 --timeout=60 -O models/w600k_r50.onnx \
       "https://github.com/idootop/TinyFace/releases/download/models-1.0.0/w600k_r50.onnx" && \
-    wget -q --show-progress -O models/inswapper_128.onnx \
+    wget -q --tries=3 --timeout=60 -O models/inswapper_128.onnx \
       "https://github.com/idootop/TinyFace/releases/download/models-1.0.0/inswapper_128.onnx"
 
 COPY src-python/ .

@@ -1,0 +1,9 @@
+tinyface >= 1.0.1
+bottle >= 0.13.2
+async-tasks-python >= 1.0.0
+opencv-python >= 4.12.0.88, < 5.0.0
+numpy >= 2.1.2, < 3.0.0
+# GPU acceleration support (DirectML for Windows, compatible with NVIDIA/AMD/Intel GPUs)
+onnxruntime-directml >= 1.16.0 ; sys_platform == "win32"
+# Fallback to CPU-only ONNX Runtime for non-Windows platforms
+onnxruntime >= 1.16.0 ; sys_platform != "win32"
