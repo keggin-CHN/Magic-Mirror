@@ -106,8 +106,6 @@ _LIBRARY_CACHE_LOCK = threading.RLock()
 _LIBRARY_CACHE_MTIME: Optional[int] = None
 _LIBRARY_CACHE_ITEMS: List[Dict[str, str]] = []
 
-
-    """Create required data directories if they do not exist."""
 def _ensure_dirs():
     os.makedirs(WEB_DATA_DIR, exist_ok=True)
     os.makedirs(UPLOADS_DIR, exist_ok=True)
@@ -117,7 +115,6 @@ def _ensure_dirs():
 _ensure_dirs()
 
 
-    """Load or create the server configuration file with default password."""
 def _load_config() -> dict:
     if not os.path.exists(CONFIG_PATH):
         _save_config({"password": "123456"})
@@ -125,14 +122,12 @@ def _load_config() -> dict:
         return json.load(f)
 
 
-    """Persist the server configuration to disk."""
 def _save_config(cfg: dict) -> None:
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
-    """Generate and store a new authentication token with a 7-day TTL."""
 def _issue_token() -> str:
     token = uuid.uuid4().hex
     with TOKENS_LOCK:
@@ -140,7 +135,6 @@ def _issue_token() -> str:
     return token
 
 
-    """Remove expired authentication tokens from memory."""
 def _cleanup_tokens() -> None:
     now = time.time()
     with TOKENS_LOCK:
@@ -160,7 +154,6 @@ def _extract_token() -> Optional[str]:
     return request.headers.get("X-Token") or request.query.get("token")
 
 
-    """Validate the request token and reject unauthorized calls."""
 def _require_auth() -> bool:
     _cleanup_tokens()
     token = _extract_token()
@@ -221,7 +214,6 @@ def _simplify_task_error(err: object) -> str:
     return "internal"
 
 
-    """Sanitize a filename by removing unsafe characters and limiting length."""
 def _sanitize_filename(name: str) -> str:
     base = os.path.basename(name or "upload")
     base = base.replace(" ", "_")
@@ -257,7 +249,6 @@ def _check_upload_size(upload_file, max_bytes: int) -> bool:
         return True
 
 
-    """Save an uploaded file to the destination directory with a unique name."""
 def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None):
     if max_bytes is not None and not _check_upload_size(upload_file, max_bytes):
         raise RuntimeError("file-too-large")
@@ -272,7 +263,6 @@ def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None)
     return file_id, save_path, safe_name
 
 
-    """Track an uploaded file in the uploads registry for later retrieval."""
 def _register_upload(file_id: str, path: str, kind: str) -> None:
     with UPLOADS_LOCK:
         UPLOADS[file_id] = {"path": path, "kind": kind, "createdAt": time.time()}
@@ -294,7 +284,6 @@ def _parse_video_task_config_token(config_id: str) -> Optional[Dict[str, object]
     )
 
 
-    """Register a processing result file and schedule cleanup of source files."""
 def _register_result(result_path: str, delete_paths: List[str]) -> str:
     result_id = uuid.uuid4().hex
     with RESULTS_LOCK:

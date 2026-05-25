@@ -74,7 +74,6 @@ VIDEO_TASK_CONFIG_SECRET = os.environ.get(
 )
 
 
-    """Remove finished task progress records older than _PROGRESS_TTL_SECONDS."""
 def _cleanup_expired_progress() -> None:
     """Remove finished task progress records older than _PROGRESS_TTL_SECONDS."""
     now = time.time()
@@ -98,7 +97,6 @@ def _cleanup_expired_progress() -> None:
             VIDEO_TASK_CANCELLED.discard(task_id)
 
 
-    """Throttled GC for progress records."""
 def _maybe_gc_progress() -> None:
     """Throttled GC for progress records."""
     global _LAST_PROGRESS_GC_AT
@@ -113,7 +111,6 @@ def _maybe_gc_progress() -> None:
         pass
 
 
-    """Update progress state for a video processing task."""
 def _set_video_task_progress(task_id: str, **updates):
     status = updates.get("status")
     if status in {"success", "failed", "cancelled"} and "_finishedAt" not in updates:
@@ -124,7 +121,6 @@ def _set_video_task_progress(task_id: str, **updates):
         VIDEO_TASK_PROGRESS[task_id] = state
 
 
-    """Retrieve the current progress of a video task for polling."""
 def _get_video_task_progress(task_id: str):
     _maybe_gc_progress()
     with VIDEO_TASK_PROGRESS_LOCK:
@@ -136,7 +132,6 @@ def _get_video_task_progress(task_id: str):
     return public_state
 
 
-    """Mark a video task as cancelled so progress callbacks stop."""
 def _mark_video_task_cancelled(task_id: str):
     with VIDEO_TASK_CANCELLED_LOCK:
         VIDEO_TASK_CANCELLED.add(task_id)
@@ -152,7 +147,6 @@ def _is_video_task_cancelled(task_id: str) -> bool:
         return task_id in VIDEO_TASK_CANCELLED
 
 
-    """Launch a video task in a background thread with completion handling."""
 def _run_video_task_async(task_id: str, task_callable, on_completion):
     def _worker():
         res = None
@@ -188,7 +182,6 @@ def _parse_video_task_config_token(config_id: str):
     )
 
 
-    """Remove expired video task configuration entries."""
 def _cleanup_video_task_configs():
     now = time.time()
     with VIDEO_TASK_CONFIGS_LOCK:
@@ -201,7 +194,6 @@ def _cleanup_video_task_configs():
             VIDEO_TASK_CONFIGS.pop(config_id, None)
 
 
-    """Store a video task config and return its ID for replay."""
 def _store_video_task_config(payload: dict, config_id: str | None = None) -> str:
     _cleanup_video_task_configs()
     if not isinstance(payload, dict):
@@ -216,7 +208,6 @@ def _store_video_task_config(payload: dict, config_id: str | None = None) -> str
     return next_id
 
 
-    """Retrieve a stored video task config by ID, or parse a signed token."""
 def _get_video_task_config(config_id: str):
     if not config_id:
         return None
@@ -372,7 +363,6 @@ def _ext(path: str) -> str:
     return os.path.splitext(path)[1].lower()
 
 
-    """Map internal exceptions to frontend-safe error codes."""
 def _simplify_task_error(err: object) -> str:
     """把内部异常/堆栈信息收敛成前端可用的错误码，避免泄漏本地路径等细节。"""
     msg = (str(err) if err is not None else "").lower()
@@ -404,7 +394,6 @@ def _simplify_task_error(err: object) -> str:
     return "internal"
 
 
-    """Validate a file path exists and has an allowed extension."""
 def _validate_file(path: str, allowed_exts: set[str], *, missing_code: str):
     if not path:
         raise RuntimeError("missing-params")
