@@ -115,6 +115,25 @@ python web_server.py
 
 模型文件需放在 `src-python/models/` 下，包括 `det_500m.onnx`、`w600k_r50.onnx`、`inswapper_128.onnx` 等。模型下载方式见 [安装指南](docs/cn/install.md)。
 
+### Docker
+
+```bash
+docker build -t magic-mirror:latest .
+docker run -p 8023:8023 magic-mirror:latest
+
+# 使用 Web 模式（端口 8033）
+docker run -p 8033:8033 magic-mirror:latest python web_server.py
+```
+
+### Makefile
+
+```bash
+make dev            # 启动桌面后端
+make web            # 启动 Web 后端
+make build          # 前端构建
+make docker-build   # 构建 Docker 镜像
+```
+
 ### Tauri 桌面端
 
 ```bash
