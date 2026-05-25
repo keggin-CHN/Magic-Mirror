@@ -39,6 +39,7 @@ _VERBOSE_LOGS = os.environ.get("MAGIC_VERBOSE_LOGS", "").strip().lower() in {
 }
 
 
+    """Log a debug message if debug mode is enabled."""
 def _debug_log(message: str):
     if _VERBOSE_LOGS:
         print(message)
@@ -80,6 +81,7 @@ def load_models():
 
 
 @lru_cache(maxsize=1)
+    """Get available ONNX runtime execution providers."""
 def _get_available_execution_providers():
     try:
         import onnxruntime as ort
@@ -105,6 +107,7 @@ def get_gpu_acceleration_modes():
     return {"modes": modes, "availableProviders": available_providers}
 
 
+    """Normalize GPU provider name to a standard form."""
 def _normalize_gpu_provider(gpu_provider: str):
     mode = (gpu_provider or "auto").strip().lower()
     if mode in {"dml", "directml"}:
@@ -116,6 +119,7 @@ def _normalize_gpu_provider(gpu_provider: str):
     return "auto"
 
 
+    """Resolve the execution provider for ONNX runtime."""
 def _resolve_execution_provider(gpu_provider: str):
     mode = _normalize_gpu_provider(gpu_provider)
     if mode == "cpu":
@@ -240,6 +244,7 @@ def _get_tf_instance(use_gpu=False, gpu_provider="auto"):
     return tf_instance, tf_lock, using_gpu, selected_provider
 
 
+    """Emit a stage event to the callback."""
 def _emit_stage(stage_callback, stage: str):
     if stage_callback is None:
         return
@@ -428,6 +433,7 @@ def swap_face_video(
         raise
 
 
+    """Internal implementation for video face swapping."""
 def _swap_face_video(
     input_path,
     face_path,
@@ -469,6 +475,7 @@ def _swap_face_video(
     workers_done_lock = threading.Lock()
     workers_done_count = {"count": 0}
 
+        """Put an item in a queue with stop signal support."""
     def _queue_put_with_stop(
         q_obj,
         item,
@@ -487,6 +494,7 @@ def _swap_face_video(
                     print(f"[WARN] {warn_prefix} (已等待约 {wait_count} 秒)")
         return False
 
+        """Mark a worker thread as done."""
     def _mark_worker_done():
         with workers_done_lock:
             workers_done_count["count"] += 1
@@ -574,6 +582,7 @@ def _swap_face_video(
         stats_lock = threading.Lock()
         progress_log_interval = max(30, total_frames // 20) if total_frames > 0 else 300
 
+            """Read frames from the input video."""
         def read_frames():
             try:
                 frame_idx = 0
@@ -605,6 +614,7 @@ def _swap_face_video(
                 stop_event.set()
                 _clear_queue(read_queue)
 
+            """Process frames for face swapping."""
         def process_frames(worker_id):
             worker_tf, worker_lock = tf_pool[worker_id % len(tf_pool)]
             try:
@@ -715,6 +725,7 @@ def _swap_face_video(
             finally:
                 _mark_worker_done()
 
+            """Write processed frames to the output video."""
         def write_frames():
             try:
                 _emit_stage(stage_callback, "processing-video-frames")
@@ -883,6 +894,7 @@ def _write_image(img_path: str, img):
     raise RuntimeError("output-write-failed")
 
 
+    """Normalize face regions to pixel coordinates."""
 def _normalize_regions(regions, width, height):
     normalized = []
     _debug_log(f"[DEBUG] _normalize_regions: regions={regions}, 图片尺寸={width}x{height}")
@@ -916,6 +928,7 @@ def _normalize_regions(regions, width, height):
     return normalized
 
 
+    """Swap faces in specified regions of a frame."""
 def _swap_face_in_regions_for_frame(
     frame,
     normalized_regions,
@@ -951,6 +964,7 @@ def _swap_face_in_regions_for_frame(
     return out, swapped_count
 
 
+    """Normalize regions with face source info."""
 def _normalize_regions_with_face_source(regions, width, height):
     normalized = []
     if not regions:
@@ -993,11 +1007,13 @@ def _normalize_regions_with_face_source(regions, width, height):
     return normalized
 
 
+    """Get the output file path for a result."""
 def _get_output_file_path(file_name):
     base_name, ext = os.path.splitext(file_name)
     return base_name + "_output" + ext
 
 
+    """Get the output video path for a result."""
 def _get_output_video_path(file_name):
     base_name, _ = os.path.splitext(file_name)
     return base_name + "_output.mp4"
@@ -1428,6 +1444,7 @@ def _swap_face_video_by_sources(
     workers_done_lock = threading.Lock()
     workers_done_count = {'count': 0}
 
+        """Put an item in a queue with stop signal support."""
     def _queue_put_with_stop(
         q_obj,
         item,
@@ -1446,6 +1463,7 @@ def _swap_face_video_by_sources(
                     print(f"[WARN] {warn_prefix} (已等待约 {wait_count} 秒)")
         return False
 
+        """Mark a worker thread as done."""
     def _mark_worker_done():
         with workers_done_lock:
             workers_done_count['count'] += 1
@@ -1542,6 +1560,7 @@ def _swap_face_video_by_sources(
         stats_lock = threading.Lock()
 
         # 读取线程
+            """Read frames from the input video."""
         def read_frames():
             try:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -1574,6 +1593,7 @@ def _swap_face_video_by_sources(
                 _clear_queue(read_queue)
 
         # 处理线程（多个）
+            """Process frames for face swapping."""
         def process_frames(worker_id):
             worker_tf, worker_lock = tf_pool[worker_id % len(tf_pool)]
             try:
@@ -1683,6 +1703,7 @@ def _swap_face_video_by_sources(
             finally:
                 _mark_worker_done()
 
+            """Write processed frames to the output video."""
         def write_frames():
             try:
                 next_frame_idx = 0
