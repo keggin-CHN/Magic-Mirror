@@ -731,6 +731,7 @@ def _build_video_task_config_payload(
     use_gpu: bool = False,
     gpu_provider: str = "auto",
 ) -> Dict[str, object]:
+    """Build the config payload for a video task."""
     payload: Dict[str, object] = {
         "inputVideo": {
             "path": input_path,
@@ -803,6 +804,7 @@ def _ensure_video_task_config_matches(
     target_face_map: Optional[Dict[str, str]] = None,
     source_map: Optional[Dict[str, str]] = None,
 ) -> None:
+    """Ensure a video task config matches expectations."""
     expected_input_sha256 = get_expected_input_video_sha256(config)
     if expected_input_sha256 and not verify_file_sha256(input_path, expected_input_sha256):
         raise RuntimeError("config-mismatch")
