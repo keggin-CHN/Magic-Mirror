@@ -9,19 +9,23 @@ VIDEO_TASK_CONFIG_TOKEN_PREFIX = "cfg2"
 LEGACY_VIDEO_TASK_CONFIG_TOKEN_PREFIX = "cfg1"
 
 
+    """Deep clone a JSON-serializable payload."""
 def clone_json_payload(payload: Any):
     return json.loads(json.dumps(payload, ensure_ascii=False))
 
 
+    """Encode bytes to URL-safe base64 without padding."""
 def b64url_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+    """Decode URL-safe base64 without padding."""
 def b64url_decode(encoded: str) -> bytes:
     padding = "=" * (-len(encoded) % 4)
     return base64.urlsafe_b64decode((encoded + padding).encode("ascii"))
 
 
+    """Sign a payload with HMAC-SHA256."""
 def sign_video_task_config_payload(payload_b64: str, secret: str) -> str:
     return hmac.new(
         str(secret).encode("utf-8"),
@@ -30,6 +34,7 @@ def sign_video_task_config_payload(payload_b64: str, secret: str) -> str:
     ).hexdigest()
 
 
+    """Compute SHA256 hash of a file."""
 def compute_file_sha256(path: str, chunk_size: int = 1024 * 1024) -> str:
     sha256 = hashlib.sha256()
     with open(path, "rb") as f:
@@ -41,6 +46,7 @@ def compute_file_sha256(path: str, chunk_size: int = 1024 * 1024) -> str:
     return sha256.hexdigest()
 
 
+    """Verify a file matches its expected SHA256 hash."""
 def verify_file_sha256(path: str, expected_sha256: Optional[str]) -> bool:
     normalized = _normalize_sha256(expected_sha256)
     if not normalized:
@@ -48,6 +54,7 @@ def verify_file_sha256(path: str, expected_sha256: Optional[str]) -> bool:
     return compute_file_sha256(path) == normalized
 
 
+    """Normalize a video task config to a canonical form."""
 def canonicalize_video_task_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise RuntimeError("missing-params")
@@ -98,6 +105,7 @@ def canonicalize_video_task_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+    """Build a signed config token for a video task."""
 def build_video_task_config_token(payload: Dict[str, Any], secret: str) -> str:
     canonical = canonicalize_video_task_config(payload)
     raw = json.dumps(
