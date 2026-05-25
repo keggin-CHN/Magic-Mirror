@@ -131,7 +131,6 @@ def _save_config(cfg: dict) -> None:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
-    """Generate a new authentication token."""
 def _issue_token() -> str:
     token = uuid.uuid4().hex
     with TOKENS_LOCK:
@@ -139,7 +138,6 @@ def _issue_token() -> str:
     return token
 
 
-    """Remove expired authentication tokens."""
 def _cleanup_tokens() -> None:
     now = time.time()
     with TOKENS_LOCK:
@@ -152,7 +150,6 @@ def _cleanup_tokens() -> None:
             TOKENS.pop(token, None)
 
 
-    """Extract the authentication token from the request."""
 def _extract_token() -> Optional[str]:
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
@@ -160,7 +157,6 @@ def _extract_token() -> Optional[str]:
     return request.headers.get("X-Token") or request.query.get("token")
 
 
-    """Validate the request token and reject unauthorized calls."""
 def _require_auth() -> bool:
     _cleanup_tokens()
     token = _extract_token()
@@ -175,12 +171,10 @@ def _require_auth() -> bool:
     return True
 
 
-    """Get the file extension from a path."""
 def _ext(path: str) -> str:
     return os.path.splitext(path)[1].lower()
 
 
-    """Validate a file exists and has an allowed extension."""
 def _validate_file(path: str, allowed_exts: set, *, missing_code: str):
     if not path:
         raise RuntimeError("missing-params")
@@ -190,7 +184,6 @@ def _validate_file(path: str, allowed_exts: set, *, missing_code: str):
         raise RuntimeError(missing_code)
 
 
-    """Simplify a task error to a human-readable string."""
 def _simplify_task_error(err: object) -> str:
     msg = (str(err) if err is not None else "").lower()
     codes = [
@@ -260,7 +253,6 @@ def _check_upload_size(upload_file, max_bytes: int) -> bool:
         return True
 
 
-    """Save an uploaded file to the destination directory."""
 def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None):
     if max_bytes is not None and not _check_upload_size(upload_file, max_bytes):
         raise RuntimeError("file-too-large")
@@ -275,23 +267,19 @@ def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None)
     return file_id, save_path, safe_name
 
 
-    """Register an uploaded file for later retrieval."""
 def _register_upload(file_id: str, path: str, kind: str) -> None:
     with UPLOADS_LOCK:
         UPLOADS[file_id] = {"path": path, "kind": kind, "createdAt": time.time()}
 
 
-    """Deep clone a JSON-serializable payload."""
 def _clone_json_payload(payload):
     return json.loads(json.dumps(payload, ensure_ascii=False))
 
 
-    """Build a signed config token for a video task."""
 def _build_video_task_config_token(payload: Dict[str, object]) -> str:
     return build_video_task_config_token(payload, VIDEO_TASK_CONFIG_SECRET)
 
 
-    """Parse and verify a video task config token."""
 def _parse_video_task_config_token(config_id: str) -> Optional[Dict[str, object]]:
     return parse_video_task_config_token(
         str(config_id),
@@ -300,7 +288,6 @@ def _parse_video_task_config_token(config_id: str) -> Optional[Dict[str, object]
     )
 
 
-    """Register a result file for download and cleanup."""
 def _register_result(result_path: str, delete_paths: List[str]) -> str:
     result_id = uuid.uuid4().hex
     with RESULTS_LOCK:
@@ -313,28 +300,24 @@ def _register_result(result_path: str, delete_paths: List[str]) -> str:
     return result_id
 
 
-    """Get the file path for an uploaded file."""
 def _get_upload_path(file_id: str) -> Optional[str]:
     with UPLOADS_LOCK:
         item = UPLOADS.get(file_id)
         return item.get("path") if item else None
 
 
-    """Get the file kind for an uploaded file."""
 def _get_upload_kind(file_id: str) -> Optional[str]:
     with UPLOADS_LOCK:
         item = UPLOADS.get(file_id)
         return item.get("kind") if item else None
 
 
-    """Get info about a registered result."""
 def _get_result_info(file_id: str) -> Optional[Dict[str, object]]:
     with RESULTS_LOCK:
         info = RESULTS.get(file_id)
         return info.copy() if info else None
 
 
-    """Remove an upload registration by path."""
 def _remove_upload_by_path(path: str) -> None:
     with UPLOADS_LOCK:
         to_remove = [key for key, item in UPLOADS.items() if item.get("path") == path]
@@ -342,7 +325,6 @@ def _remove_upload_by_path(path: str) -> None:
             UPLOADS.pop(key, None)
 
 
-    """Safely delete a file, ignoring errors."""
 def _safe_delete(path: str) -> None:
     try:
         if path and os.path.exists(path):
@@ -470,7 +452,6 @@ def _maybe_run_gc() -> None:
 # ─── End GC ───────────────────────────────────────────────────────────────────
 
 
-    """Invalidate the face library cache."""
 def _invalidate_library_cache() -> None:
     global _LIBRARY_CACHE_MTIME, _LIBRARY_CACHE_ITEMS
     with _LIBRARY_CACHE_LOCK:
@@ -478,7 +459,6 @@ def _invalidate_library_cache() -> None:
         _LIBRARY_CACHE_ITEMS = []
 
 
-    """List all items in the face library."""
 def _list_library_items() -> List[Dict[str, str]]:
     if not os.path.isdir(LIBRARY_DIR):
         _invalidate_library_cache()
@@ -519,7 +499,6 @@ def _list_library_items() -> List[Dict[str, str]]:
     return items
 
 
-    """Get the file path for a library item."""
 def _get_library_path(item_id: str) -> Optional[str]:
     if not item_id:
         return None
@@ -531,7 +510,6 @@ def _get_library_path(item_id: str) -> Optional[str]:
     return path
 
 
-    """Update the progress of a video task."""
 def _set_video_task_progress(task_id: str, **updates):
     status = updates.get("status")
     if status in {"success", "failed", "cancelled"} and "_finishedAt" not in updates:
@@ -542,7 +520,6 @@ def _set_video_task_progress(task_id: str, **updates):
         VIDEO_TASK_PROGRESS[task_id] = state
 
 
-    """Get the current progress of a video task."""
 def _get_video_task_progress(task_id: str):
     _maybe_run_gc()
     with VIDEO_TASK_PROGRESS_LOCK:
@@ -559,25 +536,21 @@ def _get_video_task_progress(task_id: str):
     return public_state
 
 
-    """Mark a video task as cancelled."""
 def _mark_video_task_cancelled(task_id: str):
     with VIDEO_TASK_CANCELLED_LOCK:
         VIDEO_TASK_CANCELLED.add(task_id)
 
 
-    """Clear the cancelled status of a video task."""
 def _clear_video_task_cancelled(task_id: str):
     with VIDEO_TASK_CANCELLED_LOCK:
         VIDEO_TASK_CANCELLED.discard(task_id)
 
 
-    """Check if a video task has been cancelled."""
 def _is_video_task_cancelled(task_id: str) -> bool:
     with VIDEO_TASK_CANCELLED_LOCK:
         return task_id in VIDEO_TASK_CANCELLED
 
 
-    """Run a video task asynchronously in a background thread."""
 def _run_video_task_async(task_id: str, task_callable, on_completion):
     def _worker():
         res = None
@@ -597,7 +570,6 @@ def _run_video_task_async(task_id: str, task_callable, on_completion):
     thread.start()
 
 
-    """Clean up expired video task configurations."""
 def _cleanup_video_task_configs() -> None:
     now = time.time()
     with VIDEO_TASK_CONFIGS_LOCK:
@@ -610,7 +582,6 @@ def _cleanup_video_task_configs() -> None:
             VIDEO_TASK_CONFIGS.pop(config_id, None)
 
 
-    """Store a video task configuration."""
 def _store_video_task_config(payload: Dict[str, object], config_id: Optional[str] = None) -> str:
     _cleanup_video_task_configs()
     next_id = str(config_id or _build_video_task_config_token(payload))
@@ -622,7 +593,6 @@ def _store_video_task_config(payload: Dict[str, object], config_id: Optional[str
     return next_id
 
 
-    """Get a stored video task configuration."""
 def _get_video_task_config(config_id: str) -> Optional[Dict[str, object]]:
     if not config_id:
         return None
@@ -638,7 +608,6 @@ def _get_video_task_config(config_id: str) -> Optional[Dict[str, object]]:
     return _parse_video_task_config_token(str(config_id))
 
 
-    """Extract the file path from a stored entry."""
 def _extract_stored_path(file_entry):
     if isinstance(file_entry, str) and file_entry:
         return file_entry
@@ -649,7 +618,6 @@ def _extract_stored_path(file_entry):
     return None
 
 
-    """Extract face source paths from stored entries."""
 def _extract_stored_face_sources(face_sources):
     if not isinstance(face_sources, list):
         return None
@@ -667,7 +635,6 @@ def _extract_stored_face_sources(face_sources):
     return resolved or None
 
 
-    """Resolve a face reference to a file path."""
 def _resolve_face_reference_path(face_ref: str) -> Optional[str]:
     if not face_ref:
         return None
@@ -679,7 +646,6 @@ def _resolve_face_reference_path(face_ref: str) -> Optional[str]:
     return None
 
 
-    """Resolve target face items to file paths."""
 def _resolve_target_face_items(target_faces) -> List[Dict[str, str]]:
     if not isinstance(target_faces, list) or len(target_faces) == 0:
         raise RuntimeError("missing-params")
@@ -714,7 +680,6 @@ def _resolve_target_face_items(target_faces) -> List[Dict[str, str]]:
     return resolved
 
 
-    """Build the config payload for a video task."""
 def _build_video_task_config_payload(
     *,
     input_path: str,
@@ -795,7 +760,6 @@ def _build_video_task_config_payload(
     return payload
 
 
-    """Ensure a video task config matches expectations."""
 def _ensure_video_task_config_matches(
     config: Dict[str, object],
     input_path: str,
@@ -832,7 +796,6 @@ def _ensure_video_task_config_matches(
                 raise RuntimeError("config-mismatch")
 
 
-    """Clean up a result and its associated files."""
 def _cleanup_result(result_id: str, delete_paths: List[str]) -> None:
     with RESULTS_LOCK:
         RESULTS.pop(result_id, None)
@@ -841,7 +804,6 @@ def _cleanup_result(result_id: str, delete_paths: List[str]) -> None:
         _remove_upload_by_path(path)
 
 
-    """Stream a file and clean up after download."""
 def _stream_and_cleanup(path: str, result_id: str, delete_paths: List[str]):
     try:
         with open(path, "rb") as f:
@@ -856,7 +818,6 @@ def _stream_and_cleanup(path: str, result_id: str, delete_paths: List[str]):
 
 # Enable CORS
 @app.hook("after_request")
-    """Configure CORS headers for all responses."""
 def enable_cors():
     response.set_header("Access-Control-Allow-Origin", "*")
     response.set_header(
@@ -874,20 +835,17 @@ def _trigger_gc_hook():
 
 
 @app.route("/api/<path:path>", method=["OPTIONS"])
-    """Handle CORS preflight OPTIONS requests."""
 def handle_options(path):
     response.status = 200
     return {}
 
 
 @app.get("/api/status")
-    """Return the server status and available features."""
 def status():
     return {"status": "running"}
 
 
 @app.post("/api/prepare")
-    """Prepare a file for face detection."""
 def prepare():
     if request.method == "OPTIONS":
         return {}
@@ -895,7 +853,6 @@ def prepare():
 
 
 @app.post("/api/login")
-    """Authenticate with password and return a token."""
 def login():
     if request.method == "OPTIONS":
         return {}
@@ -910,7 +867,6 @@ def login():
 
 
 @app.post("/api/credential")
-    """Update the server password."""
 def update_credential():
     if request.method == "OPTIONS":
         return {}
@@ -926,7 +882,6 @@ def update_credential():
 
 
 @app.get("/api/library")
-    """List all items in the face library."""
 def list_library():
     if not _require_auth():
         return {"error": "unauthorized"}
@@ -934,7 +889,6 @@ def list_library():
 
 
 @app.post("/api/library/upload")
-    """Upload a new face to the library."""
 def upload_library():
     if request.method == "OPTIONS":
         return {}
@@ -964,7 +918,6 @@ def upload_library():
 
 
 @app.get("/api/library/<filename>")
-    """Retrieve a face library file by filename."""
 def get_library_file(filename):
     safe_name = os.path.basename(filename or "")
     path = os.path.abspath(os.path.join(LIBRARY_DIR, safe_name))
@@ -978,7 +931,6 @@ def get_library_file(filename):
 
 
 @app.post("/api/upload")
-    """Upload a file for processing."""
 def upload_file():
     if request.method == "OPTIONS":
         return {}
@@ -1015,7 +967,6 @@ def upload_file():
 
 
 @app.get("/api/file/<file_id>")
-    """Retrieve an uploaded file by ID."""
 def get_file(file_id):
     if not _require_auth():
         return {"error": "unauthorized"}
@@ -1040,7 +991,6 @@ def get_file(file_id):
 
 
 @app.get("/api/download/<file_id>")
-    """Download a result file by ID."""
 def download_file(file_id):
     if not _require_auth():
         return {"error": "unauthorized"}
@@ -1061,7 +1011,6 @@ def download_file(file_id):
 
 
 @app.route("/api/task/detect-faces", method=["POST", "OPTIONS"])
-    """Detect faces in an uploaded image."""
 def detect_faces_for_image():
     if request.method == "OPTIONS":
         return {}
@@ -1091,7 +1040,6 @@ def detect_faces_for_image():
 
 
 @app.route("/api/task/video/detect-faces", method=["POST", "OPTIONS"])
-    """Detect faces in a video file."""
 def detect_faces_for_video():
     if request.method == "OPTIONS":
         return {}
@@ -1130,7 +1078,6 @@ def detect_faces_for_video():
 
 
 @app.route("/api/task", method=["POST", "OPTIONS"])
-    """Create a new face swap task."""
 def create_task():
     if request.method == "OPTIONS":
         return {}
@@ -1260,7 +1207,6 @@ def create_task():
 
 
 @app.route("/api/task/video/gpu-modes", method=["GET", "OPTIONS"])
-    """Return available GPU acceleration modes."""
 def get_video_gpu_modes():
     if request.method == "OPTIONS":
         return {}
@@ -1279,7 +1225,6 @@ def get_video_gpu_modes():
 
 
 @app.route("/api/task/video", method=["POST", "OPTIONS"])
-    """Create a new video face swap task."""
 def create_video_task():
     if request.method == "OPTIONS":
         return {}
@@ -1527,7 +1472,6 @@ def create_video_task():
 
         _clear_video_task_cancelled(task_id)
 
-            """Handle stage events during video processing."""
         def _on_stage(stage: str):
             if _is_video_task_cancelled(task_id):
                 return
@@ -1539,7 +1483,6 @@ def create_video_task():
                 error=None,
             )
 
-            """Handle progress events during video processing."""
         def _on_progress(frame_count: int, total_frames: int, elapsed_seconds: float):
             if _is_video_task_cancelled(task_id):
                 return
@@ -1597,7 +1540,6 @@ def create_video_task():
                 gpu_provider=gpu_provider,
             )
 
-            """Handle completion events after video processing."""
         def _on_completion(res, err):
             if _is_video_task_cancelled(task_id):
                 print(f"[WEB] 视频换脸任务已取消，忽略完成回调: task_id={task_id}")
@@ -1656,7 +1598,6 @@ def create_video_task():
 
 
 @app.get("/api/task/video/progress/<task_id>")
-    """Return the progress of a video task."""
 def get_video_task_progress(task_id):
     response.set_header("Cache-Control", "no-store")
     if not _require_auth():
@@ -1665,7 +1606,6 @@ def get_video_task_progress(task_id):
 
 
 @app.delete("/api/task/<task_id>")
-    """Cancel a running task."""
 def cancel_task(task_id):
     if not _require_auth():
         return {"error": "unauthorized"}
@@ -1682,7 +1622,6 @@ def cancel_task(task_id):
 
 
 @app.get("/")
-    """Serve the main web page."""
 def web_index():
     if os.path.isdir(DIST_DIR):
         return static_file("index.html", root=DIST_DIR)
@@ -1691,7 +1630,6 @@ def web_index():
 
 
 @app.get("/<filepath:path>")
-    """Serve static web assets."""
 def web_assets(filepath):
     if os.path.isdir(DIST_DIR):
         candidate = os.path.join(DIST_DIR, filepath)

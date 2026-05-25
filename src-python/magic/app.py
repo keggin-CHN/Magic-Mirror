@@ -111,7 +111,6 @@ def _maybe_gc_progress() -> None:
         pass
 
 
-    """Update the progress of a video task."""
 def _set_video_task_progress(task_id: str, **updates):
     status = updates.get("status")
     if status in {"success", "failed", "cancelled"} and "_finishedAt" not in updates:
@@ -122,7 +121,6 @@ def _set_video_task_progress(task_id: str, **updates):
         VIDEO_TASK_PROGRESS[task_id] = state
 
 
-    """Get the current progress of a video task."""
 def _get_video_task_progress(task_id: str):
     _maybe_gc_progress()
     with VIDEO_TASK_PROGRESS_LOCK:
@@ -134,25 +132,21 @@ def _get_video_task_progress(task_id: str):
     return public_state
 
 
-    """Mark a video task as cancelled."""
 def _mark_video_task_cancelled(task_id: str):
     with VIDEO_TASK_CANCELLED_LOCK:
         VIDEO_TASK_CANCELLED.add(task_id)
 
 
-    """Clear the cancelled status of a video task."""
 def _clear_video_task_cancelled(task_id: str):
     with VIDEO_TASK_CANCELLED_LOCK:
         VIDEO_TASK_CANCELLED.discard(task_id)
 
 
-    """Check if a video task has been cancelled."""
 def _is_video_task_cancelled(task_id: str) -> bool:
     with VIDEO_TASK_CANCELLED_LOCK:
         return task_id in VIDEO_TASK_CANCELLED
 
 
-    """Run a video task asynchronously in a background thread."""
 def _run_video_task_async(task_id: str, task_callable, on_completion):
     def _worker():
         res = None
@@ -172,17 +166,14 @@ def _run_video_task_async(task_id: str, task_callable, on_completion):
     thread.start()
 
 
-    """Deep clone a JSON-serializable payload."""
 def _clone_json_payload(payload):
     return json.loads(json.dumps(payload, ensure_ascii=False))
 
 
-    """Build a signed config token for a video task."""
 def _build_video_task_config_token(payload: dict) -> str:
     return build_video_task_config_token(payload, VIDEO_TASK_CONFIG_SECRET)
 
 
-    """Parse and verify a video task config token."""
 def _parse_video_task_config_token(config_id: str):
     return parse_video_task_config_token(
         str(config_id),
@@ -191,7 +182,6 @@ def _parse_video_task_config_token(config_id: str):
     )
 
 
-    """Clean up expired video task configurations."""
 def _cleanup_video_task_configs():
     now = time.time()
     with VIDEO_TASK_CONFIGS_LOCK:
@@ -204,7 +194,6 @@ def _cleanup_video_task_configs():
             VIDEO_TASK_CONFIGS.pop(config_id, None)
 
 
-    """Store a video task configuration and return its ID."""
 def _store_video_task_config(payload: dict, config_id: str | None = None) -> str:
     _cleanup_video_task_configs()
     if not isinstance(payload, dict):
@@ -219,7 +208,6 @@ def _store_video_task_config(payload: dict, config_id: str | None = None) -> str
     return next_id
 
 
-    """Get a stored video task configuration."""
 def _get_video_task_config(config_id: str):
     if not config_id:
         return None
@@ -235,7 +223,6 @@ def _get_video_task_config(config_id: str):
     return _parse_video_task_config_token(str(config_id))
 
 
-    """Extract the file path from a stored entry."""
 def _extract_stored_path(file_entry):
     if isinstance(file_entry, str) and file_entry:
         return file_entry
@@ -246,7 +233,6 @@ def _extract_stored_path(file_entry):
     return None
 
 
-    """Extract face source paths from stored entries."""
 def _extract_stored_face_sources(face_sources):
     if not isinstance(face_sources, list):
         return None
@@ -264,7 +250,6 @@ def _extract_stored_face_sources(face_sources):
     return resolved or None
 
 
-    """Build the config payload for a video task."""
 def _build_video_task_config_payload(
     *,
     input_video: str,
@@ -338,7 +323,6 @@ def _build_video_task_config_payload(
     return payload
 
 
-    """Ensure a video task config matches expectations."""
 def _ensure_video_task_config_matches(
     config: dict,
     input_video: str,
@@ -375,7 +359,6 @@ def _ensure_video_task_config_matches(
                 raise RuntimeError("config-mismatch")
 
 
-    """Get the file extension from a path."""
 def _ext(path: str) -> str:
     return os.path.splitext(path)[1].lower()
 
@@ -411,7 +394,6 @@ def _simplify_task_error(err: object) -> str:
     return "internal"
 
 
-    """Validate a file exists and has an allowed extension."""
 def _validate_file(path: str, allowed_exts: set[str], *, missing_code: str):
     if not path:
         raise RuntimeError("missing-params")
@@ -428,7 +410,6 @@ app.plugins[0].json_dumps = lambda *args, **kwargs: json.dumps(
 
 # Enable CORS
 @app.hook("after_request")
-    """Configure CORS headers for all responses."""
 def enable_cors():
     response.set_header("Access-Control-Allow-Origin", "*")
     response.set_header("Access-Control-Allow-Methods", "*")
@@ -436,20 +417,17 @@ def enable_cors():
 
 
 @app.route("<path:path>", method=["OPTIONS"])
-    """Handle CORS preflight OPTIONS requests."""
 def handle_options(path):
     response.status = 200
     return "MagicMirror ✨"
 
 
 @app.get("/status")
-    """Return the server status and available features."""
 def status():
     return {"status": "running"}
 
 
 @app.route("/prepare", method=["POST", "OPTIONS"])
-    """Prepare a file for face detection."""
 def prepare():
     # 处理 OPTIONS 预检请求
     if request.method == "OPTIONS":
@@ -459,7 +437,6 @@ def prepare():
 
 
 @app.route("/task", method=["POST", "OPTIONS"])
-    """Create a new face swap task."""
 def create_task():
     # 处理 OPTIONS 预检请求
     if request.method == "OPTIONS":
@@ -613,7 +590,6 @@ def create_task():
 
 
 @app.route("/task/detect-faces", method=["POST", "OPTIONS"])
-    """Detect faces in an uploaded image."""
 def detect_faces_for_image():
     if request.method == "OPTIONS":
         return {}
@@ -649,7 +625,6 @@ def detect_faces_for_image():
 
 
 @app.route("/task/video/detect-faces", method=["POST", "OPTIONS"])
-    """Detect faces in a video file."""
 def detect_faces_for_video():
     if request.method == "OPTIONS":
         return {}
@@ -695,7 +670,6 @@ def detect_faces_for_video():
 
 
 @app.route("/task/video/gpu-modes", method=["GET", "OPTIONS"])
-    """Return available GPU acceleration modes."""
 def get_video_gpu_modes():
     if request.method == "OPTIONS":
         return {}
@@ -712,7 +686,6 @@ def get_video_gpu_modes():
 
 
 @app.route("/task/video", method=["POST", "OPTIONS"])
-    """Create a new video face swap task."""
 def create_video_task():
     # 处理 OPTIONS 预检请求
     if request.method == "OPTIONS":
@@ -977,7 +950,6 @@ def create_video_task():
         _clear_video_task_cancelled(task_id)
 
         # 定义回调函数（必须在 task_callable 之前定义）
-            """Handle stage events during video processing."""
         def _on_stage(stage: str):
             if _is_video_task_cancelled(task_id):
                 return
@@ -989,7 +961,6 @@ def create_video_task():
                 error=None,
             )
 
-            """Handle progress events during video processing."""
         def _on_progress(frame_count: int, total_frames: int, elapsed_seconds: float):
             if _is_video_task_cancelled(task_id):
                 return
@@ -1052,7 +1023,6 @@ def create_video_task():
 # 前端通过轮询获取进度和最终结果
 
         
-            """Handle completion events after video processing."""
         def _on_completion(res, err):
             if _is_video_task_cancelled(task_id):
                 return
@@ -1110,14 +1080,12 @@ def create_video_task():
 
 
 @app.get("/task/video/progress/<task_id>")
-    """Return the progress of a video task."""
 def get_video_task_progress(task_id):
     response.set_header("Cache-Control", "no-store")
     return _get_video_task_progress(task_id)
 
 
 @app.delete("/task/<task_id>")
-    """Cancel a running task."""
 def cancel_task(task_id):
     AsyncTask.cancel(task_id)
     _mark_video_task_cancelled(task_id)
