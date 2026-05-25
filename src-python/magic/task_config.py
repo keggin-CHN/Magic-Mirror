@@ -10,6 +10,7 @@ LEGACY_VIDEO_TASK_CONFIG_TOKEN_PREFIX = "cfg1"
 
 
 def clone_json_payload(payload: Any):
+    """Deep clone a JSON-serializable payload."""
     return json.loads(json.dumps(payload, ensure_ascii=False))
 
 

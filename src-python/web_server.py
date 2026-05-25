@@ -176,6 +176,7 @@ def _ext(path: str) -> str:
 
 
 def _validate_file(path: str, allowed_exts: set, *, missing_code: str):
+    """Validate a file exists and has an allowed extension."""
     if not path:
         raise RuntimeError("missing-params")
     if not os.path.exists(path):
@@ -254,6 +255,7 @@ def _check_upload_size(upload_file, max_bytes: int) -> bool:
 
 
 def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None):
+    """Save an uploaded file to the destination directory."""
     if max_bytes is not None and not _check_upload_size(upload_file, max_bytes):
         raise RuntimeError("file-too-large")
     filename = _sanitize_filename(upload_file.filename)
@@ -273,6 +275,7 @@ def _register_upload(file_id: str, path: str, kind: str) -> None:
 
 
 def _clone_json_payload(payload):
+    """Deep clone a JSON-serializable payload."""
     return json.loads(json.dumps(payload, ensure_ascii=False))
 
 
@@ -511,6 +514,7 @@ def _get_library_path(item_id: str) -> Optional[str]:
 
 
 def _set_video_task_progress(task_id: str, **updates):
+    """Update the progress of a video task."""
     status = updates.get("status")
     if status in {"success", "failed", "cancelled"} and "_finishedAt" not in updates:
         updates["_finishedAt"] = time.time()
@@ -521,6 +525,7 @@ def _set_video_task_progress(task_id: str, **updates):
 
 
 def _get_video_task_progress(task_id: str):
+    """Get the current progress of a video task."""
     _maybe_run_gc()
     with VIDEO_TASK_PROGRESS_LOCK:
         state = VIDEO_TASK_PROGRESS.get(task_id)
@@ -537,11 +542,13 @@ def _get_video_task_progress(task_id: str):
 
 
 def _mark_video_task_cancelled(task_id: str):
+    """Mark a video task as cancelled."""
     with VIDEO_TASK_CANCELLED_LOCK:
         VIDEO_TASK_CANCELLED.add(task_id)
 
 
 def _clear_video_task_cancelled(task_id: str):
+    """Clear the cancelled status of a video task."""
     with VIDEO_TASK_CANCELLED_LOCK:
         VIDEO_TASK_CANCELLED.discard(task_id)
 
@@ -552,7 +559,9 @@ def _is_video_task_cancelled(task_id: str) -> bool:
 
 
 def _run_video_task_async(task_id: str, task_callable, on_completion):
+    """Run a video task asynchronously in a background thread."""
     def _worker():
+        """Background worker thread for async tasks."""
         res = None
         err = None
         try:
@@ -609,6 +618,7 @@ def _get_video_task_config(config_id: str) -> Optional[Dict[str, object]]:
 
 
 def _extract_stored_path(file_entry):
+    """Extract the file path from a stored entry."""
     if isinstance(file_entry, str) and file_entry:
         return file_entry
     if isinstance(file_entry, dict):
@@ -619,6 +629,7 @@ def _extract_stored_path(file_entry):
 
 
 def _extract_stored_face_sources(face_sources):
+    """Extract face source paths from stored entries."""
     if not isinstance(face_sources, list):
         return None
 
@@ -805,6 +816,7 @@ def _cleanup_result(result_id: str, delete_paths: List[str]) -> None:
 
 
 def _stream_and_cleanup(path: str, result_id: str, delete_paths: List[str]):
+    """Stream a file and clean up after download."""
     try:
         with open(path, "rb") as f:
             while True:
@@ -819,6 +831,7 @@ def _stream_and_cleanup(path: str, result_id: str, delete_paths: List[str]):
 # Enable CORS
 @app.hook("after_request")
 def enable_cors():
+    """Configure CORS headers for all responses."""
     response.set_header("Access-Control-Allow-Origin", "*")
     response.set_header(
         "Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS"
@@ -836,17 +849,20 @@ def _trigger_gc_hook():
 
 @app.route("/api/<path:path>", method=["OPTIONS"])
 def handle_options(path):
+    """Handle CORS preflight OPTIONS requests."""
     response.status = 200
     return {}
 
 
 @app.get("/api/status")
 def status():
+    """Return the server status."""
     return {"status": "running"}
 
 
 @app.post("/api/prepare")
 def prepare():
+    """Prepare a file for face detection."""
     if request.method == "OPTIONS":
         return {}
     return {"success": load_models()}
@@ -854,6 +870,7 @@ def prepare():
 
 @app.post("/api/login")
 def login():
+    """Authenticate and return a token."""
     if request.method == "OPTIONS":
         return {}
     body = request.json or {}
@@ -868,6 +885,7 @@ def login():
 
 @app.post("/api/credential")
 def update_credential():
+    """Update the server password."""
     if request.method == "OPTIONS":
         return {}
     if not _require_auth():
@@ -883,6 +901,7 @@ def update_credential():
 
 @app.get("/api/library")
 def list_library():
+    """List all items in the face library."""
     if not _require_auth():
         return {"error": "unauthorized"}
     return {"items": _list_library_items()}
@@ -890,6 +909,7 @@ def list_library():
 
 @app.post("/api/library/upload")
 def upload_library():
+    """Upload a new face to the library."""
     if request.method == "OPTIONS":
         return {}
     if not _require_auth():
@@ -919,6 +939,7 @@ def upload_library():
 
 @app.get("/api/library/<filename>")
 def get_library_file(filename):
+    """Retrieve a face library file."""
     safe_name = os.path.basename(filename or "")
     path = os.path.abspath(os.path.join(LIBRARY_DIR, safe_name))
     if not _is_path_within(LIBRARY_DIR, path) or not os.path.exists(path):
@@ -932,6 +953,7 @@ def get_library_file(filename):
 
 @app.post("/api/upload")
 def upload_file():
+    """Upload a file for processing."""
     if request.method == "OPTIONS":
         return {}
     if not _require_auth():
@@ -968,6 +990,7 @@ def upload_file():
 
 @app.get("/api/file/<file_id>")
 def get_file(file_id):
+    """Retrieve an uploaded file."""
     if not _require_auth():
         return {"error": "unauthorized"}
     path = _get_upload_path(file_id)
@@ -992,6 +1015,7 @@ def get_file(file_id):
 
 @app.get("/api/download/<file_id>")
 def download_file(file_id):
+    """Download a result file."""
     if not _require_auth():
         return {"error": "unauthorized"}
     info = _get_result_info(file_id)
@@ -1012,6 +1036,7 @@ def download_file(file_id):
 
 @app.route("/api/task/detect-faces", method=["POST", "OPTIONS"])
 def detect_faces_for_image():
+    """Detect faces in an uploaded image."""
     if request.method == "OPTIONS":
         return {}
     if not _require_auth():
@@ -1041,6 +1066,7 @@ def detect_faces_for_image():
 
 @app.route("/api/task/video/detect-faces", method=["POST", "OPTIONS"])
 def detect_faces_for_video():
+    """Detect faces in a video file."""
     if request.method == "OPTIONS":
         return {}
     if not _require_auth():
@@ -1079,6 +1105,7 @@ def detect_faces_for_video():
 
 @app.route("/api/task", method=["POST", "OPTIONS"])
 def create_task():
+    """Create a new face swap task."""
     if request.method == "OPTIONS":
         return {}
     if not _require_auth():
@@ -1208,6 +1235,7 @@ def create_task():
 
 @app.route("/api/task/video/gpu-modes", method=["GET", "OPTIONS"])
 def get_video_gpu_modes():
+    """Return available GPU acceleration modes."""
     if request.method == "OPTIONS":
         return {}
     if not _require_auth():
@@ -1226,6 +1254,7 @@ def get_video_gpu_modes():
 
 @app.route("/api/task/video", method=["POST", "OPTIONS"])
 def create_video_task():
+    """Create a new video face swap task."""
     if request.method == "OPTIONS":
         return {}
     if not _require_auth():
@@ -1473,6 +1502,7 @@ def create_video_task():
         _clear_video_task_cancelled(task_id)
 
         def _on_stage(stage: str):
+            """Handle stage events during video processing."""
             if _is_video_task_cancelled(task_id):
                 return
             print(f"[INFO] 视频处理阶段: {stage}")
@@ -1484,6 +1514,7 @@ def create_video_task():
             )
 
         def _on_progress(frame_count: int, total_frames: int, elapsed_seconds: float):
+            """Handle progress events during video processing."""
             if _is_video_task_cancelled(task_id):
                 return
             progress = 0.0
@@ -1541,6 +1572,7 @@ def create_video_task():
             )
 
         def _on_completion(res, err):
+            """Handle completion events after video processing."""
             if _is_video_task_cancelled(task_id):
                 print(f"[WEB] 视频换脸任务已取消，忽略完成回调: task_id={task_id}")
                 return
@@ -1599,6 +1631,7 @@ def create_video_task():
 
 @app.get("/api/task/video/progress/<task_id>")
 def get_video_task_progress(task_id):
+    """Return the progress of a video task."""
     response.set_header("Cache-Control", "no-store")
     if not _require_auth():
         return {"error": "unauthorized"}
@@ -1607,6 +1640,7 @@ def get_video_task_progress(task_id):
 
 @app.delete("/api/task/<task_id>")
 def cancel_task(task_id):
+    """Cancel a running task."""
     if not _require_auth():
         return {"error": "unauthorized"}
     AsyncTask.cancel(task_id)
@@ -1623,6 +1657,7 @@ def cancel_task(task_id):
 
 @app.get("/")
 def web_index():
+    """Serve the main web page."""
     if os.path.isdir(DIST_DIR):
         return static_file("index.html", root=DIST_DIR)
     response.status = 404
@@ -1631,6 +1666,7 @@ def web_index():
 
 @app.get("/<filepath:path>")
 def web_assets(filepath):
+    """Serve static web assets."""
     if os.path.isdir(DIST_DIR):
         candidate = os.path.join(DIST_DIR, filepath)
         if os.path.exists(candidate) and os.path.isfile(candidate):

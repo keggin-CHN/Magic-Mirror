@@ -77,10 +77,12 @@ class _GracefulWSGIServer(ThreadingMixIn, WSGIServer):
     allow_reuse_address = True
 
     def __init__(self, *args, **kwargs):
+        """Initialize the HTTP server."""
         super().__init__(*args, **kwargs)
         self._shutting_down = False
 
     def shutdown_graceful(self, signum, frame):
+        """Handle graceful shutdown signals."""
         sig_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
         _append_boot_log(f"received {sig_name}, shutting down gracefully...")
         self._shutting_down = True

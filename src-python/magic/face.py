@@ -40,6 +40,7 @@ _VERBOSE_LOGS = os.environ.get("MAGIC_VERBOSE_LOGS", "").strip().lower() in {
 
 
 def _debug_log(message: str):
+    """Log a debug message if debug mode is enabled."""
     if _VERBOSE_LOGS:
         print(message)
 
@@ -67,6 +68,7 @@ def _clear_queue(q):
 
 
 def load_models():
+    """Load the face detection and recognition models."""
     try:
         _tf.config.face_detector_model = _get_model_path("scrfd_2.5g.onnx")
         _tf.config.face_embedder_model = _get_model_path("arcface_w600k_r50.onnx")
@@ -80,6 +82,7 @@ def load_models():
 
 @lru_cache(maxsize=1)
 def _get_available_execution_providers():
+    """Get available ONNX runtime execution providers."""
     try:
         import onnxruntime as ort
 
@@ -105,6 +108,7 @@ def get_gpu_acceleration_modes():
 
 
 def _normalize_gpu_provider(gpu_provider: str):
+    """Normalize GPU provider name."""
     mode = (gpu_provider or "auto").strip().lower()
     if mode in {"dml", "directml"}:
         return "directml"
@@ -116,6 +120,7 @@ def _normalize_gpu_provider(gpu_provider: str):
 
 
 def _resolve_execution_provider(gpu_provider: str):
+    """Resolve the execution provider for ONNX runtime."""
     mode = _normalize_gpu_provider(gpu_provider)
     if mode == "cpu":
         return None
@@ -240,6 +245,7 @@ def _get_tf_instance(use_gpu=False, gpu_provider="auto"):
 
 
 def _emit_stage(stage_callback, stage: str):
+    """Emit a stage event to the callback."""
     if stage_callback is None:
         return
     try:
@@ -486,6 +492,7 @@ def _swap_face_video(
         return False
 
     def _mark_worker_done():
+        """Mark a worker thread as done."""
         with workers_done_lock:
             workers_done_count["count"] += 1
             if workers_done_count["count"] >= num_workers:
@@ -573,6 +580,7 @@ def _swap_face_video(
         progress_log_interval = max(30, total_frames // 20) if total_frames > 0 else 300
 
         def read_frames():
+            """Read frames from the input video."""
             try:
                 frame_idx = 0
                 while not stop_event.is_set():
@@ -604,6 +612,7 @@ def _swap_face_video(
                 _clear_queue(read_queue)
 
         def process_frames(worker_id):
+            """Process frames for face swapping."""
             worker_tf, worker_lock = tf_pool[worker_id % len(tf_pool)]
             try:
                 while not stop_event.is_set():
@@ -714,6 +723,7 @@ def _swap_face_video(
                 _mark_worker_done()
 
         def write_frames():
+            """Write processed frames to the output video."""
             try:
                 _emit_stage(stage_callback, "processing-video-frames")
                 next_frame_idx = 0
@@ -813,6 +823,7 @@ def _swap_face_video(
 
 
 def _swap_face(input_path, face_path):
+    """Swap a face in a single image."""
     vision = _read_image(input_path)
     reference_face = _get_one_face(input_path)
     destination_face = _get_one_face(face_path)
@@ -830,12 +841,14 @@ def _swap_face(input_path, face_path):
 
 
 def _get_one_face(face_path: str):
+    """Detect and return the first face in an image."""
     face_img = _read_image(face_path)
     with _tf_lock:
         return _tf.get_one_face(face_img)
 
 
 def _read_image(img_path: str):
+    """Read an image file as numpy array."""
     data = np.fromfile(img_path, dtype=np.uint8)
     img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
     if img is None:
@@ -854,6 +867,7 @@ def _read_image(img_path: str):
 
 
 def _write_image(img_path: str, img):
+    """Write an image to a file."""
     if img is None:
         raise RuntimeError("swap-failed")
 
@@ -878,6 +892,7 @@ def _write_image(img_path: str, img):
 
 
 def _normalize_regions(regions, width, height):
+    """Normalize face regions to pixel coordinates."""
     normalized = []
     _debug_log(f"[DEBUG] _normalize_regions: regions={regions}, 图片尺寸={width}x{height}")
     if not regions:
@@ -946,6 +961,7 @@ def _swap_face_in_regions_for_frame(
 
 
 def _normalize_regions_with_face_source(regions, width, height):
+    """Normalize regions with face source info."""
     normalized = []
     if not regions:
         return normalized
@@ -988,11 +1004,13 @@ def _normalize_regions_with_face_source(regions, width, height):
 
 
 def _get_output_file_path(file_name):
+    """Get the output file path."""
     base_name, ext = os.path.splitext(file_name)
     return base_name + "_output" + ext
 
 
 def _get_output_video_path(file_name):
+    """Get the output video path."""
     base_name, _ = os.path.splitext(file_name)
     return base_name + "_output.mp4"
 
@@ -1225,6 +1243,7 @@ def _try_mux_audio(input_video_path: str, output_video_path: str):
 
 
 def _get_model_path(file_name: str):
+    """Get the full path for a model file."""
     return os.path.abspath(
         os.path.join(os.path.dirname(__file__), os.pardir, "models", file_name)
     )
@@ -1439,6 +1458,7 @@ def _swap_face_video_by_sources(
         return False
 
     def _mark_worker_done():
+        """Mark a worker thread as done."""
         with workers_done_lock:
             workers_done_count['count'] += 1
             if workers_done_count['count'] >= num_workers:
@@ -1535,6 +1555,7 @@ def _swap_face_video_by_sources(
 
         # 读取线程
         def read_frames():
+            """Read frames from the input video."""
             try:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 frame_idx = 0
@@ -1567,6 +1588,7 @@ def _swap_face_video_by_sources(
 
         # 处理线程（多个）
         def process_frames(worker_id):
+            """Process frames for face swapping."""
             worker_tf, worker_lock = tf_pool[worker_id % len(tf_pool)]
             try:
                 _emit_stage(stage_callback, "processing-video-frames")
@@ -1676,6 +1698,7 @@ def _swap_face_video_by_sources(
                 _mark_worker_done()
 
         def write_frames():
+            """Write processed frames to the output video."""
             try:
                 next_frame_idx = 0
                 frame_buffer = {}
@@ -1776,6 +1799,7 @@ def _swap_face_video_by_sources(
 
 
 def _normalize_output_frame(frame, width, height):
+    """Normalize output frame dimensions."""
     out = frame
     if out is None:
         out = np.zeros((height, width, 3), dtype=np.uint8)
@@ -1791,6 +1815,7 @@ def _normalize_output_frame(frame, width, height):
 
 
 def _detect_face_boxes_in_frame(frame, search_areas, tf_instance=None, tf_lock=None):
+    """Detect face boxes in a frame."""
     frame_h, frame_w = frame.shape[:2]
     boxes = []
     for area in search_areas:
@@ -1846,6 +1871,7 @@ def _get_faces_with_boxes(frame, tf_instance=None, tf_lock=None):
 
 
 def _extract_face_box(face_obj, frame_w, frame_h):
+    """Extract face box coordinates."""
     candidates = [
         face_obj,
         getattr(face_obj, "bbox", None),
@@ -1869,6 +1895,7 @@ def _extract_face_box(face_obj, frame_w, frame_h):
 
 
 def _parse_box_like(raw, frame_w, frame_h):
+    """Parse box-like coordinates from raw data."""
     if raw is None:
         return None
 
@@ -1912,6 +1939,7 @@ def _parse_box_like(raw, frame_w, frame_h):
 
 
 def _from_xyxy(x1, y1, x2, y2, frame_w, frame_h):
+    """Convert xyxy format to xywh format."""
     x = _to_int(min(x1, x2))
     y = _to_int(min(y1, y2))
     w = _to_int(abs(x2 - x1))
@@ -1920,6 +1948,7 @@ def _from_xyxy(x1, y1, x2, y2, frame_w, frame_h):
 
 
 def _clamp_box(x, y, w, h, frame_w, frame_h):
+    """Clamp box coordinates to frame boundaries."""
     if frame_w <= 0 or frame_h <= 0:
         return None
     if w <= 0 or h <= 0:
@@ -1932,6 +1961,7 @@ def _clamp_box(x, y, w, h, frame_w, frame_h):
 
 
 def _to_int(value):
+    """Convert value to int safely."""
     try:
         return int(round(float(value)))
     except Exception:
@@ -1939,6 +1969,7 @@ def _to_int(value):
 
 
 def _to_float(value):
+    """Convert value to float safely."""
     try:
         return float(value)
     except Exception:
@@ -1946,6 +1977,7 @@ def _to_float(value):
 
 
 def _expand_square_box(x, y, w, h, max_w, max_h, scale=1.35, min_size=48):
+    """Expand a box to a square with given scale."""
     if w <= 0 or h <= 0:
         return None
     cx = x + w / 2.0
@@ -1977,6 +2009,7 @@ def _expand_square_box(x, y, w, h, max_w, max_h, scale=1.35, min_size=48):
 
 
 def _iou(box_a, box_b):
+    """Calculate intersection over union of two boxes."""
     ax, ay, aw, ah = box_a
     bx, by, bw, bh = box_b
     a2x, a2y = ax + aw, ay + ah
@@ -2000,6 +2033,7 @@ def _iou(box_a, box_b):
 
 
 def _dedupe_boxes(boxes, iou_threshold=0.45):
+    """Remove duplicate boxes based on IoU threshold."""
     out = []
     for box in boxes:
         keep = True
@@ -2013,6 +2047,7 @@ def _dedupe_boxes(boxes, iou_threshold=0.45):
 
 
 def _center_distance(box_a, box_b):
+    """Calculate center distance between two boxes."""
     ax, ay, aw, ah = box_a
     bx, by, bw, bh = box_b
     acx = ax + aw / 2.0
@@ -2023,6 +2058,7 @@ def _center_distance(box_a, box_b):
 
 
 def _build_tracks_from_seed_regions(seed_regions, detections):
+    """Build face tracks from seed regions."""
     if not seed_regions:
         return {}
 
@@ -2077,6 +2113,7 @@ def _build_tracks_from_seed_regions(seed_regions, detections):
 
 
 def _match_tracks_to_detections(tracks, detections):
+    """Match existing tracks to new detections."""
     if not tracks or not detections:
         return []
 
@@ -2386,6 +2423,7 @@ def _swap_face_video_deep(
 
 
 def _load_destination_faces(face_paths, tf_instance=None, tf_lock=None):
+    """Load destination face embeddings."""
     if tf_instance is None:
         tf_instance = _tf
     if tf_lock is None:
@@ -2408,10 +2446,12 @@ def _load_destination_faces(face_paths, tf_instance=None, tf_lock=None):
 
 
 def _sort_boxes_by_position(boxes):
+    """Sort boxes by position."""
     return sorted(boxes or [], key=lambda item: (int(item[1]), int(item[0])))
 
 
 def _sort_detections_by_position(detections):
+    """Sort detections by position."""
     return sorted(
         detections or [],
         key=lambda item: (
@@ -2422,6 +2462,7 @@ def _sort_detections_by_position(detections):
 
 
 def _build_deep_tracks_from_seed_regions(seed_regions, detections, target_count):
+    """Build deep tracks from seed regions."""
     tracks = {}
     used_det = set()
     track_id = 1
@@ -2467,6 +2508,7 @@ def _build_deep_tracks_from_seed_regions(seed_regions, detections, target_count)
 
 
 def _build_deep_tracks_from_detections(detections, target_count):
+    """Build deep tracks from detections."""
     tracks = {}
     sorted_detections = _sort_detections_by_position(detections)
     for index, det in enumerate(sorted_detections, start=1):
@@ -2480,6 +2522,7 @@ def _build_deep_tracks_from_detections(detections, target_count):
 
 
 def _plan_video_segments(total_frames, segment_frames, overlap_frames):
+    """Plan video segments for processing."""
     segments = []
     if total_frames <= 0:
         return segments
@@ -2654,6 +2697,7 @@ def _process_deep_video_segment(
 
 
 def _concat_video_segments(segment_paths, output_path, fps, width, height):
+    """Concatenate video segments into final output."""
     writer = None
     caps = []
     try:
