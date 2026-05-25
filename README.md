@@ -5,6 +5,8 @@
 Magic Mirror 是一面写在像素里的魔镜：让影像轻轻流转，让面容在光里重生。它是一款跨平台 AI 换脸应用，支持图片与视频的一键换脸，覆盖桌面端（Windows / macOS / Linux）、Web 端与 Android 端。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Build Web](https://img.shields.io/github/actions/workflow/status/keggin-CHN/Magic-Mirror/build-web.yaml?label=Build%20Web)](https://github.com/keggin-CHN/Magic-Mirror/actions/workflows/build-web.yaml)
+[![Build Server](https://img.shields.io/github/actions/workflow/status/keggin-CHN/Magic-Mirror/build-server.yaml?label=Build%20Server)](https://github.com/keggin-CHN/Magic-Mirror/actions/workflows/build-server.yaml)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)](https://react.dev)
 [![Tauri](https://img.shields.io/badge/Tauri-2.0-FC131?logo=tauri)](https://tauri.app)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)](https://www.python.org)
@@ -94,12 +96,22 @@ pnpm build
 cd src-python
 pip install -r requirements.txt
 
-# 启动桌面后端（端口 8023）
+# 启动桌面后端（默认端口 8023）
 python -m magic.app
+
+# 自定义端口
+MIRROR_HOST=0.0.0.0 MIRROR_PORT=9000 python -m magic.app
 
 # 启动 Web 后端（端口 8033，带鉴权）
 python web_server.py
 ```
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `MIRROR_HOST` | `0.0.0.0` | 监听地址 |
+| `MIRROR_PORT` | `8023` | 桌面后端监听端口 |
 
 模型文件需放在 `src-python/models/` 下，包括 `det_500m.onnx`、`w600k_r50.onnx`、`inswapper_128.onnx` 等。模型下载方式见 [安装指南](docs/cn/install.md)。
 
