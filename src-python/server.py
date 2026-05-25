@@ -8,6 +8,7 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 
 def _is_dir_writable(path: str) -> bool:
+    """Check if a directory is writable."""
     try:
         if not path:
             return False
@@ -60,6 +61,7 @@ def _boot_log_path() -> str:
 
 
 def _append_boot_log(text: str) -> None:
+    """Append a message to the boot log file."""
     try:
         path = _boot_log_path()
         with open(path, "a", encoding="utf-8") as f:

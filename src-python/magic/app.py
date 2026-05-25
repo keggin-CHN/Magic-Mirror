@@ -147,6 +147,7 @@ def _clear_video_task_cancelled(task_id: str):
 
 
 def _is_video_task_cancelled(task_id: str) -> bool:
+    """Check if a video task has been cancelled."""
     with VIDEO_TASK_CANCELLED_LOCK:
         return task_id in VIDEO_TASK_CANCELLED
 
@@ -178,6 +179,7 @@ def _clone_json_payload(payload):
 
 
 def _build_video_task_config_token(payload: dict) -> str:
+    """Build a signed config token for a video task."""
     return build_video_task_config_token(payload, VIDEO_TASK_CONFIG_SECRET)
 
 
@@ -204,6 +206,7 @@ def _cleanup_video_task_configs():
 
 
 def _store_video_task_config(payload: dict, config_id: str | None = None) -> str:
+    """Store a video task configuration."""
     _cleanup_video_task_configs()
     if not isinstance(payload, dict):
         raise RuntimeError("missing-params")
@@ -372,6 +375,7 @@ def _ensure_video_task_config_matches(
 
 
 def _ext(path: str) -> str:
+    """Get the file extension from a path."""
     return os.path.splitext(path)[1].lower()
 
 

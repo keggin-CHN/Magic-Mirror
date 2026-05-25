@@ -874,6 +874,7 @@ def _write_image(img_path: str, img):
     suffix = (os.path.splitext(img_path)[-1] or ".png").lower()
 
     def _try_write(path: str, ext: str) -> bool:
+        """Try to write an image to a file."""
         ok, buf = cv2.imencode(ext, img)
         if not ok or buf is None:
             return False

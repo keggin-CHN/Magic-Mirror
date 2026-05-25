@@ -132,6 +132,7 @@ def _save_config(cfg: dict) -> None:
 
 
 def _issue_token() -> str:
+    """Generate a new authentication token."""
     token = uuid.uuid4().hex
     with TOKENS_LOCK:
         TOKENS[token] = time.time()
@@ -139,6 +140,7 @@ def _issue_token() -> str:
 
 
 def _cleanup_tokens() -> None:
+    """Remove expired authentication tokens."""
     now = time.time()
     with TOKENS_LOCK:
         expired = [
@@ -151,6 +153,7 @@ def _cleanup_tokens() -> None:
 
 
 def _extract_token() -> Optional[str]:
+    """Extract the authentication token from the request."""
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
@@ -158,6 +161,7 @@ def _extract_token() -> Optional[str]:
 
 
 def _require_auth() -> bool:
+    """Validate the request token and reject unauthorized calls."""
     _cleanup_tokens()
     token = _extract_token()
     if not token:
@@ -172,6 +176,7 @@ def _require_auth() -> bool:
 
 
 def _ext(path: str) -> str:
+    """Get the file extension from a path."""
     return os.path.splitext(path)[1].lower()
 
 
@@ -186,6 +191,7 @@ def _validate_file(path: str, allowed_exts: set, *, missing_code: str):
 
 
 def _simplify_task_error(err: object) -> str:
+    """Simplify a task error to a human-readable string."""
     msg = (str(err) if err is not None else "").lower()
     codes = [
         "missing-params",
@@ -270,6 +276,7 @@ def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None)
 
 
 def _register_upload(file_id: str, path: str, kind: str) -> None:
+    """Register an uploaded file for later retrieval."""
     with UPLOADS_LOCK:
         UPLOADS[file_id] = {"path": path, "kind": kind, "createdAt": time.time()}
 
@@ -280,10 +287,12 @@ def _clone_json_payload(payload):
 
 
 def _build_video_task_config_token(payload: Dict[str, object]) -> str:
+    """Build a signed config token for a video task."""
     return build_video_task_config_token(payload, VIDEO_TASK_CONFIG_SECRET)
 
 
 def _parse_video_task_config_token(config_id: str) -> Optional[Dict[str, object]]:
+    """Parse and verify a video task config token."""
     return parse_video_task_config_token(
         str(config_id),
         VIDEO_TASK_CONFIG_SECRET,
@@ -292,6 +301,7 @@ def _parse_video_task_config_token(config_id: str) -> Optional[Dict[str, object]
 
 
 def _register_result(result_path: str, delete_paths: List[str]) -> str:
+    """Register a result file for download and cleanup."""
     result_id = uuid.uuid4().hex
     with RESULTS_LOCK:
         RESULTS[result_id] = {
@@ -304,24 +314,28 @@ def _register_result(result_path: str, delete_paths: List[str]) -> str:
 
 
 def _get_upload_path(file_id: str) -> Optional[str]:
+    """Get the file path for an uploaded file."""
     with UPLOADS_LOCK:
         item = UPLOADS.get(file_id)
         return item.get("path") if item else None
 
 
 def _get_upload_kind(file_id: str) -> Optional[str]:
+    """Get the file kind for an uploaded file."""
     with UPLOADS_LOCK:
         item = UPLOADS.get(file_id)
         return item.get("kind") if item else None
 
 
 def _get_result_info(file_id: str) -> Optional[Dict[str, object]]:
+    """Get info about a registered result."""
     with RESULTS_LOCK:
         info = RESULTS.get(file_id)
         return info.copy() if info else None
 
 
 def _remove_upload_by_path(path: str) -> None:
+    """Remove an upload registration by path."""
     with UPLOADS_LOCK:
         to_remove = [key for key, item in UPLOADS.items() if item.get("path") == path]
         for key in to_remove:
@@ -329,6 +343,7 @@ def _remove_upload_by_path(path: str) -> None:
 
 
 def _safe_delete(path: str) -> None:
+    """Safely delete a file, ignoring errors."""
     try:
         if path and os.path.exists(path):
             os.remove(path)
@@ -456,6 +471,7 @@ def _maybe_run_gc() -> None:
 
 
 def _invalidate_library_cache() -> None:
+    """Invalidate the face library cache."""
     global _LIBRARY_CACHE_MTIME, _LIBRARY_CACHE_ITEMS
     with _LIBRARY_CACHE_LOCK:
         _LIBRARY_CACHE_MTIME = None
@@ -463,6 +479,7 @@ def _invalidate_library_cache() -> None:
 
 
 def _list_library_items() -> List[Dict[str, str]]:
+    """List all items in the face library."""
     if not os.path.isdir(LIBRARY_DIR):
         _invalidate_library_cache()
         return []
@@ -503,6 +520,7 @@ def _list_library_items() -> List[Dict[str, str]]:
 
 
 def _get_library_path(item_id: str) -> Optional[str]:
+    """Get the file path for a library item."""
     if not item_id:
         return None
     path = os.path.join(LIBRARY_DIR, os.path.basename(item_id))
@@ -554,6 +572,7 @@ def _clear_video_task_cancelled(task_id: str):
 
 
 def _is_video_task_cancelled(task_id: str) -> bool:
+    """Check if a video task has been cancelled."""
     with VIDEO_TASK_CANCELLED_LOCK:
         return task_id in VIDEO_TASK_CANCELLED
 
@@ -580,6 +599,7 @@ def _run_video_task_async(task_id: str, task_callable, on_completion):
 
 
 def _cleanup_video_task_configs() -> None:
+    """Clean up expired video task configurations."""
     now = time.time()
     with VIDEO_TASK_CONFIGS_LOCK:
         expired = [
@@ -592,6 +612,7 @@ def _cleanup_video_task_configs() -> None:
 
 
 def _store_video_task_config(payload: Dict[str, object], config_id: Optional[str] = None) -> str:
+    """Store a video task configuration."""
     _cleanup_video_task_configs()
     next_id = str(config_id or _build_video_task_config_token(payload))
     with VIDEO_TASK_CONFIGS_LOCK:
@@ -603,6 +624,7 @@ def _store_video_task_config(payload: Dict[str, object], config_id: Optional[str
 
 
 def _get_video_task_config(config_id: str) -> Optional[Dict[str, object]]:
+    """Get a stored video task configuration."""
     if not config_id:
         return None
     _cleanup_video_task_configs()
@@ -647,6 +669,7 @@ def _extract_stored_face_sources(face_sources):
 
 
 def _resolve_face_reference_path(face_ref: str) -> Optional[str]:
+    """Resolve a face reference to a file path."""
     if not face_ref:
         return None
     library_path = _get_library_path(str(face_ref))
@@ -658,6 +681,7 @@ def _resolve_face_reference_path(face_ref: str) -> Optional[str]:
 
 
 def _resolve_target_face_items(target_faces) -> List[Dict[str, str]]:
+    """Resolve target face items to file paths."""
     if not isinstance(target_faces, list) or len(target_faces) == 0:
         raise RuntimeError("missing-params")
 
@@ -808,6 +832,7 @@ def _ensure_video_task_config_matches(
 
 
 def _cleanup_result(result_id: str, delete_paths: List[str]) -> None:
+    """Clean up a result and its associated files."""
     with RESULTS_LOCK:
         RESULTS.pop(result_id, None)
     for path in delete_paths:

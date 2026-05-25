@@ -15,15 +15,18 @@ def clone_json_payload(payload: Any):
 
 
 def b64url_encode(raw: bytes) -> str:
+    """Encode bytes to URL-safe base64 without padding."""
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
 def b64url_decode(encoded: str) -> bytes:
+    """Decode URL-safe base64 without padding."""
     padding = "=" * (-len(encoded) % 4)
     return base64.urlsafe_b64decode((encoded + padding).encode("ascii"))
 
 
 def sign_video_task_config_payload(payload_b64: str, secret: str) -> str:
+    """Sign a payload with HMAC-SHA256."""
     return hmac.new(
         str(secret).encode("utf-8"),
         payload_b64.encode("utf-8"),
@@ -32,6 +35,7 @@ def sign_video_task_config_payload(payload_b64: str, secret: str) -> str:
 
 
 def compute_file_sha256(path: str, chunk_size: int = 1024 * 1024) -> str:
+    """Compute SHA256 hash of a file."""
     sha256 = hashlib.sha256()
     with open(path, "rb") as f:
         while True:
@@ -43,6 +47,7 @@ def compute_file_sha256(path: str, chunk_size: int = 1024 * 1024) -> str:
 
 
 def verify_file_sha256(path: str, expected_sha256: Optional[str]) -> bool:
+    """Verify a file matches its expected SHA256 hash."""
     normalized = _normalize_sha256(expected_sha256)
     if not normalized:
         return True
@@ -50,6 +55,7 @@ def verify_file_sha256(path: str, expected_sha256: Optional[str]) -> bool:
 
 
 def canonicalize_video_task_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a video task config to a canonical form."""
     if not isinstance(payload, dict):
         raise RuntimeError("missing-params")
 
@@ -100,6 +106,7 @@ def canonicalize_video_task_config(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_video_task_config_token(payload: Dict[str, Any], secret: str) -> str:
+    """Build a signed config token for a video task."""
     canonical = canonicalize_video_task_config(payload)
     raw = json.dumps(
         canonical,
@@ -159,14 +166,17 @@ def parse_video_task_config_token(
 
 
 def get_expected_input_video_sha256(config: Dict[str, Any]) -> Optional[str]:
+    """Get the expected SHA256 for the input video."""
     return _extract_sha256(config.get("inputVideo"))
 
 
 def get_expected_target_face_sha256(config: Dict[str, Any]) -> Optional[str]:
+    """Get the expected SHA256 for the target face."""
     return _extract_sha256(config.get("targetFace"))
 
 
 def get_expected_target_faces_sha256_map(config: Dict[str, Any]) -> Dict[str, str]:
+    """Get a map of target face SHA256 hashes."""
     out: Dict[str, str] = {}
     target_faces = config.get("targetFaces")
     if not isinstance(target_faces, list):
@@ -184,6 +194,7 @@ def get_expected_target_faces_sha256_map(config: Dict[str, Any]) -> Dict[str, st
 
 
 def get_expected_face_source_sha256_map(config: Dict[str, Any]) -> Dict[str, str]:
+    """Get a map of face source SHA256 hashes."""
     out: Dict[str, str] = {}
     face_sources = config.get("faceSources")
     if not isinstance(face_sources, list):
@@ -201,6 +212,7 @@ def get_expected_face_source_sha256_map(config: Dict[str, Any]) -> Dict[str, str
 
 
 def _parse_signed_token(config_id: str, *, prefix: str, secret: str) -> Optional[Dict[str, Any]]:
+    """Parse and verify a signed token."""
     token_prefix = f"{prefix}."
     if not config_id.startswith(token_prefix):
         return None
@@ -226,6 +238,7 @@ def _parse_signed_token(config_id: str, *, prefix: str, secret: str) -> Optional
 
 
 def _canonicalize_input_video(payload: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """Canonicalize input video config."""
     input_sha256 = _normalize_sha256(payload.get("inputVideoHash"))
     if input_sha256:
         return {"sha256": input_sha256}
@@ -246,6 +259,7 @@ def _canonicalize_input_video(payload: Dict[str, Any]) -> Optional[Dict[str, str
 
 
 def _canonicalize_target_face(payload: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """Canonicalize target face config."""
     target_sha256 = _normalize_sha256(payload.get("targetFaceHash"))
     if target_sha256:
         return {"sha256": target_sha256}
@@ -266,6 +280,7 @@ def _canonicalize_target_face(payload: Dict[str, Any]) -> Optional[Dict[str, str
 
 
 def _canonicalize_face_sources(face_sources: Iterable[Any]) -> List[Dict[str, str]]:
+    """Canonicalize face source configs."""
     normalized: List[Dict[str, str]] = []
 
     for item in face_sources:
@@ -297,6 +312,7 @@ def _canonicalize_face_sources(face_sources: Iterable[Any]) -> List[Dict[str, st
 
 
 def _canonicalize_regions(regions: Any) -> List[Dict[str, Any]]:
+    """Canonicalize face regions."""
     if not isinstance(regions, list):
         return []
 
@@ -336,6 +352,7 @@ def _canonicalize_regions(regions: Any) -> List[Dict[str, Any]]:
 
 
 def _coerce_non_negative_int(value: Any) -> int:
+    """Coerce a value to a non-negative int."""
     try:
         return max(0, int(float(value or 0)))
     except (TypeError, ValueError):
@@ -343,6 +360,7 @@ def _coerce_non_negative_int(value: Any) -> int:
 
 
 def _normalize_gpu_provider(value: Any) -> str:
+    """Normalize GPU provider name."""
     mode = str(value or "auto").strip().lower()
     if mode in {"dml", "directml"}:
         return "directml"
@@ -354,6 +372,7 @@ def _normalize_gpu_provider(value: Any) -> str:
 
 
 def _extract_sha256(item: Any) -> Optional[str]:
+    """Extract SHA256 hash from an item."""
     if not isinstance(item, dict):
         return None
 
@@ -365,6 +384,7 @@ def _extract_sha256(item: Any) -> Optional[str]:
 
 
 def _normalize_sha256(value: Any) -> Optional[str]:
+    """Normalize a SHA256 hash value."""
     if value is None:
         return None
     normalized = str(value).strip().lower()
