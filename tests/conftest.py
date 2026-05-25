@@ -1,4 +1,5 @@
 """Shared test fixtures for Magic-Mirror test suite."""
+
 import os
 import sys
 
