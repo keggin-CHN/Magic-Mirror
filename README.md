@@ -1,93 +1,49 @@
-# Magic Mirror ✨
+# Magic Mirror
 
-> A mirror of pixels, a face reborn in light.
-
-Magic Mirror 是一面写在像素里的魔镜：让影像轻轻流转，让面容在光里重生。它是一款跨平台 AI 换脸应用，支持图片与视频的一键换脸，覆盖桌面端（Windows / macOS / Linux）、Web 端与 Android 端。
+> 一面写在像素里的魔镜：让影像轻轻流转，让面容在光里重生。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Build Web](https://img.shields.io/github/actions/workflow/status/keggin-CHN/Magic-Mirror/build-web.yaml?label=Build%20Web)](https://github.com/keggin-CHN/Magic-Mirror/actions/workflows/build-web.yaml)
 [![Build Server](https://img.shields.io/github/actions/workflow/status/keggin-CHN/Magic-Mirror/build-server.yaml?label=Build%20Server)](https://github.com/keggin-CHN/Magic-Mirror/actions/workflows/build-server.yaml)
-[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)](https://react.dev)
-[![Tauri](https://img.shields.io/badge/Tauri-2.0-FC131?logo=tauri)](https://tauri.app)
-[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)](https://www.python.org)
-[![Android](https://img.shields.io/badge/Android-API_24+-3DC84?logo=android)](https://developer.android.com)
-
-![Magic Mirror Demo](docs/assets/demo.webp)
 
 ---
 
-## 📚 文档
+## 简介
 
-- [中文](docs/cn/readme.md)
-- [English](docs/en/readme.md)
-
----
-
-## 🌟 功能特性
-
-- **图片换脸**：单脸、多脸、区域换脸（手动选区精准换脸）
-- **视频换脸**：基于 MediaCodec 的逐帧解码与重编码，支持音轨保留
-- **多人脸源绑定**：一次任务为不同区域绑定不同人脸源
-- **GPU 加速**：桌面端支持 CUDA / DirectML，自动检测可用提供者
-- **Web 模式**：浏览器直接访问后端 API，无需安装客户端
-- **多语言**：内置中文、英文等多语言切换（i18next）
-- **隐私优先**：所有处理本地完成，不上传任何图片到第三方服务
+Magic Mirror 是一款跨平台 AI 换脸应用，支持图片与视频的一键换脸。覆盖桌面端（Windows / macOS / Linux）、Web 端与 Android 端，所有处理均在本地完成，不上传任何图片到第三方服务。
 
 ---
 
-## 🖼 效果预览
+## 功能特性
 
-| 输入 | 人脸 | 结果 |
-|:---:|:---:|:---:|
-| ![input](docs/assets/mirror-input.jpg) | ![me](docs/assets/mirror-me.jpg) | ![result](docs/assets/mirror-result.jpg) |
-
----
-
-## 📦 项目结构
-
-```
-Magic-Mirror/
-├── src/                # 前端 React + TypeScript（Vite + UnoCSS）
-│   ├── pages/              # 页面（Mirror、Login 等）
-│   ├── hooks/              # 自定义 Hooks（useSwapFace 等）
-│   ├── services/           # API 客户端（Server / WebServerClient）
-│   └── i18n/               # 多语言资源
-├── src-python/             # Python 后端（Bottle + ONX Runtime）
-│   ├── magic/              # 换脸核心模块（face、app）
-│   └── web_server.py       # Web 模式 HTTP 服务（端口 8033）
-├── src-tauri/              # T Rust 桌面壳
-├── android-app/            # Android 原生应用（Java + ONX Runtime）
-│   └── app/src/main/java/com/magicmirror/app/
-│       └── engine/         # 端侧推理引擎（FaceSwapEngine、VideoProcessor 等）
-├── docs/                   # 项目文档（中英双语 + API）
-├── scripts/                # 构建脚本（build-server.sh、dist.js 等）
-└── .github/workflows/      # CI / CD（构建桌面包、Web 包、Android APK）
-```
+- **图片换脸** — 单脸、多脸、手动选区精准换脸
+- **视频换脸** — 基于 MediaCodec 逐帧解码与重编码，支持音轨保留
+- **多人脸源绑定** — 一次任务中为不同区域绑定不同人脸源
+- **GPU 加速** — 桌面端支持 CUDA / DirectML，自动检测可用加速
+- **Web 模式** — 浏览器直接访问后端 API，无需安装客户端
+- **多语言** — 内置中文、英文等多语言切换（i18next）
+- **隐私优先** — 所有处理本地完成，零上传
 
 ---
 
-## 🚀 快速开始
-
-> 想直接下载安装包？请查看 [安装指南 / Install Guide](docs/cn/install.md)。
+## 快速开始
 
 ### 环境要求
 
-- **Node.js**≥ 18，**pnpm** ≥ 8
-- **Python** ≥ 3.10（带 pip）
-- **Rust** ≥ 1.70（仅桌面端）
-- **Android Studio** + **JDK 17**（仅 Android 端）
+| 组件 | 最低版本 | 用途 |
+|------|---------|------|
+| Node.js | ≥ 18 | 前端构建 |
+| pnpm | ≥ 8 | 包管理 |
+| Python | ≥ 3.10 | 后端推理服务 |
+| Rust | ≥ 1.70 | Tauri 桌面壳（仅桌面端） |
+| Android Studio + JDK 17 | — | Android 端构建 |
 
 ### 前端开发
 
 ```bash
-# 安装依赖
 pnpm install
-
-# 启动开发服务器（默认端口 5173）
-pnpm dev
-
-# 生产构建
-pnpm build
+pnpm dev          # 开发服务器，默认端口 5173
+pnpm build        # 生产构建
 ```
 
 ### Python 后端
@@ -96,33 +52,22 @@ pnpm build
 cd src-python
 pip install -r requirements.txt
 
-# 启动桌面后端（默认端口 8023）
+# 桌面后端（端口 8023）
 python -m magic.app
+
+# Web 后端（端口 8033，带 JWT 鉴权）
+python web_server.py
 
 # 自定义端口
 MIRROR_HOST=0.0.0.0 MIRROR_PORT=9000 python -m magic.app
-
-# 启动 Web 后端（端口 8033，带鉴权）
-python web_server.py
 ```
-
-### 环境变量
-
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `MIRROR_HOST` | `0.0.0.0` | 监听地址 |
-| `MIRROR_PORT` | `8023` | 桌面后端监听端口 |
-
-模型文件需放在 `src-python/models/` 下，包括 `det_500m.onnx`、`w600k_r50.onnx`、`inswapper_128.onnx` 等。模型下载方式见 [安装指南](docs/cn/install.md)。
 
 ### Docker
 
 ```bash
 docker build -t magic-mirror:latest .
-docker run -p 8023:8023 magic-mirror:latest
-
-# 使用 Web 模式（端口 8033）
-docker run -p 8033:8033 magic-mirror:latest python web_server.py
+docker run -p 8023:8023 magic-mirror:latest            # 桌面后端
+docker run -p 8033:8033 magic-mirror:latest python web_server.py  # Web 模式
 ```
 
 ### Makefile
@@ -137,11 +82,8 @@ make docker-build   # 构建 Docker 镜像
 ### Tauri 桌面端
 
 ```bash
-# 开发模式
-pnpm tauri dev
-
-# 打包
-pnpm tauri build
+pnpm tauri dev      # 开发模式
+pnpm tauri build    # 打包
 ```
 
 ### Android 端
@@ -149,43 +91,72 @@ pnpm tauri build
 ```bash
 cd android-app
 ./gradlew assembleDebug
-# 输出: android-app/app/build/outputs/apk/debug/app-debug.apk
+# 产物: android-app/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ---
 
-## 🛠 技术栈
+## 项目结构
 
-| 层 | 技术 |
-|---|---|
-| 前端 UI | React 18、TypeScript、UnoCSS、Vite |
-| 状态管理 | xsta |
-| 多语言 | i18next + react-i18next |
-|桌面壳 | Tauri 2.0（Rust） |
-| 后端 | Python 3.10、Bottle、ONNX Runtime |
-| 模型 | InsightFace（det_500m + w600k_r50）+ inswapper_128 |
-| Android | Java、ONNX Runtime Android、MediaCodec |
-| CI/CD | GitHub Actions（多平台构建） |
-
----
-
-## 🔐 Web 模式安全特性
-
-`src-python/web_server.py` 内置生产级加固：
-
-- **JWT 鉴权**：登录获取 token，所有 API 必须携带 `Authorization: Bearer <token>`
-- **TL 垃圾回收**：上传 24h、结果 4h、进度 6h 自动清理
-- **路径穿越防护**：`os.path.commonpath` 校验所有文件访问
-- **文件名清洗**：正则过滤危险字符
-- **上传大小限制**：图片 50MB / 视频 2GB
-- **节流 GC**：`before_request` 钩子按需触发清理
+```
+Magic-Mirror/
+├── src/                    # 前端 React + TypeScript（Vite + UnoCSS）
+│   ├── pages/              # 页面组件（Mirror、Login、Launch 等）
+│   ├── hooks/              # 自定义 Hooks（useSwapFace 等）
+│   ├── services/           # API 客户端与工具函数
+│   └── assets/locales/     # 多语言资源（zh / en）
+├── src-python/             # Python 后端（Bottle + ONNX Runtime）
+│   ├── magic/              # 换脸核心模块（face detection、swap engine）
+│   └── web_server.py       # Web 模式 HTTP 服务（端口 8033，JWT 鉴权）
+├── src-tauri/              # Tauri 2.0 Rust 桌面壳
+├── android-app/            # Android 原生应用（Java + ONNX Runtime）
+├── docs/                   # 项目文档（中英双语 + API 参考）
+├── scripts/                # 构建脚本
+└── .github/workflows/      # CI/CD（多平台构建）
+```
 
 ---
 
-## 📡 API 概览（Web 模式）
+## 模型文件
 
-| Endpoint | 方法 | 说明 |
-|---|---|---|
+推理所需模型需放在 `src-python/models/` 目录下：
+
+| 文件名 | 用途 |
+|--------|------|
+| `det_500m.onnx` | 人脸检测 |
+| `w600k_r50.onnx` | 人脸特征提取 |
+| `inswapper_128.onnx` | 人脸替换 |
+
+模型下载方式见 [安装指南](docs/cn/install.md)。
+
+---
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `MIRROR_HOST` | `0.0.0.0` | 监听地址 |
+| `MIRROR_PORT` | `8023` | 桌面后端端口 |
+
+---
+
+## Web 模式安全特性
+
+`src-python/web_server.py` 内置生产级安全加固：
+
+- **JWT 鉴权** — 登录获取 token，所有 API 需携带 `Authorization: Bearer <token>`
+- **TTL 垃圾回收** — 上传文件 24h、结果 4h、进度 6h 自动清理
+- **路径穿越防护** — `os.path.commonpath` 校验所有文件访问
+- **文件名清洗** — 正则过滤危险字符
+- **上传大小限制** — 图片 50MB / 视频 2GB
+- **节流 GC** — `before_request` 钩子按需触发清理
+
+---
+
+## API 概览（Web 模式）
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
 | `/api/login` | POST | 登录获取 token |
 | `/api/upload` | POST | 上传图片 / 视频 |
 | `/api/library` | GET / POST | 人脸库管理 |
@@ -196,17 +167,59 @@ cd android-app
 | `/api/task/video/progress/<id>` | GET | 查询视频任务进度 |
 | `/api/task/<id>` | DELETE | 取消任务 |
 | `/api/file/<id>` | GET | 获取结果文件 |
-| `/api/download/<id>` | GET | 下载结果文件
+| `/api/download/<id>` | GET | 下载结果文件 |
 
 完整字段定义、请求/响应示例与错误码见 [docs/API.md](docs/API.md)。
 
 ---
 
-## ⚙️ 性能优化
+## 技术栈
 
-- **桌面端**：GPU（CUDA / DirectML）加速，CPU 模式最多 6 worker，GPU 模式 2 worker
-- **视频处理**：分段并行 + 关键帧追踪，多人换脸单 worker 顺序提交以保证时序一致
-- **Android**：YUV ↔ RGB 转换使用定点整数运算 + bulk-copy，相对浮点逐像素实现快 5-15×
-- **前端轮询**：自适应间隔（500ms - 2s）+ 指数退避，连续失败 8 次自动放弃
-- **网络层**：所有 fetch 包装超时（默认 30s / 上传 10min / 进度 15s）
+| 层 | 技术 |
+|----|------|
+| 前端 UI | React 18、TypeScript、UnoCSS、Vite |
+| 状态管理 | xsta |
+| 多语言 | i18next + react-i18next |
+| 桌面壳 | Tauri 2.0（Rust） |
+| 后端 | Python 3.10、Bottle、ONNX Runtime |
+| 模型 | InsightFace（det_500m + w600k_r50）+ inswapper_128 |
+| Android | Java、ONNX Runtime Android、MediaCodec |
+| CI/CD | GitHub Actions（多平台构建） |
 
+---
+
+## 性能优化
+
+- **桌面端** — GPU（CUDA / DirectML）加速，CPU 模式最多 6 worker，GPU 模式 2 worker
+- **视频处理** — 分段并行 + 关键帧追踪，多人换脸单 worker 顺序提交保证时序一致
+- **Android** — YUV ↔ RGB 使用定点整数运算 + bulk-copy，相对浮点逐像素实现快 5-15x
+- **前端轮询** — 自适应间隔（500ms - 2s）+ 指数退避，连续失败 8 次自动放弃
+- **网络层** — 所有 fetch 包装超时（默认 30s / 上传 10min / 进度 15s）
+
+---
+
+## 文档
+
+- [中文文档](docs/cn/readme.md) | [English Docs](docs/en/readme.md)
+- [安装指南](docs/cn/install.md) | [Install Guide](docs/en/install.md)
+- [使用说明](docs/cn/usage.md) | [Usage Guide](docs/en/usage.md)
+- [常见问题](docs/cn/faq.md) | [FAQ](docs/en/faq.md)
+- [API 参考](docs/API.md)
+
+---
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request！详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+---
+
+## 许可证
+
+[MIT License](LICENSE)
+
+---
+
+## 作者
+
+- **keggin** — [GitHub](https://github.com/keggin-CHN) | zhou239829001@gmail.com
