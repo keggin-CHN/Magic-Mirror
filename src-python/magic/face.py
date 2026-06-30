@@ -859,7 +859,33 @@ def _swap_face(input_path, face_path):
 
 
 def _get_one_face(face_path: str):
-    """Detect and return the first face in an image."""
+    """Detect and return the first face in an image or load from json."""
+    if face_path.endswith('.json'):
+        import json
+        import numpy as np
+        with open(face_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Determine the correct Face class to instantiate
+        try:
+            from tinyface.models.face import Face
+        except ImportError:
+            # Fallback if tinyface uses insightface's Face directly
+            from insightface.app.common import Face
+            
+        face = Face(
+            bbox=np.array(data['bbox']) if 'bbox' in data else np.zeros(4),
+            kps=np.array(data['kps']) if 'kps' in data else None,
+            det_score=data.get('det_score', 1.0)
+        )
+        face.embedding = np.array(data['embedding'])
+        if 'normed_embedding' in data:
+            face.normed_embedding = np.array(data['normed_embedding'])
+        else:
+            norm = np.linalg.norm(face.embedding)
+            face.normed_embedding = face.embedding / norm if norm > 0 else face.embedding
+        return face
+
     face_img = _read_image(face_path)
     with _tf_lock:
         return _tf.get_one_face(face_img)

@@ -1940,7 +1940,7 @@ export function MirrorPage() {
       <input
         ref={faceSourceInputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,application/json,.json"
         multiple
         className="hidden"
         onChange={handleFaceSourceInputChange}

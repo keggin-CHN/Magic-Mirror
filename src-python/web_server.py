@@ -51,6 +51,7 @@ ALLOWED_IMAGE_EXTS = {
     '.bmp',
     '.tif',
     '.tiff',
+    '.json',
 }
 
 ALLOWED_VIDEO_EXTS = {
