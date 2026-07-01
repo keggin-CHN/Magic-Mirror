@@ -15,19 +15,19 @@ name = "magic_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "=2.0.0", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [
+tauri = { version = "=2.0.0", features = [
   "macos-private-api",
   "protocol-asset",
   "image-png",
   "devtools",
 ] }
-tauri-plugin-process = "2"
-tauri-plugin-shell = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-os = "2.0.0"
+tauri-plugin-process = "=2.0.0"
+tauri-plugin-shell = "=2.0.0"
+tauri-plugin-dialog = "=2.0.0"
+tauri-plugin-os = "=2.0.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12.9", features = ["stream"] }
