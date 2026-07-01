@@ -26,7 +26,7 @@ export async function fetchWithTimeout(
 }
 
 const kVideoExtensions = [".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"];
-const kImageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"];
+const kImageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".json"];
 
 export function getFileExtension(filePath: string) {
   const index = filePath.lastIndexOf(".");

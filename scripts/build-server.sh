@@ -3,7 +3,7 @@ set -e  # 遇到错误立即退出
 
 echo "🔨 开始构建服务器..."
 
-python -m nuitka --standalone --assume-yes-for-downloads \
+python -m nuitka --standalone --unstripped --assume-yes-for-downloads \
   --include-package=onnx \
   --include-package=google.protobuf \
   --include-package=onnxruntime \
