@@ -26,3 +26,5 @@ android-app/app/build/
 
 # Local model files (too large for normal git push)
 *.onnx
+# Runtime data
+.mirror_data/
