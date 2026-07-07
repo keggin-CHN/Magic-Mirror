@@ -381,7 +381,7 @@ export function MirrorPage() {
     setDraftRegion(null);
     setIsEditingRegions(true);
     setSelectedRegionIndex(null);
-    setInputSize(null);
+    // setInputSize(null); // Keep the old size until the new media loads to prevent UI stuttering
     setVideoDurationMs(0);
     setVideoKeyFrameMs(0);
     selectingRef.current = false;

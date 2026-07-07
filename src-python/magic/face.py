@@ -10,6 +10,7 @@ import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from functools import lru_cache
 
 import cv2
@@ -299,22 +300,54 @@ def swap_face_regions(input_path, face_path, regions):
         swapped_count = 0
 
         for x, y, w, h in normalized_regions:
-            crop = input_img[y : y + h, x : x + w]
-            with _tf_lock:
-                reference_face = _tf.get_one_face(crop)
+            # 扩大裁剪区域以提供更多上下文（对侧脸改善显著）
+            ex, ey, ew, eh, ox, oy = _expand_crop_region(
+                x, y, w, h, width, height, scale=1.5
+            )
+            expanded_crop = input_img[ey : ey + eh, ex : ex + ew]
+            if expanded_crop.size == 0:
+                continue
+
+            # 在扩展区域中检测人脸，失败时降低阈值重试
+            reference_face = _get_face_with_retry(
+                _tf, _tf_lock, expanded_crop
+            )
             if reference_face is None:
-                continue
-
-            with _tf_lock:
-                output_crop = _tf.swap_face(
-                    vision_frame=crop,
-                    reference_face=reference_face,
-                    destination_face=destination_face,
+                # 扩展区域也检测不到，尝试原始紧凑区域
+                crop = input_img[y : y + h, x : x + w]
+                reference_face = _get_face_with_retry(
+                    _tf, _tf_lock, crop
                 )
-            if output_crop is None:
+                if reference_face is None:
+                    continue
+                # 回退到紧凑区域换脸
+                with _enhanced_face_config(_tf, _tf_lock, face=reference_face):
+                    with _tf_lock:
+                        output_crop = _tf.swap_face(
+                            vision_frame=crop,
+                            reference_face=reference_face,
+                            destination_face=destination_face,
+                        )
+                if output_crop is not None:
+                    output_img[y : y + h, x : x + w] = output_crop
+                    swapped_count += 1
                 continue
 
-            output_img[y : y + h, x : x + w] = output_crop
+            # 在扩展区域上执行换脸，对侧脸自动增强 mask 参数
+            with _enhanced_face_config(_tf, _tf_lock, face=reference_face):
+                with _tf_lock:
+                    output_expanded = _tf.swap_face(
+                        vision_frame=expanded_crop,
+                        reference_face=reference_face,
+                        destination_face=destination_face,
+                    )
+            if output_expanded is None:
+                continue
+
+            # 从扩展换脸结果中提取原始区域的内容贴回
+            output_img[y : y + h, x : x + w] = output_expanded[
+                oy : oy + h, ox : ox + w
+            ]
             swapped_count += 1
 
         if swapped_count == 0:
@@ -358,23 +391,54 @@ def swap_face_regions_by_sources(input_path, face_sources, regions):
             if destination_face is None:
                 raise RuntimeError('face-source-not-found')
 
-            crop = input_img[y : y + h, x : x + w]
-            with _tf_lock:
-                reference_face = _tf.get_one_face(crop)
+            # 扩大裁剪区域以提供更多上下文
+            ex, ey, ew, eh, ox, oy = _expand_crop_region(
+                x, y, w, h, width, height, scale=1.5
+            )
+            expanded_crop = input_img[ey : ey + eh, ex : ex + ew]
+            if expanded_crop.size == 0:
+                continue
+
+            # 在扩展区域中检测人脸，失败时降低阈值重试
+            reference_face = _get_face_with_retry(
+                _tf, _tf_lock, expanded_crop
+            )
             if reference_face is None:
-                continue
-
-            with _tf_lock:
-                output_crop = _tf.swap_face(
-                    vision_frame=crop,
-                    reference_face=reference_face,
-                    destination_face=destination_face,
+                # 回退到原始紧凑区域
+                crop = input_img[y : y + h, x : x + w]
+                reference_face = _get_face_with_retry(
+                    _tf, _tf_lock, crop
                 )
-
-            if output_crop is None:
+                if reference_face is None:
+                    continue
+                with _enhanced_face_config(_tf, _tf_lock, face=reference_face):
+                    with _tf_lock:
+                        output_crop = _tf.swap_face(
+                            vision_frame=crop,
+                            reference_face=reference_face,
+                            destination_face=destination_face,
+                        )
+                if output_crop is not None:
+                    output_img[y : y + h, x : x + w] = output_crop
+                    swapped_count += 1
                 continue
 
-            output_img[y : y + h, x : x + w] = output_crop
+            # 在扩展区域上执行换脸
+            with _enhanced_face_config(_tf, _tf_lock, face=reference_face):
+                with _tf_lock:
+                    output_expanded = _tf.swap_face(
+                        vision_frame=expanded_crop,
+                        reference_face=reference_face,
+                        destination_face=destination_face,
+                    )
+
+            if output_expanded is None:
+                continue
+
+            # 从扩展换脸结果中提取原始区域的内容贴回
+            output_img[y : y + h, x : x + w] = output_expanded[
+                oy : oy + h, ox : ox + w
+            ]
             swapped_count += 1
 
         if swapped_count == 0:
@@ -680,8 +744,10 @@ def _swap_face_video(
                                 with stats_lock:
                                     stats['failed_count'] += 1
                         else:
-                            with worker_lock:
-                                reference_face = worker_tf.get_one_face(frame)
+                            # 使用低阈值重试，捕获侧脸
+                            reference_face = _get_face_with_retry(
+                                worker_tf, worker_lock, frame
+                            )
 
                             if reference_face is None:
                                 if not _queue_put_with_stop(
@@ -695,12 +761,16 @@ def _swap_face_video(
                                     stats['failed_count'] += 1
                                 continue
 
-                            with worker_lock:
-                                output_frame = worker_tf.swap_face(
-                                    vision_frame=frame,
-                                    reference_face=reference_face,
-                                    destination_face=destination_face,
-                                )
+                            # 侧脸时自动增强 mask 融合参数
+                            with _enhanced_face_config(
+                                worker_tf, worker_lock, face=reference_face
+                            ):
+                                with worker_lock:
+                                    output_frame = worker_tf.swap_face(
+                                        vision_frame=frame,
+                                        reference_face=reference_face,
+                                        destination_face=destination_face,
+                                    )
 
                             out = output_frame if output_frame is not None else frame
                             with stats_lock:
@@ -843,16 +913,19 @@ def _swap_face_video(
 def _swap_face(input_path, face_path):
     """Swap a face in a single image."""
     vision = _read_image(input_path)
-    reference_face = _get_one_face(input_path)
+    # 使用低阈值重试，捕获侧脸
+    reference_face = _get_face_with_retry(_tf, _tf_lock, vision)
     destination_face = _get_one_face(face_path)
     if reference_face is None or destination_face is None:
         raise RuntimeError('no-face-detected')
-    with _tf_lock:
-        out = _tf.swap_face(
-            vision_frame=vision,
-            reference_face=reference_face,
-            destination_face=destination_face,
-        )
+    # 侧脸时自动增强 mask 融合参数
+    with _enhanced_face_config(_tf, _tf_lock, face=reference_face):
+        with _tf_lock:
+            out = _tf.swap_face(
+                vision_frame=vision,
+                reference_face=reference_face,
+                destination_face=destination_face,
+            )
     if out is None:
         raise RuntimeError('swap-failed')
     return out
@@ -969,6 +1042,122 @@ def _normalize_regions(regions, width, height):
     return normalized
 
 
+def _expand_crop_region(x, y, w, h, img_width, img_height, scale=1.5):
+    """扩大裁剪区域以提供更多上下文，改善侧脸检测和换脸效果。
+
+    返回 (new_x, new_y, new_w, new_h, offset_x, offset_y)。
+    offset_x/offset_y 是原始区域在扩展区域中的偏移量，
+    用于在换脸后精准地从扩展结果中提取原始区域的内容。
+    """
+    cx = x + w / 2.0
+    cy = y + h / 2.0
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    new_x = max(0, int(cx - new_w / 2.0))
+    new_y = max(0, int(cy - new_h / 2.0))
+    # 限制在图片范围内
+    new_w = min(new_w, img_width - new_x)
+    new_h = min(new_h, img_height - new_y)
+    # 计算原始区域在扩展区域中的偏移
+    offset_x = x - new_x
+    offset_y = y - new_y
+    return new_x, new_y, new_w, new_h, offset_x, offset_y
+
+
+def _estimate_face_yaw(face):
+    """从 5 点 landmark 粗略估算人脸偏转程度。
+
+    返回 yaw_ratio：
+    - 接近 1.0 = 正脸
+    - > 1.5 或 < 0.67 = 明显侧脸
+    返回 None 表示无法估算。
+    """
+    try:
+        lm = face.landmark_5 if hasattr(face, 'landmark_5') else (
+            face.kps if hasattr(face, 'kps') else None
+        )
+        if lm is None or len(lm) < 3:
+            return None
+        left_eye = np.array(lm[0], dtype=np.float64)
+        right_eye = np.array(lm[1], dtype=np.float64)
+        nose = np.array(lm[2], dtype=np.float64)
+        dist_left = np.linalg.norm(nose - left_eye)
+        dist_right = np.linalg.norm(nose - right_eye)
+        if dist_right < 1e-6:
+            return 999.0
+        return float(dist_left / dist_right)
+    except Exception:
+        return None
+
+
+def _is_side_face(face, threshold=1.6):
+    """判断人脸是否为侧脸。"""
+    yaw = _estimate_face_yaw(face)
+    if yaw is None:
+        return False
+    return yaw > threshold or yaw < (1.0 / threshold)
+
+
+def _get_face_with_retry(tf_instance, tf_lock, image, low_score=0.25):
+    """尝试检测人脸，失败时降低阈值重试。
+
+    对于侧脸，SCRFD 检测器的置信度往往低于默认阈值 0.5，
+    导致人脸被直接过滤掉。降低阈值可以捕获这些低置信度的人脸。
+    """
+    with tf_lock:
+        face = tf_instance.get_one_face(image)
+    if face is not None:
+        return face
+
+    # 降低阈值重试
+    original_score = tf_instance.config.face_detector_score
+    if original_score <= low_score:
+        return None  # 已经足够低了
+    try:
+        _debug_log(
+            f'[RETRY] 未检测到人脸，降低阈值从 {original_score} 到 {low_score} 重试'
+        )
+        with tf_lock:
+            tf_instance.config.face_detector_score = low_score
+            face = tf_instance.get_one_face(image)
+            tf_instance.config.face_detector_score = original_score
+        if face is not None:
+            _debug_log('[RETRY] 低阈值重试成功，检测到人脸')
+        return face
+    except Exception:
+        with tf_lock:
+            tf_instance.config.face_detector_score = original_score
+        return None
+
+
+@contextmanager
+def _enhanced_face_config(tf_instance, tf_lock, face=None, force=False):
+    """临时增大 face_mask_blur 和 face_mask_padding 以改善侧脸融合效果。
+
+    仅当检测到侧脸或 force=True 时才修改配置，用完自动恢复。
+    增大 blur 可以让换脸区域边缘更柔和；增大 padding 可以让融合覆盖更多原始皮肤。
+    """
+    should_enhance = force or (face is not None and _is_side_face(face))
+    if not should_enhance:
+        yield
+        return
+
+    _debug_log('[ENHANCE] 检测到侧脸/强制增强模式，临时增大 mask 参数')
+    with tf_lock:
+        original_blur = tf_instance.config.face_mask_blur
+        original_padding = tf_instance.config.face_mask_padding
+        tf_instance.config.face_mask_blur = max(original_blur, 0.5)
+        tf_instance.config.face_mask_padding = tuple(
+            max(p, 8) for p in original_padding
+        )
+    try:
+        yield
+    finally:
+        with tf_lock:
+            tf_instance.config.face_mask_blur = original_blur
+            tf_instance.config.face_mask_padding = original_padding
+
+
 def _swap_face_in_regions_for_frame(
     frame,
     normalized_regions,
@@ -978,28 +1167,59 @@ def _swap_face_in_regions_for_frame(
 ):
     """Swap faces in specified regions of a frame."""
     out = frame.copy()
+    frame_h, frame_w = frame.shape[:2]
     swapped_count = 0
 
     for x, y, w, h in normalized_regions:
-        crop = frame[y : y + h, x : x + w]
-        if crop.size == 0:
+        # 扩大裁剪区域（视频帧使用稍小的扩展比例以平衡性能）
+        ex, ey, ew, eh, ox, oy = _expand_crop_region(
+            x, y, w, h, frame_w, frame_h, scale=1.3
+        )
+        expanded_crop = frame[ey : ey + eh, ex : ex + ew]
+        if expanded_crop.size == 0:
             continue
 
-        with worker_lock:
-            reference_face = worker_tf.get_one_face(crop)
+        # 在扩展区域中检测人脸，失败时降低阈值重试
+        reference_face = _get_face_with_retry(
+            worker_tf, worker_lock, expanded_crop
+        )
         if reference_face is None:
-            continue
-
-        with worker_lock:
-            swapped_crop = worker_tf.swap_face(
-                vision_frame=crop,
-                reference_face=reference_face,
-                destination_face=destination_face,
+            # 回退到原始紧凑区域
+            crop = frame[y : y + h, x : x + w]
+            if crop.size == 0:
+                continue
+            reference_face = _get_face_with_retry(
+                worker_tf, worker_lock, crop
             )
-        if swapped_crop is None:
+            if reference_face is None:
+                continue
+            with _enhanced_face_config(worker_tf, worker_lock, face=reference_face):
+                with worker_lock:
+                    swapped_crop = worker_tf.swap_face(
+                        vision_frame=crop,
+                        reference_face=reference_face,
+                        destination_face=destination_face,
+                    )
+            if swapped_crop is not None:
+                out[y : y + h, x : x + w] = swapped_crop
+                swapped_count += 1
             continue
 
-        out[y : y + h, x : x + w] = swapped_crop
+        # 在扩展区域上执行换脸
+        with _enhanced_face_config(worker_tf, worker_lock, face=reference_face):
+            with worker_lock:
+                swapped_expanded = worker_tf.swap_face(
+                    vision_frame=expanded_crop,
+                    reference_face=reference_face,
+                    destination_face=destination_face,
+                )
+        if swapped_expanded is None:
+            continue
+
+        # 从扩展结果中提取原始区域贴回
+        out[y : y + h, x : x + w] = swapped_expanded[
+            oy : oy + h, ox : ox + w
+        ]
         swapped_count += 1
 
     return out, swapped_count
@@ -2260,26 +2480,46 @@ def swap_face_deep(input_path, face_paths, regions=None):
         for index, (x, y, w, h) in enumerate(
             _sort_boxes_by_position(normalized_regions)
         ):
-            crop = input_img[y : y + h, x : x + w]
-            if crop.size == 0:
+            # 扩大裁剪区域以提供更多上下文
+            ex, ey, ew, eh, ox, oy = _expand_crop_region(
+                x, y, w, h, width, height, scale=1.5
+            )
+            expanded_crop = input_img[ey : ey + eh, ex : ex + ew]
+            if expanded_crop.size == 0:
                 continue
 
-            with _tf_lock:
-                reference_face = _tf.get_one_face(crop)
+            reference_face = _get_face_with_retry(
+                _tf, _tf_lock, expanded_crop
+            )
+            use_expanded = reference_face is not None
             if reference_face is None:
-                continue
+                crop = input_img[y : y + h, x : x + w]
+                if crop.size == 0:
+                    continue
+                reference_face = _get_face_with_retry(
+                    _tf, _tf_lock, crop
+                )
+                if reference_face is None:
+                    continue
 
             destination_face = destination_faces[index % len(destination_faces)]
-            with _tf_lock:
-                output_crop = _tf.swap_face(
-                    vision_frame=crop,
-                    reference_face=reference_face,
-                    destination_face=destination_face,
-                )
+            swap_frame = expanded_crop if use_expanded else input_img[y : y + h, x : x + w]
+            with _enhanced_face_config(_tf, _tf_lock, face=reference_face):
+                with _tf_lock:
+                    output_crop = _tf.swap_face(
+                        vision_frame=swap_frame,
+                        reference_face=reference_face,
+                        destination_face=destination_face,
+                    )
             if output_crop is None:
                 continue
 
-            output_img[y : y + h, x : x + w] = output_crop
+            if use_expanded:
+                output_img[y : y + h, x : x + w] = output_crop[
+                    oy : oy + h, ox : ox + w
+                ]
+            else:
+                output_img[y : y + h, x : x + w] = output_crop
             swapped_count += 1
 
         if swapped_count == 0 and regions:
