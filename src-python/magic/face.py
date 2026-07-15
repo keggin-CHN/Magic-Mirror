@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import traceback
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from functools import lru_cache
@@ -66,6 +67,27 @@ def _clear_queue(q):
                 break
     except Exception as e:
         print(f'[WARN] 清空队列失败: {str(e)}')
+
+
+def _cancel_requested(cancel_event) -> bool:
+    """Return whether cooperative cancellation has been requested."""
+    return bool(cancel_event is not None and cancel_event.is_set())
+
+
+def _raise_if_cancelled(cancel_event) -> None:
+    """Abort the current video operation when cancellation is requested."""
+    if _cancel_requested(cancel_event):
+        raise RuntimeError('cancelled')
+
+
+def _remove_file_quietly(path) -> None:
+    """Remove a partial output file without masking the original error."""
+    if not path or not os.path.exists(path):
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def load_models():
@@ -571,6 +593,7 @@ def swap_face_video(
     stage_callback=None,
     use_gpu=False,
     gpu_provider='auto',
+    cancel_event=None,
 ):
     """Swap faces in a video file.
 
@@ -578,6 +601,7 @@ def swap_face_video(
     Supports GPU acceleration, custom regions, and progress callbacks.
     """
     try:
+        _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'validating-input')
         print(
             f'[INFO] 开始视频换脸: input={input_path}, face={face_path}, use_gpu={use_gpu}, gpu_provider={gpu_provider}'
@@ -602,20 +626,25 @@ def swap_face_video(
             stage_callback=stage_callback,
             use_gpu=use_gpu,
             gpu_provider=gpu_provider,
+            cancel_event=cancel_event,
         )
+
+        _raise_if_cancelled(cancel_event)
 
         if not output_path or not os.path.exists(output_path):
             raise RuntimeError('video-output-missing')
 
         # 尝试把原视频音轨复用到输出（原视频有音轨时失败应报错，避免静默无声）
         _emit_stage(stage_callback, 'muxing-audio')
-        _mux_audio_or_raise(input_path, output_path)
+        _mux_audio_or_raise(input_path, output_path, cancel_event=cancel_event)
 
+        _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'finalizing')
         print(f'[SUCCESS] 视频换脸成功: {output_path}')
         return output_path
 
     except Exception as e:
+        _remove_file_quietly(locals().get('save_path'))
         _log_error('swap_face_video', e)
         raise
 
@@ -630,6 +659,7 @@ def _swap_face_video(
     stage_callback=None,
     use_gpu=False,
     gpu_provider='auto',
+    cancel_event=None,
 ):
     """
     视频换脸处理（支持 GPU 加速和多线程处理池）
@@ -653,6 +683,10 @@ def _swap_face_video(
 
     read_queue = queue.Queue(maxsize=queue_size)
     write_queue = queue.PriorityQueue(maxsize=queue_size)
+    max_inflight_frames = max(1, queue_size + num_workers)
+    inflight_slots = threading.BoundedSemaphore(max_inflight_frames)
+    inflight_frame_ids = set()
+    inflight_lock = threading.Lock()
 
     stop_event = threading.Event()
     processing_error = threading.Lock()
@@ -670,7 +704,7 @@ def _swap_face_video(
     ) -> bool:
         """Put an item in a queue with stop signal support."""
         wait_count = 0
-        while not stop_event.is_set():
+        while not stop_event.is_set() and not _cancel_requested(cancel_event):
             try:
                 q_obj.put(item, timeout=timeout)
                 return True
@@ -680,6 +714,39 @@ def _swap_face_video(
                     print(f'[WARN] {warn_prefix} (已等待约 {wait_count} 秒)')
         return False
 
+    def _acquire_inflight_slot(frame_idx, timeout=0.2) -> bool:
+        """Reserve capacity for one frame across the whole processing pipeline."""
+        while not stop_event.is_set() and not _cancel_requested(cancel_event):
+            if not inflight_slots.acquire(timeout=timeout):
+                continue
+            with inflight_lock:
+                inflight_frame_ids.add(frame_idx)
+            return True
+        return False
+
+    def _release_inflight_slot(frame_idx) -> None:
+        """Release a frame reservation once, even across cleanup paths."""
+        if frame_idx is None:
+            return
+        with inflight_lock:
+            if frame_idx not in inflight_frame_ids:
+                return
+            inflight_frame_ids.remove(frame_idx)
+        inflight_slots.release()
+
+    def _clear_frame_queue(q_obj) -> None:
+        """Discard queued frames and release their pipeline reservations."""
+        try:
+            while True:
+                try:
+                    item = q_obj.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(item, tuple) and item:
+                    _release_inflight_slot(item[0])
+        except Exception as e:
+            print(f'[WARN] 清空帧队列失败: {str(e)}')
+
     def _mark_worker_done():
         """Mark a worker thread as done."""
         with workers_done_lock:
@@ -688,6 +755,7 @@ def _swap_face_video(
                 workers_done_event.set()
 
     try:
+        _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'opening-video')
         print(f'[INFO] 打开视频文件: {input_path}')
         cap = cv2.VideoCapture(input_path)
@@ -772,11 +840,17 @@ def _swap_face_video(
 
         def read_frames():
             """Read frames from the input video."""
+            owned_frame_idx = None
             try:
                 frame_idx = 0
-                while not stop_event.is_set():
+                while not stop_event.is_set() and not _cancel_requested(cancel_event):
+                    if not _acquire_inflight_slot(frame_idx):
+                        break
+                    owned_frame_idx = frame_idx
                     ok, frame = cap.read()
                     if not ok:
+                        _release_inflight_slot(owned_frame_idx)
+                        owned_frame_idx = None
                         break
                     if not _queue_put_with_stop(
                         read_queue,
@@ -784,7 +858,10 @@ def _swap_face_video(
                         timeout=1,
                         warn_prefix='读取队列已满，等待处理线程消费',
                     ):
+                        _release_inflight_slot(owned_frame_idx)
+                        owned_frame_idx = None
                         return
+                    owned_frame_idx = None
                     frame_idx += 1
 
                 for _ in range(num_workers):
@@ -800,13 +877,16 @@ def _swap_face_video(
                     error_container['error'] = e
                 print(f'[ERROR] 读取线程异常: {str(e)}')
                 stop_event.set()
-                _clear_queue(read_queue)
+                _clear_frame_queue(read_queue)
+            finally:
+                _release_inflight_slot(owned_frame_idx)
 
         def process_frames(worker_id):
             """Process frames for face swapping."""
             worker_tf, worker_lock = tf_pool[worker_id % len(tf_pool)]
+            active_frame_idx = None
             try:
-                while not stop_event.is_set():
+                while not stop_event.is_set() and not _cancel_requested(cancel_event):
                     try:
                         frame_idx, frame = read_queue.get(timeout=1)
                     except queue.Empty:
@@ -814,6 +894,7 @@ def _swap_face_video(
 
                     if frame_idx is None:
                         break
+                    active_frame_idx = frame_idx
 
                     with stats_lock:
                         stats['frame_count'] += 1
@@ -868,6 +949,7 @@ def _swap_face_video(
                                     warn_prefix=f'写入队列已满，Worker-{worker_id} 等待中',
                                 ):
                                     break
+                                active_frame_idx = None
                                 with stats_lock:
                                     stats['failed_count'] += 1
                                 continue
@@ -898,6 +980,7 @@ def _swap_face_video(
                             warn_prefix=f'写入队列已满，Worker-{worker_id} 等待中',
                         ):
                             break
+                        active_frame_idx = None
 
                     except Exception as e:
                         print(f'[WARN] 第{current_frame}帧处理失败: {str(e)}')
@@ -908,6 +991,7 @@ def _swap_face_video(
                             warn_prefix=f'写入队列已满，Worker-{worker_id} 等待中',
                         ):
                             break
+                        active_frame_idx = None
                         with stats_lock:
                             stats['failed_count'] += 1
 
@@ -917,18 +1001,28 @@ def _swap_face_video(
                 print(f'[ERROR] 处理线程 Worker-{worker_id} 异常: {str(e)}')
                 stop_event.set()
             finally:
+                _release_inflight_slot(active_frame_idx)
                 _mark_worker_done()
 
         def write_frames():
             """Write processed frames to the output video."""
+            frame_buffer = {}
+
+            def _write_reserved_frame(frame_idx, frame):
+                try:
+                    writer.write(frame)
+                finally:
+                    _release_inflight_slot(frame_idx)
+
             try:
                 _emit_stage(stage_callback, 'processing-video-frames')
                 next_frame_idx = 0
-                frame_buffer = {}
                 frames_written = 0
 
                 while True:
-                    if stop_event.is_set() and write_queue.empty():
+                    if (
+                        stop_event.is_set() or _cancel_requested(cancel_event)
+                    ) and write_queue.empty():
                         break
 
                     try:
@@ -936,16 +1030,17 @@ def _swap_face_video(
                     except queue.Empty:
                         if workers_done_event.is_set():
                             if frame_buffer:
-                                for pending_idx in sorted(frame_buffer.keys()):
-                                    writer.write(frame_buffer[pending_idx])
+                                for pending_idx in sorted(list(frame_buffer.keys())):
+                                    pending_frame = frame_buffer.pop(pending_idx)
+                                    _write_reserved_frame(pending_idx, pending_frame)
                                     frames_written += 1
-                                frame_buffer.clear()
                             break
                         continue
 
                     frame_buffer[frame_idx] = frame
                     while next_frame_idx in frame_buffer:
-                        writer.write(frame_buffer.pop(next_frame_idx))
+                        next_frame = frame_buffer.pop(next_frame_idx)
+                        _write_reserved_frame(next_frame_idx, next_frame)
                         frames_written += 1
                         next_frame_idx += 1
 
@@ -961,6 +1056,10 @@ def _swap_face_video(
                     error_container['error'] = e
                 print(f'[ERROR] 写入线程异常: {str(e)}')
                 stop_event.set()
+            finally:
+                for pending_idx in list(frame_buffer.keys()):
+                    frame_buffer.pop(pending_idx, None)
+                    _release_inflight_slot(pending_idx)
 
         read_thread = threading.Thread(target=read_frames, name='VideoReader')
         process_threads = [
@@ -980,6 +1079,8 @@ def _swap_face_video(
         for t in process_threads:
             t.join()
         write_thread.join()
+
+        _raise_if_cancelled(cancel_event)
 
         with processing_error:
             if error_container['error'] is not None:
@@ -1010,8 +1111,8 @@ def _swap_face_video(
 
     finally:
         stop_event.set()
-        _clear_queue(read_queue)
-        _clear_queue(write_queue)
+        _clear_frame_queue(read_queue)
+        _clear_frame_queue(write_queue)
 
         if cap is not None:
             cap.release()
@@ -1046,10 +1147,11 @@ def _get_one_face(face_path: str):
     """Detect and return the first face in an image or load from json."""
     if face_path.endswith('.json'):
         import json
+
         import numpy as np
         with open(face_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        
+
         class FaceMock:
             pass
         face = FaceMock()
@@ -1103,8 +1205,13 @@ def _write_image(img_path: str, img):
         ok, buf = cv2.imencode(ext, img)
         if not ok or buf is None:
             return False
-        buf.tofile(path)
-        return True
+        temp_path = f'{path}.{uuid.uuid4().hex}.tmp'
+        try:
+            buf.tofile(temp_path)
+            os.replace(temp_path, path)
+            return True
+        finally:
+            _remove_file_quietly(temp_path)
 
     # 先按原扩展名写，失败则回退 PNG（避免 WebP/TIFF 等编码支持不完整导致无输出文件）
     if _try_write(img_path, suffix):
@@ -1382,13 +1489,13 @@ def _normalize_regions_with_face_source(regions, width, height):
 def _get_output_file_path(file_name):
     """Get the output file path."""
     base_name, ext = os.path.splitext(file_name)
-    return base_name + '_output' + ext
+    return f'{base_name}_output_{uuid.uuid4().hex}{ext}'
 
 
 def _get_output_video_path(file_name):
     """Get the output video path."""
     base_name, _ = os.path.splitext(file_name)
-    return base_name + '_output.mp4'
+    return f'{base_name}_output_{uuid.uuid4().hex}.mp4'
 
 
 @lru_cache(maxsize=1)
@@ -1459,6 +1566,15 @@ def _resolve_ffprobe_binary() -> str | None:
     return None
 
 
+def _get_process_timeout(env_name: str, default_seconds: float) -> float:
+    """Read a positive subprocess timeout from the environment."""
+    try:
+        value = float(os.environ.get(env_name, default_seconds))
+    except (TypeError, ValueError):
+        value = default_seconds
+    return value if value > 0 else default_seconds
+
+
 def _resolve_total_frames(input_video_path: str, fps: float, current_total: int) -> int:
     """优先使用 OpenCV 帧数；若为 0，则尝试用 ffprobe 回退估算。"""
     if current_total and current_total > 0:
@@ -1482,7 +1598,13 @@ def _resolve_total_frames(input_video_path: str, fps: float, current_total: int)
             'json',
             input_video_path,
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_get_process_timeout('MAGIC_FFPROBE_TIMEOUT_SECONDS', 15),
+        )
         if proc.returncode != 0 or not proc.stdout:
             print('[WARN] ffprobe 获取总帧数失败，继续使用未知总帧数')
             return 0
@@ -1546,7 +1668,13 @@ def _input_has_audio_stream(input_video_path: str) -> bool | None:
             'json',
             input_video_path,
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_get_process_timeout('MAGIC_FFPROBE_TIMEOUT_SECONDS', 15),
+        )
         if proc.returncode != 0:
             print('[WARN] ffprobe 预检音轨失败，将继续尝试复用音频')
             return None
@@ -1560,30 +1688,43 @@ def _input_has_audio_stream(input_video_path: str) -> bool | None:
     return None
 
 
-def _mux_audio_or_raise(input_video_path: str, output_video_path: str):
+def _mux_audio_or_raise(
+    input_video_path: str, output_video_path: str, cancel_event=None
+):
     """原视频有音轨时，音频复用失败应明确报错；无音轨时允许跳过。"""
+    _raise_if_cancelled(cancel_event)
     has_audio = _input_has_audio_stream(input_video_path)
+    _raise_if_cancelled(cancel_event)
     if has_audio is False:
         print('[INFO] 原视频无音轨，跳过音频复用')
         return
 
     try:
-        _try_mux_audio(input_video_path, output_video_path)
+        _try_mux_audio(
+            input_video_path, output_video_path, cancel_event=cancel_event
+        )
     except Exception as e:
+        if str(e) == 'cancelled':
+            raise
         print(f'[ERROR] 音频复用失败: {str(e)}')
         raise RuntimeError('audio-mux-failed') from e
 
 
-def _try_mux_audio(input_video_path: str, output_video_path: str):
+def _try_mux_audio(input_video_path: str, output_video_path: str, cancel_event=None):
     """使用 ffmpeg 将原视频音轨复用到输出视频（优先 copy，失败回退 aac 转码）。"""
     ffmpeg = _resolve_ffmpeg_binary()
     if not ffmpeg:
         raise RuntimeError('ffmpeg-not-found')
 
     tmp_path = os.path.splitext(output_video_path)[0] + '_mux_tmp.mp4'
+    _remove_file_quietly(tmp_path)
     errors = []
+    timeout_seconds = _get_process_timeout(
+        'MAGIC_FFMPEG_TIMEOUT_SECONDS', 30 * 60
+    )
 
     for audio_codec in ('copy', 'aac'):
+        _raise_if_cancelled(cancel_event)
         cmd = [
             ffmpeg,
             '-y',
@@ -1600,23 +1741,62 @@ def _try_mux_audio(input_video_path: str, output_video_path: str):
             '-c:a',
             audio_codec,
             '-shortest',
+            '-nostdin',
+            '-hide_banner',
+            '-loglevel',
+            'error',
             tmp_path,
         ]
 
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout = ''
+        stderr = ''
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                stdout, stderr = proc.communicate(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                if not _cancel_requested(cancel_event) and time.monotonic() < deadline:
+                    continue
+                proc.terminate()
+                try:
+                    proc.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate()
+                _remove_file_quietly(tmp_path)
+                if _cancel_requested(cancel_event):
+                    raise RuntimeError('cancelled')
+                raise RuntimeError('ffmpeg-timeout')
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.communicate(timeout=2)
+                except Exception:
+                    pass
+                _remove_file_quietly(tmp_path)
+                raise
+
         if proc.returncode == 0:
-            os.replace(tmp_path, output_video_path)
+            try:
+                os.replace(tmp_path, output_video_path)
+            except Exception:
+                _remove_file_quietly(tmp_path)
+                raise
             return
 
-        err_tail = (proc.stderr or '')[-320:]
+        err_tail = (stderr or stdout or '')[-320:]
         errors.append(f'{audio_codec}: {err_tail}')
 
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
+        _remove_file_quietly(tmp_path)
 
+    _remove_file_quietly(tmp_path)
     raise RuntimeError('ffmpeg failed: ' + ' | '.join(errors))
 
 
@@ -1743,6 +1923,7 @@ def swap_face_video_by_sources(
     stage_callback=None,
     use_gpu=False,
     gpu_provider='auto',
+    cancel_event=None,
 ):
     """Swap faces in a video using multiple face sources.
 
@@ -1750,6 +1931,7 @@ def swap_face_video_by_sources(
     Supports GPU acceleration and progress callbacks.
     """
     try:
+        _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'validating-input')
         if not os.path.exists(input_path):
             raise FileNotFoundError('file-not-found')
@@ -1765,17 +1947,22 @@ def swap_face_video_by_sources(
             stage_callback=stage_callback,
             use_gpu=use_gpu,
             gpu_provider=gpu_provider,
+            cancel_event=cancel_event,
         )
+
+        _raise_if_cancelled(cancel_event)
 
         if not output_path or not os.path.exists(output_path):
             raise RuntimeError('video-output-missing')
 
         _emit_stage(stage_callback, 'muxing-audio')
-        _mux_audio_or_raise(input_path, output_path)
+        _mux_audio_or_raise(input_path, output_path, cancel_event=cancel_event)
 
+        _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'finalizing')
         return output_path
     except Exception as e:
+        _remove_file_quietly(locals().get('save_path'))
         _log_error('swap_face_video_by_sources', e)
         raise
 
@@ -1790,6 +1977,7 @@ def _swap_face_video_by_sources(
     stage_callback=None,
     use_gpu=False,
     gpu_provider='auto',
+    cancel_event=None,
 ):
     """
     多人换脸视频处理（使用多线程架构）
@@ -1831,7 +2019,7 @@ def _swap_face_video_by_sources(
     ) -> bool:
         """Put an item in a queue with stop signal support."""
         wait_count = 0
-        while not stop_event.is_set():
+        while not stop_event.is_set() and not _cancel_requested(cancel_event):
             try:
                 q_obj.put(item, timeout=timeout)
                 return True
@@ -1849,6 +2037,7 @@ def _swap_face_video_by_sources(
                 workers_done_event.set()
 
     try:
+        _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'opening-video')
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
@@ -1939,7 +2128,7 @@ def _swap_face_video_by_sources(
             try:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 frame_idx = 0
-                while not stop_event.is_set():
+                while not stop_event.is_set() and not _cancel_requested(cancel_event):
                     ok, frame = cap.read()
                     if not ok:
                         break
@@ -1972,7 +2161,7 @@ def _swap_face_video_by_sources(
             worker_tf, worker_lock = tf_pool[worker_id % len(tf_pool)]
             try:
                 _emit_stage(stage_callback, 'processing-video-frames')
-                while not stop_event.is_set():
+                while not stop_event.is_set() and not _cancel_requested(cancel_event):
                     try:
                         frame_idx, frame = read_queue.get(timeout=1)
                     except queue.Empty:
@@ -2089,7 +2278,9 @@ def _swap_face_video_by_sources(
                 frames_written = 0
 
                 while True:
-                    if stop_event.is_set() and write_queue.empty():
+                    if (
+                        stop_event.is_set() or _cancel_requested(cancel_event)
+                    ) and write_queue.empty():
                         break
 
                     try:
@@ -2144,6 +2335,8 @@ def _swap_face_video_by_sources(
         for t in process_threads:
             t.join()
         write_thread.join()
+
+        _raise_if_cancelled(cancel_event)
 
         # 检查是否有错误
         with processing_error:
@@ -2655,6 +2848,7 @@ def swap_face_video_deep(
     gpu_provider='auto',
     segment_duration_sec=12,
     segment_overlap_frames=6,
+    cancel_event=None,
 ):
     """Deep swap faces in a video with advanced tracking.
 
@@ -2662,6 +2856,7 @@ def swap_face_video_deep(
     across video segments. Supports multiple face sources.
     """
     try:
+        _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'validating-input')
         if not os.path.exists(input_path):
             raise FileNotFoundError('file-not-found')
@@ -2685,17 +2880,22 @@ def swap_face_video_deep(
             gpu_provider=gpu_provider,
             segment_duration_sec=segment_duration_sec,
             segment_overlap_frames=segment_overlap_frames,
+            cancel_event=cancel_event,
         )
+
+        _raise_if_cancelled(cancel_event)
 
         if not output_path or not os.path.exists(output_path):
             raise RuntimeError('video-output-missing')
 
         _emit_stage(stage_callback, 'muxing-audio')
-        _mux_audio_or_raise(input_path, output_path)
+        _mux_audio_or_raise(input_path, output_path, cancel_event=cancel_event)
 
+        _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'finalizing')
         return output_path
     except Exception as e:
+        _remove_file_quietly(locals().get('save_path'))
         _log_error('swap_face_video_deep', e)
         raise
 
@@ -2712,11 +2912,13 @@ def _swap_face_video_deep(
     gpu_provider='auto',
     segment_duration_sec=12,
     segment_overlap_frames=6,
+    cancel_event=None,
 ):
     """Internal implementation for deep video face swapping."""
     cap = None
     temp_dir = None
     try:
+        _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'opening-video')
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
@@ -2803,11 +3005,13 @@ def _swap_face_video_deep(
                     temp_dir=temp_dir,
                     use_gpu=use_gpu,
                     gpu_provider=gpu_provider,
+                    cancel_event=cancel_event,
                 ): segment
                 for segment in segments
             }
 
             for future in as_completed(future_to_segment):
+                _raise_if_cancelled(cancel_event)
                 segment = future_to_segment[future]
                 result = future.result()
                 segment_results[segment['index']] = result
@@ -2822,6 +3026,7 @@ def _swap_face_video_deep(
                     except Exception as e:
                         print(f'[WARN] progress_callback failed: {str(e)}')
 
+        _raise_if_cancelled(cancel_event)
         ordered_segment_paths = [
             segment_results[index]['path']
             for index in sorted(segment_results.keys())
@@ -2831,7 +3036,15 @@ def _swap_face_video_deep(
             raise RuntimeError('video-output-missing')
 
         _emit_stage(stage_callback, 'merging-video-segments')
-        _concat_video_segments(ordered_segment_paths, save_path, fps, width, height)
+        _concat_video_segments(
+            ordered_segment_paths,
+            save_path,
+            fps,
+            width,
+            height,
+            cancel_event=cancel_event,
+        )
+        _raise_if_cancelled(cancel_event)
         return save_path
 
     except Exception as e:
@@ -2983,11 +3196,13 @@ def _process_deep_video_segment(
     temp_dir,
     use_gpu=False,
     gpu_provider='auto',
+    cancel_event=None,
 ):
     """Process a single deep video segment."""
     cap = None
     writer = None
     try:
+        _raise_if_cancelled(cancel_event)
         segment_index = int(segment['index'])
         core_start = int(segment['coreStart'])
         core_end = int(segment['coreEnd'])
@@ -3019,6 +3234,7 @@ def _process_deep_video_segment(
 
         frame_index = read_start
         while frame_index < read_end:
+            _raise_if_cancelled(cancel_event)
             ok, frame = cap.read()
             if not ok or frame is None:
                 break
@@ -3119,23 +3335,28 @@ def _process_deep_video_segment(
             writer.release()
 
 
-def _concat_video_segments(segment_paths, output_path, fps, width, height):
+def _concat_video_segments(
+    segment_paths, output_path, fps, width, height, cancel_event=None
+):
     """Concatenate video segments into final output."""
     writer = None
     caps = []
     try:
+        _raise_if_cancelled(cancel_event)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         if not writer.isOpened():
             raise RuntimeError('video-write-failed')
 
         for segment_path in segment_paths:
+            _raise_if_cancelled(cancel_event)
             cap = cv2.VideoCapture(segment_path)
             caps.append(cap)
             if not cap.isOpened():
                 raise RuntimeError('video-open-failed')
 
             while True:
+                _raise_if_cancelled(cancel_event)
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     break

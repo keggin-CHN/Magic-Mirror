@@ -12,12 +12,19 @@ import { WebServerClient } from "@/services/webServer";
 import { isTauri } from "@/services/runtime";
 
 const kSwapFaceRefs: {
-  id: number;
+  activeTaskId: string | null;
   cancel?: () => Promise<void>;
 } = {
-  id: 1,
+  activeTaskId: null,
   cancel: undefined,
 };
+
+function createTaskId() {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
+}
 
 type WebImageTask = {
   inputFileId: string;
@@ -63,28 +70,44 @@ export function useSwapFace() {
     "videoTaskConfigId",
     null
   );
+
+  const isCurrentTask = useCallback(
+    (taskId: string) => kSwapFaceRefs.activeTaskId === taskId,
+    []
+  );
+
   const runTask = useCallback(
     async (create: (taskId: string) => Promise<TaskResult>) => {
       await kSwapFaceRefs.cancel?.();
+
       setIsSwapping(true);
       setError(null);
-      const taskId = (kSwapFaceRefs.id++).toString();
+      const taskId = createTaskId();
+      kSwapFaceRefs.activeTaskId = taskId;
       kSwapFaceRefs.cancel = async () => {
-        const success = await client.cancelTask(taskId);
-        if (success) {
+        await client.cancelTask(taskId);
+        if (isCurrentTask(taskId)) {
           setIsSwapping(false);
         }
       };
-      const { result, error } = await create(taskId);
-      kSwapFaceRefs.cancel = undefined;
-      const finalError = result ? null : error ?? "unknown";
-      setError(finalError);
-      setOutput(result);
-      setIsSwapping(false);
-      return result;
-    },
-    [client, setError, setIsSwapping, setOutput]
-  );
+
+      try {
+        const { result, error } = await create(taskId);
+        if (!isCurrentTask(taskId)) {
+          return null;
+        }
+        const finalError = result ? null : error ?? "unknown";
+        setError(finalError);
+        setOutput(result);
+        setIsSwapping(false);
+        return result;
+      } finally {
+        if (isCurrentTask(taskId)) {
+          kSwapFaceRefs.activeTaskId = null;
+          kSwapFaceRefs.cancel = undefined;
+        }
+      }
+    }, [client, isCurrentTask, setError, setIsSwapping, setOutput]);
 
   const swapFace = useCallback(
     async (task: AnyImageTask) => {
@@ -99,14 +122,7 @@ export function useSwapFace() {
         })
       );
     },
-    [
-      client,
-      runTask,
-      setVideoEtaSeconds,
-      setVideoProgress,
-      setVideoStage,
-      setVideoTaskConfigId,
-    ]
+    [client, runTask, setVideoEtaSeconds, setVideoProgress, setVideoStage, setVideoTaskConfigId]
   );
 
   const swapVideo = useCallback(
@@ -120,24 +136,63 @@ export function useSwapFace() {
       setVideoStage(null);
       setVideoTaskConfigId(null);
 
-      const taskId = (kSwapFaceRefs.id++).toString();
-      // 使用对象引用来控制轮询，确保可以从外部停止
-      const pollingControl = { shouldStop: false };
+      const taskId = createTaskId();
+      kSwapFaceRefs.activeTaskId = taskId;
+      const pollingControl: {
+        shouldStop: boolean;
+        timer: ReturnType<typeof setTimeout> | null;
+        resolveWait: (() => void) | null;
+      } = { shouldStop: false, timer: null, resolveWait: null };
+      let cancelRequested = false;
+      let taskCreated = false;
       let finalResult: string | null = null;
 
+      const cancel = async () => {
+        cancelRequested = true;
+        pollingControl.shouldStop = true;
+        if (pollingControl.timer !== null) {
+          clearTimeout(pollingControl.timer);
+          pollingControl.timer = null;
+        }
+        pollingControl.resolveWait?.();
+        pollingControl.resolveWait = null;
+        if (taskCreated) {
+          await client.cancelTask(taskId);
+        }
+        if (isCurrentTask(taskId)) {
+          setIsSwapping(false);
+          setVideoEtaSeconds(null);
+          setVideoStage("cancelled");
+        }
+      };
+      kSwapFaceRefs.cancel = cancel;
+
+      const waitForPoll = (delayMs: number) =>
+        new Promise<void>((resolve) => {
+          if (pollingControl.shouldStop) {
+            resolve();
+            return;
+          }
+          pollingControl.resolveWait = resolve;
+          pollingControl.timer = setTimeout(() => {
+            pollingControl.timer = null;
+            pollingControl.resolveWait = null;
+            resolve();
+          }, delayMs);
+        });
+
       const pollProgress = async () => {
-        // 按真实经过时间限制（默认 4 小时），避免长任务被误杀
         const maxDurationMs = 4 * 60 * 60 * 1000;
         const startedAt = Date.now();
-        // 连续网络错误指数退避控制
         let consecutiveErrors = 0;
         const maxConsecutiveErrors = 8;
+        const maxConsecutiveIdle = 8;
+        let consecutiveIdle = 0;
         let lastProgress = -1;
         let stableCount = 0;
 
-        while (!pollingControl.shouldStop) {
+        while (!pollingControl.shouldStop && isCurrentTask(taskId)) {
           if (Date.now() - startedAt > maxDurationMs) {
-            console.error("[useSwapFace] polling timeout");
             setError("polling-timeout");
             pollingControl.shouldStop = true;
             break;
@@ -145,7 +200,36 @@ export function useSwapFace() {
 
           try {
             const state = await client.getVideoTaskProgress(taskId);
+            if (!isCurrentTask(taskId)) {
+              break;
+            }
+            if (state.status === "failed") {
+              setVideoEtaSeconds(null);
+              setVideoStage(state.stage ?? "failed");
+              setError(state.error ?? "unknown");
+              pollingControl.shouldStop = true;
+              break;
+            }
+            if (state.status === "cancelled") {
+              setVideoEtaSeconds(null);
+              setVideoStage(state.stage ?? "cancelled");
+              pollingControl.shouldStop = true;
+              break;
+            }
+            if (state.error) {
+              throw new Error(state.error);
+            }
             consecutiveErrors = 0;
+            if (state.status === "idle") {
+              consecutiveIdle += 1;
+              if (consecutiveIdle >= maxConsecutiveIdle) {
+                setError("task-not-found");
+                pollingControl.shouldStop = true;
+                break;
+              }
+            } else {
+              consecutiveIdle = 0;
+            }
 
             if (
               state.status === "queued" ||
@@ -155,27 +239,16 @@ export function useSwapFace() {
               setVideoProgress(state.progress ?? 0);
               setVideoEtaSeconds(state.etaSeconds ?? null);
               setVideoStage(state.stage ?? null);
-              if (state.status === "success" && state.result) {
+              if (state.status === "success") {
+                if (!state.result) {
+                  throw new Error("missing-result");
+                }
                 finalResult = state.result;
                 pollingControl.shouldStop = true;
                 break;
               }
-            } else if (state.error) {
-              throw new Error(state.error);
-            } else if (state.status === "failed") {
-              setVideoEtaSeconds(null);
-              setVideoStage(state.stage ?? "failed");
-              setError(state.error ?? "unknown");
-              pollingControl.shouldStop = true;
-              break;
-            } else if (state.status === "cancelled") {
-              setVideoEtaSeconds(null);
-              setVideoStage(state.stage ?? "cancelled");
-              pollingControl.shouldStop = true;
-              break;
             }
 
-            // 自适应轮询间隔：进度推进时 500ms，停滞时逐步放大到 2s
             const currentProgress = state.progress ?? 0;
             if (currentProgress !== lastProgress) {
               lastProgress = currentProgress;
@@ -187,98 +260,102 @@ export function useSwapFace() {
               currentProgress > 0
                 ? Math.min(500 + stableCount * 200, 2000)
                 : 1000;
-            await new Promise((resolve) => setTimeout(resolve, interval));
-          } catch (err) {
-            consecutiveErrors++;
-            if (consecutiveErrors === 1 || consecutiveErrors >= maxConsecutiveErrors) {
-              console.error(
-                `[useSwapFace] poll failed (${consecutiveErrors}/${maxConsecutiveErrors}):`,
-                err
-              );
+            await waitForPoll(interval);
+          } catch (pollError) {
+            if (!isCurrentTask(taskId) || pollingControl.shouldStop) {
+              break;
             }
+            consecutiveErrors++;
             if (consecutiveErrors >= maxConsecutiveErrors) {
               setError("network-error");
               pollingControl.shouldStop = true;
               break;
             }
-            // 指数退避: 1s, 2s, 4s, 8s, 16s, 封顶 30s
             const backoff = Math.min(
               1000 * Math.pow(2, consecutiveErrors - 1),
               30000
             );
-            await new Promise((resolve) => setTimeout(resolve, backoff));
+            console.warn("[useSwapFace] video poll failed", pollError);
+            await waitForPoll(backoff);
           }
         }
       };
 
-      const pollPromise = pollProgress();
+      try {
+        const { result, error, configId, status } = await client.createVideoTask({
+          id: taskId,
+          ...(task as any),
+        });
+        taskCreated = true;
 
-      kSwapFaceRefs.cancel = async () => {
-        pollingControl.shouldStop = true;
-        const success = await client.cancelTask(taskId);
-        if (success) {
-          setIsSwapping(false);
-          setVideoEtaSeconds(null);
-          setVideoStage("cancelled");
+        if (cancelRequested) {
+          await client.cancelTask(taskId);
+          return { result: null, error: "cancelled", status: "cancelled" };
         }
-      };
+        if (!isCurrentTask(taskId)) {
+          return { result: null, error: "cancelled", status: "cancelled" };
+        }
+        setVideoTaskConfigId(configId ?? null);
 
-      const { result, error, configId, status } = await client.createVideoTask({
-        id: taskId,
-        ...(task as any),
-      });
+        if (result) {
+          setVideoProgress(100);
+          setVideoEtaSeconds(0);
+          setVideoStage("done");
+          setOutput(result);
+          pollingControl.shouldStop = true;
+        } else if (error === "network") {
+          // The server may have accepted the task even if the POST response was
+          // lost. Recover by polling the UUID instead of abandoning the job.
+          setVideoStage("recovering");
+          await pollProgress();
+        } else if (error) {
+          setError(error);
+          setVideoStage("failed");
+          pollingControl.shouldStop = true;
+        } else if ((task as any).dryRunConfigOnly || status === "config-only") {
+          setVideoStage("config-only");
+          pollingControl.shouldStop = true;
+        } else {
+          await pollProgress();
+        }
 
-      setVideoTaskConfigId(configId ?? null);
+        if (!isCurrentTask(taskId)) {
+          return { result: null, error: "cancelled", status: "cancelled" };
+        }
+        if (finalResult) {
+          setVideoProgress(100);
+          setVideoEtaSeconds(0);
+          setVideoStage("done");
+          setOutput(finalResult);
+          setIsSwapping(false);
+          return { result: finalResult, configId: configId ?? null, status: status ?? "success" };
+        }
 
-      // If the backend returns immediately (queued), we don't have the result yet.
-      // We rely on polling to get the result.
-      if (result) {
-        // If backend returned result immediately (old behavior or fast task)
-        pollingControl.shouldStop = true;
-        setVideoProgress(100);
-        setVideoEtaSeconds(0);
-        setVideoStage("done");
-        setOutput(result);
-      } else if (error) {
-        // Immediate error
-        setError(error);
-        setVideoStage("failed");
-        pollingControl.shouldStop = true; // Stop polling
-      } else if ((task as any).dryRunConfigOnly || status === "config-only") {
-        pollingControl.shouldStop = true;
-        setVideoProgress(0);
-        setVideoEtaSeconds(null);
-        setVideoStage("config-only");
-      }
-
-      // Wait for polling to finish (it finishes when status is success/failed/cancelled)
-      await pollPromise;
-
-      kSwapFaceRefs.cancel = undefined;
-
-      if (finalResult) {
-        setVideoProgress(100);
-        setVideoEtaSeconds(0);
-        setVideoStage("done");
-        setOutput(finalResult);
         setIsSwapping(false);
-        return {
-          result: finalResult,
-          configId: configId ?? null,
-          status: status ?? "success",
-        };
+        return { result: result ?? null, error, configId: configId ?? null, status: status ?? null };
+      } catch (taskError) {
+        if (isCurrentTask(taskId)) {
+          setError("network-error");
+          setVideoStage("failed");
+          setIsSwapping(false);
+        }
+        return { result: null, error: taskError instanceof Error ? taskError.message : "network" };
+      } finally {
+        if (pollingControl.timer !== null) {
+          clearTimeout(pollingControl.timer);
+          pollingControl.timer = null;
+        }
+        pollingControl.resolveWait?.();
+        pollingControl.resolveWait = null;
+        if (isCurrentTask(taskId)) {
+          kSwapFaceRefs.activeTaskId = null;
+          kSwapFaceRefs.cancel = undefined;
+        }
       }
-
-      setIsSwapping(false);
-      return {
-        result: result ?? null,
-        error,
-        configId: configId ?? null,
-        status: status ?? null,
-      };
     },
     [
       client,
+      isCurrentTask,
       setError,
       setIsSwapping,
       setOutput,
@@ -291,7 +368,7 @@ export function useSwapFace() {
 
   useEffect(() => {
     return () => {
-      kSwapFaceRefs.cancel?.();
+      void kSwapFaceRefs.cancel?.();
     };
   }, []);
 

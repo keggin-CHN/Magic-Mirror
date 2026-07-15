@@ -51,6 +51,7 @@ function toHeaderRecord(extra?: HeadersInit): Record<string, string> {
 class WebServer {
   _baseURL = "/api";
   _token: string | null = null;
+  _authExpiredListeners = new Set<() => void>();
 
   constructor() {
     if (typeof window !== "undefined") {
@@ -86,6 +87,32 @@ class WebServer {
     return headers;
   }
 
+  onAuthExpired(listener: () => void) {
+    this._authExpiredListeners.add(listener);
+    return () => {
+      this._authExpiredListeners.delete(listener);
+    };
+  }
+
+  async _request(
+    input: RequestInfo | URL,
+    init: RequestInit = {},
+    timeoutMs?: number
+  ) {
+    const res = await fetchWithTimeout(input, init, timeoutMs);
+    if (res.status === 401 && this._token) {
+      this.token = null;
+      for (const listener of this._authExpiredListeners) {
+        try {
+          listener();
+        } catch {
+          // Authentication cleanup must not hide the original response.
+        }
+      }
+    }
+    return res;
+  }
+
   async login(password: string) {
     try {
       const res = await fetchWithTimeout(`${this._baseURL}/login`, {
@@ -109,7 +136,7 @@ class WebServer {
 
   async updateCredential(password: string) {
     try {
-      const res = await fetchWithTimeout(`${this._baseURL}/credential`, {
+      const res = await this._request(`${this._baseURL}/credential`, {
         method: "post",
         headers: this._headers({
           "Content-Type": "application/json;charset=UTF-8",
@@ -121,43 +148,60 @@ class WebServer {
         return { success: false, error: text || "http-error" };
       }
       const data = await res.json();
+      if (data?.token) {
+        this.token = String(data.token);
+      }
       return { success: Boolean(data?.success), error: data?.error };
     } catch {
       return { success: false, error: "network" };
     }
   }
 
-  async uploadFile(file: File): Promise<UploadResult | null> {
+  async uploadFile(
+    file: File,
+    signal?: AbortSignal
+  ): Promise<UploadResult | null> {
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetchWithTimeout(
+      const res = await this._request(
         `${this._baseURL}/upload`,
-        { method: "post", headers: this._headers(), body: form },
+        { method: "post", headers: this._headers(), body: form, signal },
         UPLOAD_REQUEST_TIMEOUT_MS
       );
       if (!res.ok) {
         return null;
       }
-      return (await res.json()) as UploadResult;
+      const data = (await res.json()) as UploadResult;
+      if (data?.fileId) {
+        data.url = this.buildFileUrl(data.fileId);
+      }
+      return data;
     } catch {
       return null;
     }
   }
 
-  async uploadLibrary(file: File): Promise<LibraryItem | null> {
+  async uploadLibrary(
+    file: File,
+    signal?: AbortSignal
+  ): Promise<LibraryItem | null> {
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetchWithTimeout(
+      const res = await this._request(
         `${this._baseURL}/library/upload`,
-        { method: "post", headers: this._headers(), body: form },
+        { method: "post", headers: this._headers(), body: form, signal },
         UPLOAD_REQUEST_TIMEOUT_MS
       );
       if (!res.ok) {
         return null;
       }
-      return (await res.json()) as LibraryItem;
+      const data = (await res.json()) as LibraryItem;
+      if (data?.id) {
+        data.url = this.buildLibraryUrl(data.id);
+      }
+      return data;
     } catch {
       return null;
     }
@@ -165,7 +209,7 @@ class WebServer {
 
   async listLibrary(): Promise<LibraryItem[]> {
     try {
-      const res = await fetchWithTimeout(`${this._baseURL}/library`, {
+      const res = await this._request(`${this._baseURL}/library`, {
         method: "get",
         headers: this._headers(),
       });
@@ -173,7 +217,13 @@ class WebServer {
         return [];
       }
       const data = await res.json();
-      return Array.isArray(data?.items) ? data.items : [];
+      if (!Array.isArray(data?.items)) {
+        return [];
+      }
+      return data.items.map((item: LibraryItem) => ({
+        ...item,
+        url: item.id ? this.buildLibraryUrl(item.id) : item.url,
+      }));
     } catch {
       return [];
     }
@@ -184,7 +234,7 @@ class WebServer {
     regions?: Region[]
   ): Promise<DetectFacesResult> {
     try {
-      const res = await fetchWithTimeout(`${this._baseURL}/task/detect-faces`, {
+      const res = await this._request(`${this._baseURL}/task/detect-faces`, {
         method: "post",
         headers: this._headers({
           "Content-Type": "application/json;charset=UTF-8",
@@ -230,7 +280,7 @@ class WebServer {
     regions?: Region[]
   ): Promise<DetectFacesResult> {
     try {
-      const res = await fetchWithTimeout(`${this._baseURL}/task/video/detect-faces`, {
+      const res = await this._request(`${this._baseURL}/task/video/detect-faces`, {
         method: "post",
         headers: this._headers({
           "Content-Type": "application/json;charset=UTF-8",
@@ -285,7 +335,7 @@ class WebServer {
 
   async getVideoGpuModes(): Promise<VideoGpuModesResult> {
     try {
-      const res = await fetchWithTimeout(`${this._baseURL}/task/video/gpu-modes`, {
+      const res = await this._request(`${this._baseURL}/task/video/gpu-modes`, {
         method: "get",
         headers: this._headers(),
       });
@@ -333,7 +383,7 @@ class WebServer {
 
   async createTask(task: Omit<Task, "id"> & { id: string } & { inputFileId: string; targetFaceId?: string }) {
     try {
-      const res = await fetchWithTimeout(`${this._baseURL}/task`, {
+      const res = await this._request(`${this._baseURL}/task`, {
         method: "post",
         headers: this._headers({
           "Content-Type": "application/json;charset=UTF-8",
@@ -378,7 +428,7 @@ class WebServer {
 
   async createVideoTask(task: Omit<VideoTask, "id"> & { id: string } & { inputFileId: string; targetFaceId?: string }) {
     try {
-      const res = await fetchWithTimeout(`${this._baseURL}/task/video`, {
+      const res = await this._request(`${this._baseURL}/task/video`, {
         method: "post",
         headers: this._headers({
           "Content-Type": "application/json;charset=UTF-8",
@@ -440,7 +490,7 @@ class WebServer {
 
   async getVideoTaskProgress(taskId: string): Promise<VideoTaskProgress> {
     try {
-      const res = await fetchWithTimeout(
+      const res = await this._request(
         `${this._baseURL}/task/video/progress/${encodeURIComponent(taskId)}`,
         {
           method: "get",
@@ -480,7 +530,7 @@ class WebServer {
 
   async cancelTask(taskId: string): Promise<boolean> {
     try {
-      const res = await fetchWithTimeout(
+      const res = await this._request(
         `${this._baseURL}/task/${encodeURIComponent(taskId)}`,
         {
           method: "delete",
@@ -509,6 +559,12 @@ class WebServer {
     return this._withTokenQuery(`${this._baseURL}/file/${encodeURIComponent(fileId)}`);
   }
 
+  buildLibraryUrl(fileName: string) {
+    return this._withTokenQuery(
+      `${this._baseURL}/library/${encodeURIComponent(fileName)}`
+    );
+  }
+
   buildDownloadUrl(fileId: string) {
     return this._withTokenQuery(`${this._baseURL}/download/${encodeURIComponent(fileId)}`);
   }
@@ -516,25 +572,20 @@ class WebServer {
   async downloadResult(fileId: string, filename?: string) {
     const url = this.buildDownloadUrl(fileId);
     try {
-      const res = await fetchWithTimeout(url, {
-        method: "get",
-        headers: this._headers(),
-      });
-      if (!res.ok) {
+      const probe = await this._request(
+        url,
+        { method: "HEAD", headers: this._headers() },
+        PROGRESS_REQUEST_TIMEOUT_MS
+      );
+      if (!probe.ok) {
         return false;
       }
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      try {
-        const a = document.createElement("a");
-        a.href = objectUrl;
-        a.download = filename || "result";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      } finally {
-        URL.revokeObjectURL(objectUrl);
-      }
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename || "result";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
       return true;
     } catch {
       return false;

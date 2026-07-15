@@ -30,6 +30,7 @@ from .task_config import (
     parse_video_task_config_token,
     verify_file_sha256,
 )
+from .video_task_executor import VideoTaskExecutor
 
 app = Bottle()
 
@@ -58,6 +59,9 @@ VIDEO_TASK_PROGRESS = {}
 VIDEO_TASK_PROGRESS_LOCK = threading.RLock()
 VIDEO_TASK_CANCELLED = set()
 VIDEO_TASK_CANCELLED_LOCK = threading.RLock()
+VIDEO_TASK_START_LOCK = threading.RLock()
+VIDEO_TASK_EXECUTOR = VideoTaskExecutor(name_prefix='DesktopVideoTask')
+IMAGE_TASKS = {}
 
 # GC constants for progress records
 _PROGRESS_TTL_SECONDS = 6 * 3600
@@ -152,17 +156,48 @@ def _is_video_task_cancelled(task_id: str) -> bool:
         return task_id in VIDEO_TASK_CANCELLED
 
 
-def _run_video_task_async(task_id: str, task_callable, on_completion):
-    """Run a video task asynchronously in a background thread."""
+def _cleanup_cancelled_video_result(result) -> None:
+    """Delete a completed output when cancellation wins the finish race."""
+    path = str(result or '')
+    if not path or not os.path.isfile(path):
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
-    def _worker():
-        """Background worker thread for async tasks."""
-        res = None
-        err = None
-        try:
-            res = task_callable()
-        except Exception as e:
-            err = e
+
+def _run_image_task_once(task_id: str, task_callable):
+    """Claim an image task ID and keep cancellation generation-safe."""
+    normalized_task_id = str(task_id)
+    cancel_event = threading.Event()
+    _maybe_gc_progress()
+    with VIDEO_TASK_START_LOCK:
+        if (
+            normalized_task_id in IMAGE_TASKS
+            or VIDEO_TASK_EXECUTOR.is_active(normalized_task_id)
+            or normalized_task_id in VIDEO_TASK_PROGRESS
+        ):
+            return None, RuntimeError('task-already-running')
+        IMAGE_TASKS[normalized_task_id] = cancel_event
+
+    def _guarded_task():
+        if cancel_event.is_set():
+            raise RuntimeError('cancelled')
+        return task_callable()
+
+    try:
+        return AsyncTask.run(_guarded_task, task_id=normalized_task_id)
+    finally:
+        with VIDEO_TASK_START_LOCK:
+            if IMAGE_TASKS.get(normalized_task_id) is cancel_event:
+                IMAGE_TASKS.pop(normalized_task_id, None)
+
+
+def _run_video_task_async(task_id: str, task_callable, on_completion):
+    """Queue a video task in the bounded background executor."""
+
+    def _completion(res, err):
         try:
             on_completion(res, err)
         except Exception:
@@ -173,8 +208,12 @@ def _run_video_task_async(task_id: str, task_callable, on_completion):
         finally:
             _clear_video_task_cancelled(task_id)
 
-    thread = threading.Thread(target=_worker, name=f'VideoTask-{task_id}', daemon=True)
-    thread.start()
+    VIDEO_TASK_EXECUTOR.submit(
+        task_id,
+        task_callable,
+        _completion,
+        on_cancel_result=_cleanup_cancelled_video_result,
+    )
 
 
 def _clone_json_payload(payload):
@@ -413,6 +452,9 @@ def _simplify_task_error(err: object) -> str:
         'invalid-regions',
         'config-mismatch',
         'config-not-found',
+        'task-already-running',
+        'result-path-already-registered',
+        'cancelled',
     ]
     for code in codes:
         if code in msg:
@@ -477,7 +519,8 @@ def create_task():
 
     try:
         body = request.json or {}
-        task_id = body.get('id')
+        raw_task_id = body.get('id')
+        task_id = str(raw_task_id).strip() if raw_task_id is not None else ''
         input_image = body.get('inputImage')
         target_face = body.get('targetFace')
         regions = body.get('regions')
@@ -541,17 +584,17 @@ def create_task():
                         response.status = 400
                         return {'error': 'invalid-face-source-binding'}
 
-                res, err = AsyncTask.run(
+                res, err = _run_image_task_once(
+                    task_id,
                     lambda: swap_face_regions_by_sources(
                         input_image, source_map, regions
                     ),
-                    task_id=task_id,
                 )
             else:
                 fallback_face = next(iter(source_map.values()))
-                res, err = AsyncTask.run(
+                res, err = _run_image_task_once(
+                    task_id,
                     lambda: swap_face(input_image, fallback_face),
-                    task_id=task_id,
                 )
         elif has_target_faces:
             if not isinstance(target_faces, list) or len(target_faces) == 0:
@@ -580,9 +623,9 @@ def create_task():
                     return {'error': _simplify_task_error(e)}
                 target_face_paths.append(target_path)
 
-            res, err = AsyncTask.run(
+            res, err = _run_image_task_once(
+                task_id,
                 lambda: swap_face_deep(input_image, target_face_paths, regions=regions),
-                task_id=task_id,
             )
         else:
             if not target_face:
@@ -600,21 +643,22 @@ def create_task():
                 return {'error': _simplify_task_error(e)}
 
             if regions:
-                res, err = AsyncTask.run(
+                res, err = _run_image_task_once(
+                    task_id,
                     lambda: swap_face_regions(input_image, target_face, regions),
-                    task_id=task_id,
                 )
             else:
-                res, err = AsyncTask.run(
+                res, err = _run_image_task_once(
+                    task_id,
                     lambda: swap_face(input_image, target_face),
-                    task_id=task_id,
                 )
 
         if res:
             return {'result': res}
 
-        response.status = 500
-        return {'error': _simplify_task_error(err)}
+        error_code = _simplify_task_error(err)
+        response.status = 409 if error_code == 'task-already-running' else 500
+        return {'error': error_code}
 
     except Exception as e:
         print('[ERROR] create_task failed:', str(e), '\n', traceback.format_exc())
@@ -731,7 +775,8 @@ def create_video_task():
     task_id = None
     try:
         body = request.json or {}
-        task_id = body.get('id')
+        raw_task_id = body.get('id')
+        task_id = str(raw_task_id).strip() if raw_task_id is not None else ''
         input_video = body.get('inputVideo')
         target_face = body.get('targetFace')
         target_faces = body.get('targetFaces')
@@ -982,20 +1027,6 @@ def create_video_task():
             }
 
         # 先设置初始状态
-        _set_video_task_progress(
-            task_id,
-            status='queued',
-            progress=0,
-            etaSeconds=None,
-            stage='queued',
-            frameCount=0,
-            totalFrames=0,
-            error=None,
-            result=None,
-        )
-
-        _clear_video_task_cancelled(task_id)
-
         # 定义回调函数（必须在 task_callable 之前定义）
         def _on_stage(stage: str):
             """Handle stage events during video processing."""
@@ -1034,7 +1065,7 @@ def create_video_task():
 
         # 现在定义 task_callable，此时回调函数已经存在
         if has_face_sources:
-            task_callable = lambda: swap_face_video_by_sources(
+            task_callable = lambda cancel_event: swap_face_video_by_sources(
                 input_video,
                 source_map,
                 regions,
@@ -1043,9 +1074,10 @@ def create_video_task():
                 stage_callback=_on_stage,
                 use_gpu=use_gpu,
                 gpu_provider=gpu_provider,
+                cancel_event=cancel_event,
             )
         elif has_target_faces:
-            task_callable = lambda: swap_face_video_deep(
+            task_callable = lambda cancel_event: swap_face_video_deep(
                 input_video,
                 [item['path'] for item in (target_face_items or [])],
                 regions=regions,
@@ -1056,9 +1088,10 @@ def create_video_task():
                 gpu_provider=gpu_provider,
                 segment_duration_sec=segment_duration_sec,
                 segment_overlap_frames=segment_overlap_frames,
+                cancel_event=cancel_event,
             )
         else:
-            task_callable = lambda: swap_face_video(
+            task_callable = lambda cancel_event: swap_face_video(
                 input_video,
                 target_face_path,
                 regions=regions,
@@ -1067,6 +1100,7 @@ def create_video_task():
                 stage_callback=_on_stage,
                 use_gpu=use_gpu,
                 gpu_provider=gpu_provider,
+                cancel_event=cancel_event,
             )
         # 使用异步任务处理，避免阻塞请求线程
         # 前端通过轮询获取进度和最终结果
@@ -1096,8 +1130,29 @@ def create_video_task():
                     etaSeconds=None,
                 )
 
+        _maybe_gc_progress()
         try:
-            _run_video_task_async(task_id, task_callable, _on_completion)
+            with VIDEO_TASK_START_LOCK:
+                if (
+                    VIDEO_TASK_EXECUTOR.is_active(task_id)
+                    or task_id in IMAGE_TASKS
+                    or task_id in VIDEO_TASK_PROGRESS
+                ):
+                    response.status = 409
+                    return {'error': 'task-already-running'}
+                _set_video_task_progress(
+                    task_id,
+                    status='queued',
+                    progress=0,
+                    etaSeconds=None,
+                    stage='queued',
+                    frameCount=0,
+                    totalFrames=0,
+                    error=None,
+                    result=None,
+                )
+                _clear_video_task_cancelled(task_id)
+                _run_video_task_async(task_id, task_callable, _on_completion)
         except Exception as e:
             _set_video_task_progress(
                 task_id,
@@ -1138,13 +1193,22 @@ def get_video_task_progress(task_id):
 @app.delete('/task/<task_id>')
 def cancel_task(task_id):
     """Cancel a running task."""
-    AsyncTask.cancel(task_id)
-    _mark_video_task_cancelled(task_id)
-    _set_video_task_progress(
-        task_id,
-        status='cancelled',
-        stage='cancelled',
-        etaSeconds=None,
-        error='cancelled',
-    )
+    with VIDEO_TASK_START_LOCK:
+        executor_cancelled = VIDEO_TASK_EXECUTOR.cancel(task_id)
+        image_cancel_event = IMAGE_TASKS.get(str(task_id))
+        image_task_active = image_cancel_event is not None
+        if image_cancel_event is not None:
+            image_cancel_event.set()
+        AsyncTask.cancel(task_id)
+        if not executor_cancelled and not image_task_active:
+            return {'success': False}
+        if executor_cancelled:
+            _mark_video_task_cancelled(task_id)
+            _set_video_task_progress(
+                task_id,
+                status='cancelled',
+                stage='cancelled',
+                etaSeconds=None,
+                error='cancelled',
+            )
     return {'success': True}

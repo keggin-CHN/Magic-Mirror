@@ -35,6 +35,7 @@ from magic.task_config import (
     parse_video_task_config_token,
     verify_file_sha256,
 )
+from magic.video_task_executor import VideoTaskExecutor
 
 app = Bottle()
 
@@ -93,6 +94,9 @@ VIDEO_TASK_PROGRESS: Dict[str, Dict[str, object]] = {}
 VIDEO_TASK_PROGRESS_LOCK = threading.RLock()
 VIDEO_TASK_CANCELLED = set()
 VIDEO_TASK_CANCELLED_LOCK = threading.RLock()
+VIDEO_TASK_START_LOCK = threading.RLock()
+VIDEO_TASK_EXECUTOR = VideoTaskExecutor(name_prefix='WebVideoTask')
+IMAGE_TASKS: Dict[str, threading.Event] = {}
 
 VIDEO_TASK_CONFIGS: Dict[str, Dict[str, object]] = {}
 VIDEO_TASK_CONFIGS_LOCK = threading.RLock()
@@ -218,6 +222,9 @@ def _simplify_task_error(err: object) -> str:
         'invalid-regions',
         'config-mismatch',
         'config-not-found',
+        'task-already-running',
+        'result-path-already-registered',
+        'cancelled',
     ]
     for code in codes:
         if code in msg:
@@ -239,9 +246,9 @@ def _sanitize_filename(name: str) -> str:
 def _is_path_within(parent: str, child: str) -> bool:
     """Check child path is within parent directory (path traversal defense)."""
     try:
-        parent_abs = os.path.abspath(parent)
-        child_abs = os.path.abspath(child)
-        return os.path.commonpath([parent_abs, child_abs]) == parent_abs
+        parent_real = os.path.normcase(os.path.realpath(os.path.abspath(parent)))
+        child_real = os.path.normcase(os.path.realpath(os.path.abspath(child)))
+        return os.path.commonpath([parent_real, child_real]) == parent_real
     except (ValueError, OSError):
         return False
 
@@ -278,8 +285,15 @@ def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None)
 
 def _register_upload(file_id: str, path: str, kind: str) -> None:
     """Register an uploaded file for later retrieval."""
+    now = time.time()
     with UPLOADS_LOCK:
-        UPLOADS[file_id] = {'path': path, 'kind': kind, 'createdAt': time.time()}
+        UPLOADS[file_id] = {
+            'path': path,
+            'kind': kind,
+            'createdAt': now,
+            'lastUsedAt': now,
+            'activeRefs': 0,
+        }
 
 
 def _clone_json_payload(payload):
@@ -301,15 +315,28 @@ def _parse_video_task_config_token(config_id: str) -> Optional[Dict[str, object]
     )
 
 
-def _register_result(result_path: str, delete_paths: List[str]) -> str:
-    """Register a result file for download and cleanup."""
+def _register_result(result_path: str) -> str:
+    """Register an output file for download and result-owned cleanup."""
     result_id = uuid.uuid4().hex
+    now = time.time()
+    absolute_path = os.path.abspath(result_path)
+    ownership_key = os.path.normcase(os.path.realpath(absolute_path))
     with RESULTS_LOCK:
+        for entry in RESULTS.values():
+            existing_path = entry.get('path')
+            if isinstance(existing_path, str) and os.path.normcase(
+                os.path.realpath(os.path.abspath(existing_path))
+            ) == ownership_key:
+                raise RuntimeError('result-path-already-registered')
         RESULTS[result_id] = {
-            'path': result_path,
-            'delete_paths': delete_paths,
-            'name': os.path.basename(result_path),
-            'createdAt': time.time(),
+            'path': absolute_path,
+            # Uploaded inputs have their own lifecycle in UPLOADS. A result must
+            # never take ownership of them because the same upload can be reused
+            # by another image or video task.
+            'delete_paths': [absolute_path],
+            'name': os.path.basename(absolute_path),
+            'createdAt': now,
+            'lastAccessedAt': now,
         }
     return result_id
 
@@ -318,7 +345,55 @@ def _get_upload_path(file_id: str) -> Optional[str]:
     """Get the file path for an uploaded file."""
     with UPLOADS_LOCK:
         item = UPLOADS.get(file_id)
-        return item.get('path') if item else None
+        if not item:
+            return None
+        item['lastUsedAt'] = time.time()
+        return item.get('path')
+
+
+class _UploadPin:
+    """Idempotent lease that keeps one uploaded file alive."""
+
+    def __init__(self, file_id: str, path: str):
+        self.file_id = file_id
+        self.path = path
+        self._released = False
+        self._release_lock = threading.Lock()
+
+    def release(self) -> None:
+        with self._release_lock:
+            if self._released:
+                return
+            self._released = True
+        _unpin_upload(self.file_id)
+
+
+def _pin_upload(file_id: str, expected_kind: Optional[str] = None):
+    """Keep an upload alive while a task is queued or running."""
+    normalized_id = str(file_id)
+    with UPLOADS_LOCK:
+        item = UPLOADS.get(normalized_id)
+        if not item:
+            return None
+        if expected_kind and item.get('kind') != expected_kind:
+            return None
+        item['activeRefs'] = int(item.get('activeRefs', 0)) + 1
+        item['lastUsedAt'] = time.time()
+        path = item.get('path')
+    if not isinstance(path, str):
+        _unpin_upload(normalized_id)
+        return None
+    return _UploadPin(normalized_id, path)
+
+
+def _unpin_upload(file_id: str) -> None:
+    """Release a task reference to an uploaded file."""
+    with UPLOADS_LOCK:
+        item = UPLOADS.get(file_id)
+        if not item:
+            return
+        item['activeRefs'] = max(0, int(item.get('activeRefs', 0)) - 1)
+        item['lastUsedAt'] = time.time()
 
 
 def _get_upload_kind(file_id: str) -> Optional[str]:
@@ -332,15 +407,10 @@ def _get_result_info(file_id: str) -> Optional[Dict[str, object]]:
     """Get info about a registered result."""
     with RESULTS_LOCK:
         info = RESULTS.get(file_id)
-        return info.copy() if info else None
-
-
-def _remove_upload_by_path(path: str) -> None:
-    """Remove an upload registration by path."""
-    with UPLOADS_LOCK:
-        to_remove = [key for key, item in UPLOADS.items() if item.get('path') == path]
-        for key in to_remove:
-            UPLOADS.pop(key, None)
+        if not info:
+            return None
+        info['lastAccessedAt'] = time.time()
+        return info.copy()
 
 
 def _safe_delete(path: str) -> None:
@@ -363,7 +433,10 @@ def _cleanup_expired_uploads() -> None:
         expired_ids = [
             fid
             for fid, entry in UPLOADS.items()
-            if now - float(entry.get('createdAt', now)) > UPLOAD_TTL_SECONDS
+            if int(entry.get('activeRefs', 0)) <= 0
+            and now
+            - float(entry.get('lastUsedAt', entry.get('createdAt', now)))
+            > UPLOAD_TTL_SECONDS
         ]
         for fid in expired_ids:
             entry = UPLOADS.pop(fid, None)
@@ -383,7 +456,9 @@ def _cleanup_expired_results() -> None:
         expired_ids = [
             rid
             for rid, entry in RESULTS.items()
-            if now - float(entry.get('createdAt', now)) > RESULT_TTL_SECONDS
+            if now
+            - float(entry.get('lastAccessedAt', entry.get('createdAt', now)))
+            > RESULT_TTL_SECONDS
         ]
         for rid in expired_ids:
             entry = RESULTS.pop(rid, None)
@@ -500,7 +575,7 @@ def _list_library_items() -> List[Dict[str, str]]:
     try:
         entries = sorted(os.scandir(LIBRARY_DIR), key=lambda entry: entry.name)
         for entry in entries:
-            if not entry.is_file():
+            if not entry.is_file() or not _is_path_within(LIBRARY_DIR, entry.path):
                 continue
             if _ext(entry.name) not in ALLOWED_IMAGE_EXTS:
                 continue
@@ -525,8 +600,8 @@ def _get_library_path(item_id: str) -> Optional[str]:
     """Get the file path for a library item."""
     if not item_id:
         return None
-    path = os.path.join(LIBRARY_DIR, os.path.basename(item_id))
-    if not os.path.exists(path):
+    path = os.path.abspath(os.path.join(LIBRARY_DIR, os.path.basename(item_id)))
+    if not _is_path_within(LIBRARY_DIR, path) or not os.path.isfile(path):
         return None
     if _ext(path) not in ALLOWED_IMAGE_EXTS:
         return None
@@ -579,17 +654,51 @@ def _is_video_task_cancelled(task_id: str) -> bool:
         return task_id in VIDEO_TASK_CANCELLED
 
 
-def _run_video_task_async(task_id: str, task_callable, on_completion):
-    """Run a video task asynchronously in a background thread."""
+def _run_image_task_with_upload_pin(input_id, task_id, task_callable):
+    """Run an image task while preventing its uploaded input from expiring."""
+    normalized_task_id = str(task_id)
+    cancel_event = threading.Event()
+    _cleanup_expired_progress()
+    with VIDEO_TASK_START_LOCK:
+        if (
+            normalized_task_id in IMAGE_TASKS
+            or VIDEO_TASK_EXECUTOR.is_active(normalized_task_id)
+            or normalized_task_id in VIDEO_TASK_PROGRESS
+        ):
+            return None, RuntimeError('task-already-running')
+        IMAGE_TASKS[normalized_task_id] = cancel_event
 
-    def _worker():
-        """Background worker thread for async tasks."""
-        res = None
-        err = None
-        try:
-            res = task_callable()
-        except Exception as e:
-            err = e
+    upload_pin = _pin_upload(str(input_id), expected_kind='image')
+    if not upload_pin:
+        with VIDEO_TASK_START_LOCK:
+            if IMAGE_TASKS.get(normalized_task_id) is cancel_event:
+                IMAGE_TASKS.pop(normalized_task_id, None)
+        return None, FileNotFoundError('file-not-found')
+
+    def _guarded_task():
+        if cancel_event.is_set():
+            raise RuntimeError('cancelled')
+        return task_callable()
+
+    try:
+        return AsyncTask.run(_guarded_task, task_id=normalized_task_id)
+    finally:
+        upload_pin.release()
+        with VIDEO_TASK_START_LOCK:
+            if IMAGE_TASKS.get(normalized_task_id) is cancel_event:
+                IMAGE_TASKS.pop(normalized_task_id, None)
+
+
+def _run_video_task_async(
+    task_id: str,
+    task_callable,
+    on_completion,
+    upload_pins=None,
+):
+    """Queue a video task in the bounded background executor."""
+    active_upload_pins = list(upload_pins or [])
+
+    def _completion(res, err):
         try:
             on_completion(res, err)
         except Exception:
@@ -599,11 +708,20 @@ def _run_video_task_async(task_id: str, task_callable, on_completion):
             )
         finally:
             _clear_video_task_cancelled(task_id)
+            for upload_pin in active_upload_pins:
+                upload_pin.release()
 
-    thread = threading.Thread(
-        target=_worker, name=f'WebVideoTask-{task_id}', daemon=True
-    )
-    thread.start()
+    try:
+        VIDEO_TASK_EXECUTOR.submit(
+            task_id,
+            task_callable,
+            _completion,
+            on_cancel_result=lambda result: _safe_delete(str(result)),
+        )
+    except Exception:
+        for upload_pin in active_upload_pins:
+            upload_pin.release()
+        raise
 
 
 def _cleanup_video_task_configs() -> None:
@@ -848,25 +966,11 @@ def _ensure_video_task_config_matches(
 
 
 def _cleanup_result(result_id: str, delete_paths: List[str]) -> None:
-    """Clean up a result and its associated files."""
+    """Clean up a result and files owned by that result."""
     with RESULTS_LOCK:
         RESULTS.pop(result_id, None)
     for path in delete_paths:
         _safe_delete(path)
-        _remove_upload_by_path(path)
-
-
-def _stream_and_cleanup(path: str, result_id: str, delete_paths: List[str]):
-    """Stream a file and clean up after download."""
-    try:
-        with open(path, 'rb') as f:
-            while True:
-                chunk = f.read(1024 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-    finally:
-        _cleanup_result(result_id, delete_paths)
 
 
 # Enable CORS
@@ -878,6 +982,7 @@ def enable_cors():
     response.set_header(
         'Access-Control-Allow-Headers', 'Authorization,Content-Type,X-Token'
     )
+    response.set_header('Referrer-Policy', 'no-referrer')
 
 
 @app.hook('before_request')
@@ -904,6 +1009,8 @@ def prepare():
     """Prepare a file for face detection."""
     if request.method == 'OPTIONS':
         return {}
+    if not _require_auth():
+        return {'error': 'unauthorized'}
     return {'success': load_models()}
 
 
@@ -935,7 +1042,10 @@ def update_credential():
         response.status = 400
         return {'error': 'missing-params'}
     _save_config({'password': new_password})
-    return {'success': True}
+    with TOKENS_LOCK:
+        TOKENS.clear()
+    token = _issue_token()
+    return {'success': True, 'token': token}
 
 
 @app.get('/api/library')
@@ -979,6 +1089,8 @@ def upload_library():
 @app.get('/api/library/<filename>')
 def get_library_file(filename):
     """Retrieve a face library file."""
+    if not _require_auth():
+        return {'error': 'unauthorized'}
     safe_name = os.path.basename(filename or '')
     path = os.path.abspath(os.path.join(LIBRARY_DIR, safe_name))
     if not _is_path_within(LIBRARY_DIR, path) or not os.path.exists(path):
@@ -1062,15 +1174,17 @@ def download_file(file_id):
         response.status = 404
         return {'error': 'file-not-found'}
     path = info.get('path')
-    delete_paths = list(info.get('delete_paths') or [])
     if not path or not os.path.exists(path):
         response.status = 404
         return {'error': 'file-not-found'}
     filename = info.get('name') or os.path.basename(path)
-    content_type = mimetypes.guess_type(path)[0] or 'application/octet-stream'
-    response.content_type = content_type
-    response.set_header('Content-Disposition', f'attachment; filename="{filename}"')
-    return _stream_and_cleanup(path, file_id, delete_paths)
+    response.set_header('Cache-Control', 'no-store')
+    return static_file(
+        os.path.basename(path),
+        root=os.path.dirname(path),
+        download=filename,
+        mimetype=mimetypes.guess_type(path)[0] or 'application/octet-stream',
+    )
 
 
 @app.route('/api/task/detect-faces', method=['POST', 'OPTIONS'])
@@ -1080,14 +1194,16 @@ def detect_faces_for_image():
         return {}
     if not _require_auth():
         return {'error': 'unauthorized'}
+    input_pin = None
     try:
         body = request.json or {}
         input_id = body.get('inputFileId')
         regions = body.get('regions')
-        input_path = _get_upload_path(input_id)
-        if not input_path:
+        input_pin = _pin_upload(str(input_id), expected_kind='image')
+        if not input_pin:
             response.status = 400
             return {'error': 'file-not-found'}
+        input_path = input_pin.path
         _validate_file(
             input_path,
             ALLOWED_IMAGE_EXTS,
@@ -1101,6 +1217,9 @@ def detect_faces_for_image():
     except Exception as e:
         response.status = 500
         return {'error': _simplify_task_error(e)}
+    finally:
+        if input_pin is not None:
+            input_pin.release()
 
 
 @app.route('/api/task/video/detect-faces', method=['POST', 'OPTIONS'])
@@ -1110,15 +1229,17 @@ def detect_faces_for_video():
         return {}
     if not _require_auth():
         return {'error': 'unauthorized'}
+    input_pin = None
     try:
         body = request.json or {}
         input_id = body.get('inputFileId')
         key_frame_ms = body.get('keyFrameMs', 0)
         regions = body.get('regions')
-        input_path = _get_upload_path(input_id)
-        if not input_path:
+        input_pin = _pin_upload(str(input_id), expected_kind='video')
+        if not input_pin:
             response.status = 400
             return {'error': 'file-not-found'}
+        input_path = input_pin.path
         _validate_file(
             input_path,
             ALLOWED_VIDEO_EXTS,
@@ -1140,6 +1261,9 @@ def detect_faces_for_video():
     except Exception as e:
         response.status = 500
         return {'error': _simplify_task_error(e)}
+    finally:
+        if input_pin is not None:
+            input_pin.release()
 
 
 @app.route('/api/task', method=['POST', 'OPTIONS'])
@@ -1149,9 +1273,11 @@ def create_task():
         return {}
     if not _require_auth():
         return {'error': 'unauthorized'}
+    input_pin = None
     try:
         body = request.json or {}
-        task_id = body.get('id')
+        raw_task_id = body.get('id')
+        task_id = str(raw_task_id).strip() if raw_task_id is not None else ''
         input_id = body.get('inputFileId')
         regions = body.get('regions')
         target_face_id = body.get('targetFaceId')
@@ -1164,10 +1290,11 @@ def create_task():
         if not all([task_id, input_id]):
             response.status = 400
             return {'error': 'missing-params'}
-        input_path = _get_upload_path(input_id)
-        if not input_path:
+        input_pin = _pin_upload(str(input_id), expected_kind='image')
+        if not input_pin:
             response.status = 400
             return {'error': 'file-not-found'}
+        input_path = input_pin.path
         try:
             _validate_file(
                 input_path,
@@ -1209,17 +1336,19 @@ def create_task():
                     if not source_id or str(source_id) not in source_map:
                         response.status = 400
                         return {'error': 'invalid-face-source-binding'}
-                res, err = AsyncTask.run(
+                res, err = _run_image_task_with_upload_pin(
+                    input_id,
+                    task_id,
                     lambda: swap_face_regions_by_sources(
                         input_path, source_map, regions
                     ),
-                    task_id=task_id,
                 )
             else:
                 fallback_face = next(iter(source_map.values()))
-                res, err = AsyncTask.run(
+                res, err = _run_image_task_with_upload_pin(
+                    input_id,
+                    task_id,
                     lambda: swap_face(input_path, fallback_face),
-                    task_id=task_id,
                 )
         elif has_target_faces:
             try:
@@ -1228,13 +1357,14 @@ def create_task():
                 response.status = 400
                 return {'error': _simplify_task_error(e)}
 
-            res, err = AsyncTask.run(
+            res, err = _run_image_task_with_upload_pin(
+                input_id,
+                task_id,
                 lambda: swap_face_deep(
                     input_path,
                     [item['path'] for item in target_face_items],
                     regions=regions,
                 ),
-                task_id=task_id,
             )
         else:
             if not target_face_id:
@@ -1254,24 +1384,30 @@ def create_task():
                 response.status = 400
                 return {'error': _simplify_task_error(e)}
             if regions:
-                res, err = AsyncTask.run(
+                res, err = _run_image_task_with_upload_pin(
+                    input_id,
+                    task_id,
                     lambda: swap_face_regions(input_path, target_face_path, regions),
-                    task_id=task_id,
                 )
             else:
-                res, err = AsyncTask.run(
+                res, err = _run_image_task_with_upload_pin(
+                    input_id,
+                    task_id,
                     lambda: swap_face(input_path, target_face_path),
-                    task_id=task_id,
                 )
         if res:
-            result_id = _register_result(res, [input_path, res])
+            result_id = _register_result(res)
             return {'resultFileId': result_id, 'resultUrl': f'/api/file/{result_id}'}
-        response.status = 500
-        return {'error': _simplify_task_error(err)}
+        error_code = _simplify_task_error(err)
+        response.status = 409 if error_code == 'task-already-running' else 500
+        return {'error': error_code}
     except Exception as e:
         print('[ERROR] create_task failed:', str(e), '\n', traceback.format_exc())
         response.status = 500
         return {'error': _simplify_task_error(e)}
+    finally:
+        if input_pin is not None:
+            input_pin.release()
 
 
 @app.route('/api/task/video/gpu-modes', method=['GET', 'OPTIONS'])
@@ -1301,9 +1437,11 @@ def create_video_task():
     if not _require_auth():
         return {'error': 'unauthorized'}
     task_id = None
+    input_pin = None
     try:
         body = request.json or {}
-        task_id = body.get('id')
+        raw_task_id = body.get('id')
+        task_id = str(raw_task_id).strip() if raw_task_id is not None else ''
         input_id = body.get('inputFileId')
         target_face_id = body.get('targetFaceId')
         target_faces = body.get('targetFaces')
@@ -1400,10 +1538,11 @@ def create_video_task():
         if not all([task_id, input_id]):
             response.status = 400
             return {'error': 'missing-params'}
-        input_path = _get_upload_path(input_id)
-        if not input_path:
+        input_pin = _pin_upload(str(input_id), expected_kind='video')
+        if not input_pin:
             response.status = 400
             return {'error': 'file-not-found'}
+        input_path = input_pin.path
         try:
             _validate_file(
                 input_path,
@@ -1535,21 +1674,6 @@ def create_video_task():
                 'configId': active_config_id,
             }
 
-        _set_video_task_progress(
-            task_id,
-            status='queued',
-            progress=0,
-            etaSeconds=None,
-            stage='queued',
-            frameCount=0,
-            totalFrames=0,
-            error=None,
-            resultFileId=None,
-            resultUrl=None,
-        )
-
-        _clear_video_task_cancelled(task_id)
-
         def _on_stage(stage: str):
             """Handle stage events during video processing."""
             if _is_video_task_cancelled(task_id):
@@ -1585,7 +1709,7 @@ def create_video_task():
             )
 
         if has_face_sources:
-            task_callable = lambda: swap_face_video_by_sources(
+            task_callable = lambda cancel_event: swap_face_video_by_sources(
                 input_path,
                 source_map,
                 regions,
@@ -1594,9 +1718,10 @@ def create_video_task():
                 stage_callback=_on_stage,
                 use_gpu=use_gpu,
                 gpu_provider=gpu_provider,
+                cancel_event=cancel_event,
             )
         elif has_target_faces:
-            task_callable = lambda: swap_face_video_deep(
+            task_callable = lambda cancel_event: swap_face_video_deep(
                 input_path,
                 [item['path'] for item in (target_face_items or [])],
                 regions=regions,
@@ -1607,9 +1732,10 @@ def create_video_task():
                 gpu_provider=gpu_provider,
                 segment_duration_sec=segment_duration_sec,
                 segment_overlap_frames=segment_overlap_frames,
+                cancel_event=cancel_event,
             )
         else:
-            task_callable = lambda: swap_face_video(
+            task_callable = lambda cancel_event: swap_face_video(
                 input_path,
                 target_face_path,
                 regions=regions,
@@ -1618,6 +1744,7 @@ def create_video_task():
                 stage_callback=_on_stage,
                 use_gpu=use_gpu,
                 gpu_provider=gpu_provider,
+                cancel_event=cancel_event,
             )
 
         def _on_completion(res, err):
@@ -1627,7 +1754,7 @@ def create_video_task():
                 return
 
             if res:
-                result_id = _register_result(res, [input_path, res])
+                result_id = _register_result(res)
                 _set_video_task_progress(
                     task_id,
                     status='success',
@@ -1648,8 +1775,36 @@ def create_video_task():
                     etaSeconds=None,
                 )
 
+        _cleanup_expired_progress()
         try:
-            _run_video_task_async(task_id, task_callable, _on_completion)
+            with VIDEO_TASK_START_LOCK:
+                if (
+                    VIDEO_TASK_EXECUTOR.is_active(task_id)
+                    or task_id in IMAGE_TASKS
+                    or task_id in VIDEO_TASK_PROGRESS
+                ):
+                    response.status = 409
+                    return {'error': 'task-already-running'}
+                _set_video_task_progress(
+                    task_id,
+                    status='queued',
+                    progress=0,
+                    etaSeconds=None,
+                    stage='queued',
+                    frameCount=0,
+                    totalFrames=0,
+                    error=None,
+                    resultFileId=None,
+                    resultUrl=None,
+                )
+                _clear_video_task_cancelled(task_id)
+                _run_video_task_async(
+                    task_id,
+                    task_callable,
+                    _on_completion,
+                    upload_pins=[input_pin],
+                )
+            input_pin = None
         except Exception as e:
             _set_video_task_progress(
                 task_id,
@@ -1676,6 +1831,9 @@ def create_video_task():
             )
         response.status = 500
         return {'error': _simplify_task_error(e)}
+    finally:
+        if input_pin is not None:
+            input_pin.release()
 
 
 @app.get('/api/task/video/progress/<task_id>')
@@ -1692,15 +1850,24 @@ def cancel_task(task_id):
     """Cancel a running task."""
     if not _require_auth():
         return {'error': 'unauthorized'}
-    AsyncTask.cancel(task_id)
-    _mark_video_task_cancelled(task_id)
-    _set_video_task_progress(
-        task_id,
-        status='cancelled',
-        stage='cancelled',
-        etaSeconds=None,
-        error='cancelled',
-    )
+    with VIDEO_TASK_START_LOCK:
+        executor_cancelled = VIDEO_TASK_EXECUTOR.cancel(task_id)
+        image_cancel_event = IMAGE_TASKS.get(str(task_id))
+        image_task_active = image_cancel_event is not None
+        if image_cancel_event is not None:
+            image_cancel_event.set()
+        AsyncTask.cancel(task_id)
+        if not executor_cancelled and not image_task_active:
+            return {'success': False}
+        if executor_cancelled:
+            _mark_video_task_cancelled(task_id)
+            _set_video_task_progress(
+                task_id,
+                status='cancelled',
+                stage='cancelled',
+                etaSeconds=None,
+                error='cancelled',
+            )
     return {'success': True}
 
 
@@ -1729,6 +1896,19 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
     daemon_threads = True
 
 
+class _RedactingWSGIRequestHandler(WSGIRequestHandler):
+    """Prevent bearer query tokens from being written to access logs."""
+
+    def log_message(self, format, *args):
+        redacted_args = tuple(
+            re.sub(r'([?&]token=)[^&\s]+', r'\1***', value)
+            if isinstance(value, str)
+            else value
+            for value in args
+        )
+        super().log_message(format, *redacted_args)
+
+
 if __name__ == '__main__':
     host = os.environ.get('WEB_HOST', '0.0.0.0')
     port = int(os.environ.get('WEB_PORT', '8033'))
@@ -1738,6 +1918,6 @@ if __name__ == '__main__':
         port,
         app,
         server_class=_ThreadingWSGIServer,
-        handler_class=WSGIRequestHandler,
+        handler_class=_RedactingWSGIRequestHandler,
     )
     httpd.serve_forever()

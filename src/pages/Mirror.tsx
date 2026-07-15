@@ -78,6 +78,9 @@ const convertLocalFileSrcFresh = (path: string) => {
   return `${src}${separator}previewRevision=${Date.now()}-${kPreviewRevision}`;
 };
 
+const withCacheBust = (url: string) =>
+  `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`;
+
 export function MirrorPage() {
   const [flag, setFlag] = useState(false);
   const rebuild = useRef<() => void>(() => undefined);
@@ -93,18 +96,24 @@ export function MirrorPage() {
     isSwapping,
     swapFace,
     swapVideo,
+    cancel: cancelSwap,
     error: swapError,
     videoProgress,
     videoEtaSeconds,
     videoStage,
     videoTaskConfigId,
   } = useSwapFace();
+  const [isStartingSwap, setIsStartingSwap] = useState(false);
   const [success, setSuccess] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
   const [isLibraryLoading, setIsLibraryLoading] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
+  const [isInputUploading, setIsInputUploading] = useState(false);
+  const [isLibraryUploading, setIsLibraryUploading] = useState(false);
+  const isUploading = isInputUploading || isLibraryUploading;
   const [regions, setRegions] = useState<Region[]>([]);
+  const regionsRef = useRef<Region[]>([]);
+  regionsRef.current = regions;
   const [draftRegion, setDraftRegion] = useState<Region | null>(null);
   const [inputSize, setInputSize] = useState<{
     width: number;
@@ -142,14 +151,27 @@ export function MirrorPage() {
   const autoDetectedImagePathRef = useRef<string | null>(null);
   const faceDetectionRequestRef = useRef(0);
   const inputUploadRequestRef = useRef(0);
+  const inputUploadAbortRef = useRef<AbortController | null>(null);
+  const libraryUploadRequestRef = useRef(0);
+  const libraryUploadAbortRef = useRef<AbortController | null>(null);
   const [videoDurationMs, setVideoDurationMs] = useState(0);
   const [videoKeyFrameMs, setVideoKeyFrameMs] = useState(0);
   const [isDetectingFaces, setIsDetectingFaces] = useState(false);
   const [selectionZoom, setSelectionZoom] = useState(1);
+  const [previewLayoutVersion, setPreviewLayoutVersion] = useState(0);
+  const previewTransformRef = useRef<{
+    width: number;
+    height: number;
+    scale: number;
+    offsetX: number;
+    offsetY: number;
+  } | null>(null);
   const [activeFaceSourceId, setActiveFaceSourceId] = useState<string | null>(null);
   const [generateTaskConfigId, setGenerateTaskConfigId] = useState(false);
   const [viewTaskIdOnly, setViewTaskIdOnly] = useState(false);
   const [taskConfigIdInput, setTaskConfigIdInput] = useState("");
+  const swapRequestRef = useRef(0);
+  const swapStartingRef = useRef(false);
 
   const refreshLibrary = useCallback(async () => {
     if (!isWeb || !webClient.isAuthed) {
@@ -242,17 +264,41 @@ export function MirrorPage() {
         setNotice(t("Please use an image for your face photo."));
         return [];
       }
-      setIsUploading(true);
+      libraryUploadAbortRef.current?.abort();
+      const uploadController = new AbortController();
+      libraryUploadAbortRef.current = uploadController;
+      const requestId = ++libraryUploadRequestRef.current;
+      setIsLibraryUploading(true);
       const uploaded: LibraryItem[] = [];
       try {
         for (const file of validFiles) {
-          const item = await webClient.uploadLibrary(file);
+          if (
+            uploadController.signal.aborted ||
+            libraryUploadRequestRef.current !== requestId
+          ) {
+            return [];
+          }
+          const item = await webClient.uploadLibrary(
+            file,
+            uploadController.signal
+          );
+          if (
+            uploadController.signal.aborted ||
+            libraryUploadRequestRef.current !== requestId
+          ) {
+            return [];
+          }
           if (item) {
             uploaded.push(item);
           }
         }
       } finally {
-        setIsUploading(false);
+        if (libraryUploadAbortRef.current === uploadController) {
+          libraryUploadAbortRef.current = null;
+        }
+        if (libraryUploadRequestRef.current === requestId) {
+          setIsLibraryUploading(false);
+        }
       }
       if (!uploaded.length) {
         setNotice(t("Upload failed. Please try again."));
@@ -302,14 +348,20 @@ export function MirrorPage() {
         setNotice(t("Unsupported file type."));
         return null;
       }
-      setIsUploading(true);
+      setIsInputUploading(true);
+      inputUploadAbortRef.current?.abort();
+      const uploadController = new AbortController();
+      inputUploadAbortRef.current = uploadController;
       const requestId = ++inputUploadRequestRef.current;
       let uploaded: UploadResult | null = null;
       try {
-        uploaded = await webClient.uploadFile(file);
+        uploaded = await webClient.uploadFile(file, uploadController.signal);
       } finally {
+        if (inputUploadAbortRef.current === uploadController) {
+          inputUploadAbortRef.current = null;
+        }
         if (inputUploadRequestRef.current === requestId) {
-          setIsUploading(false);
+          setIsInputUploading(false);
         }
       }
       if (inputUploadRequestRef.current !== requestId) {
@@ -351,13 +403,25 @@ export function MirrorPage() {
     [isWeb, uploadInputFile]
   );
 
+  useEffect(
+    () => () => {
+      inputUploadAbortRef.current?.abort();
+      inputUploadAbortRef.current = null;
+      inputUploadRequestRef.current += 1;
+      libraryUploadAbortRef.current?.abort();
+      libraryUploadAbortRef.current = null;
+      libraryUploadRequestRef.current += 1;
+    },
+    []
+  );
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      if (kMirrorStates.me && !kMirrorStates.input) {
-        kMirrorStates.isMe = false;
-        rebuild.current();
-      }
-      if (kMirrorStates.me && isSwapping) {
+      if (
+        kMirrorStates.isMe &&
+        kMirrorStates.me &&
+        (!kMirrorStates.input || isSwapping)
+      ) {
         kMirrorStates.isMe = false;
         rebuild.current();
       }
@@ -464,6 +528,8 @@ export function MirrorPage() {
     !kMirrorStates.isMe &&
     (isImageInput || isVideoInput) &&
     isEditingRegions &&
+    !isStartingSwap &&
+    !isDetectingFaces &&
     !isSwapping &&
     !!inputSize;
   const showSelection =
@@ -471,7 +537,7 @@ export function MirrorPage() {
     isEditingRegions &&
     !kMirrorStates.isMe &&
     !!inputSize;
-  const showToolbar = showSelection && !isSwapping;
+  const showToolbar = showSelection && !isSwapping && !isStartingSwap;
   const canStartSwap =
     isVideoInput && !isMultiFaceMode ? true : regions.length > 0;
   const selectionObjectFit: "contain" | "cover" = showSelection
@@ -481,63 +547,177 @@ export function MirrorPage() {
     ? isVideoInput
       ? "56px 56px 300px"
       : "56px 56px 240px"
-    : isVideoInput
-      ? "56px 56px 180px"
-      : "56px 56px 120px";
+      : isVideoInput
+        ? "56px 56px 180px"
+        : "56px 56px 120px";
 
-  const mapMediaRegionsToScreen = useCallback(
-    (mediaRegions: Region[], mediaWidth: number, mediaHeight: number): Region[] => {
-      if (!previewRef.current || mediaWidth <= 0 || mediaHeight <= 0) {
-        return [];
+  // Regions are stored in preview-container coordinates. Whenever the layout
+  // changes, preserve their source-media coordinates and project them back
+  // using the new container dimensions (window resize, DPI changes, etc.).
+  useEffect(() => {
+    const element = previewRef.current;
+    if (!element || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const updateLayout = () => {
+      const rect = element.getBoundingClientRect();
+      if (selectingRef.current || moveRef.current || resizeRef.current) {
+        selectingRef.current = false;
+        startPointRef.current = null;
+        moveRef.current = null;
+        resizeRef.current = null;
+        setDraftRegion(null);
+      }
+      if (!inputSize || rect.width <= 0 || rect.height <= 0) {
+        if (previewTransformRef.current === null) {
+          return;
+        }
+        previewTransformRef.current = null;
+        setPreviewLayoutVersion((version) => version + 1);
+        return;
       }
 
+      const baseScale =
+        selectionObjectFit === "cover"
+          ? Math.max(rect.width / inputSize.width, rect.height / inputSize.height)
+          : Math.min(rect.width / inputSize.width, rect.height / inputSize.height);
+      const nextTransform = {
+        width: rect.width,
+        height: rect.height,
+        scale: baseScale * selectionZoom,
+        offsetX: (rect.width - inputSize.width * baseScale * selectionZoom) / 2,
+        offsetY: (rect.height - inputSize.height * baseScale * selectionZoom) / 2,
+      };
+      const previousTransform = previewTransformRef.current;
+      if (
+        previousTransform &&
+        Math.abs(previousTransform.width - nextTransform.width) < 0.01 &&
+        Math.abs(previousTransform.height - nextTransform.height) < 0.01 &&
+        Math.abs(previousTransform.scale - nextTransform.scale) < 0.0001 &&
+        Math.abs(previousTransform.offsetX - nextTransform.offsetX) < 0.01 &&
+        Math.abs(previousTransform.offsetY - nextTransform.offsetY) < 0.01
+      ) {
+        return;
+      }
+      if (previousTransform && regionsRef.current.length) {
+        const mediaRegions = regionsRef.current.map((region) => ({
+          ...region,
+          x: (region.x - previousTransform.offsetX) / previousTransform.scale,
+          y: (region.y - previousTransform.offsetY) / previousTransform.scale,
+          width: region.width / previousTransform.scale,
+          height: region.height / previousTransform.scale,
+        }));
+        setRegions(
+          mediaRegions.map((region) => ({
+            ...region,
+            x: region.x * nextTransform.scale + nextTransform.offsetX,
+            y: region.y * nextTransform.scale + nextTransform.offsetY,
+            width: region.width * nextTransform.scale,
+            height: region.height * nextTransform.scale,
+          }))
+        );
+      }
+      previewTransformRef.current = nextTransform;
+      setPreviewLayoutVersion((version) => version + 1);
+    };
+
+    updateLayout();
+    const observer = new ResizeObserver(updateLayout);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [showSelection, inputSize, selectionObjectFit, selectionZoom]);
+
+  const getPreviewTransform = useCallback(
+    (mediaWidth: number, mediaHeight: number, zoom = selectionZoom) => {
+      // Force this projection to refresh after a ResizeObserver notification.
+      void previewLayoutVersion;
+      if (!previewRef.current || mediaWidth <= 0 || mediaHeight <= 0) {
+        return null;
+      }
       const rect = previewRef.current.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
-        return [];
+        return null;
       }
-
-      const scale = Math.min(rect.width / mediaWidth, rect.height / mediaHeight);
+      const baseScale =
+        selectionObjectFit === "cover"
+          ? Math.max(rect.width / mediaWidth, rect.height / mediaHeight)
+          : Math.min(rect.width / mediaWidth, rect.height / mediaHeight);
+      const scale = baseScale * zoom;
       const displayWidth = mediaWidth * scale;
       const displayHeight = mediaHeight * scale;
-      const offsetX = (rect.width - displayWidth) / 2;
-      const offsetY = (rect.height - displayHeight) / 2;
+      return {
+        rect,
+        scale,
+        offsetX: (rect.width - displayWidth) / 2,
+        offsetY: (rect.height - displayHeight) / 2,
+      };
+    },
+    [previewLayoutVersion, selectionObjectFit, selectionZoom]
+  );
 
+  const mapMediaRegionsToScreen = useCallback(
+    (
+      mediaRegions: Region[],
+      mediaWidth: number,
+      mediaHeight: number,
+      zoom = selectionZoom
+    ): Region[] => {
+      const transform = getPreviewTransform(mediaWidth, mediaHeight, zoom);
+      if (!transform) {
+        return [];
+      }
+      const { rect, scale, offsetX, offsetY } = transform;
       return mediaRegions
         .map((region: Region) => {
           const x = clamp(region.x * scale + offsetX, 0, rect.width - 1);
           const y = clamp(region.y * scale + offsetY, 0, rect.height - 1);
           const width = clamp(region.width * scale, 1, rect.width - x);
           const height = clamp(region.height * scale, 1, rect.height - y);
-          return {
-            x: Math.round(x),
-            y: Math.round(y),
-            width: Math.round(width),
-            height: Math.round(height),
-          };
+          return { ...region, x, y, width, height };
         })
         .filter((region: Region) => region.width > 1 && region.height > 1);
     },
-    []
+    [getPreviewTransform, selectionZoom]
   );
 
+  const getEditablePreviewBounds = useCallback(() => {
+    if (!inputSize) {
+      return null;
+    }
+    const transform = getPreviewTransform(inputSize.width, inputSize.height);
+    if (!transform) {
+      return null;
+    }
+    const { rect, scale, offsetX, offsetY } = transform;
+    const full = {
+      left: offsetX,
+      top: offsetY,
+      right: offsetX + inputSize.width * scale,
+      bottom: offsetY + inputSize.height * scale,
+    };
+    const visible = {
+      left: clamp(full.left, 0, rect.width),
+      top: clamp(full.top, 0, rect.height),
+      right: clamp(full.right, 0, rect.width),
+      bottom: clamp(full.bottom, 0, rect.height),
+    };
+    if (visible.right <= visible.left || visible.bottom <= visible.top) {
+      return null;
+    }
+    return { full, visible };
+  }, [getPreviewTransform, inputSize]);
+
   const toImageRegions = useCallback((): Region[] => {
-    if (!previewRef.current || !inputSize) {
+    if (!inputSize) {
       return [];
     }
-    const rect = previewRef.current.getBoundingClientRect();
-
+    /* Regions are stored in preview-container coordinates. */
     // object-fit 的缩放计算（选区编辑态使用 contain，保证整图可见）
-    const baseScale =
-      selectionObjectFit === "cover"
-        ? Math.max(rect.width / inputSize.width, rect.height / inputSize.height)
-        : Math.min(rect.width / inputSize.width, rect.height / inputSize.height);
-
-    const scale = baseScale * (showSelection ? selectionZoom : 1);
-
-    const displayWidth = inputSize.width * scale;
-    const displayHeight = inputSize.height * scale;
-    const offsetX = (rect.width - displayWidth) / 2;
-    const offsetY = (rect.height - displayHeight) / 2;
+    const transform = getPreviewTransform(inputSize.width, inputSize.height);
+    if (!transform) {
+      return [];
+    }
+    const { scale, offsetX, offsetY } = transform;
     const imageRegions = regions
       .map((region: Region) => {
         const x = Math.round((region.x - offsetX) / scale);
@@ -558,7 +738,7 @@ export function MirrorPage() {
       })
       .filter((region: Region) => region.width > 1 && region.height > 1);
     return imageRegions;
-  }, [regions, inputSize, selectionObjectFit, showSelection, selectionZoom]);
+  }, [getPreviewTransform, regions, inputSize]);
 
   const handleDetectImageFaces = useCallback(async (force = false) => {
     const input = kMirrorStates.input;
@@ -574,6 +754,9 @@ export function MirrorPage() {
     const requestId = ++faceDetectionRequestRef.current;
     const mediaSize = inputSize;
     setNotice(null);
+    setRegions([]);
+    setDraftRegion(null);
+    setSelectedRegionIndex(null);
     setSelectionZoom(1);
     setIsDetectingFaces(true);
     try {
@@ -595,7 +778,8 @@ export function MirrorPage() {
       const screenRegions = mapMediaRegionsToScreen(
         detected.regions || [],
         mediaSize.width,
-        mediaSize.height
+        mediaSize.height,
+        1
       ).map((region: Region) => ({
         x: region.x,
         y: region.y,
@@ -673,12 +857,18 @@ export function MirrorPage() {
 
   const handleWheelZoom = useCallback(
     (event: WheelEvent<HTMLDivElement>) => {
-      if (!showSelection || !previewRef.current) return;
+      if (
+        !showSelection ||
+        isDetectingFaces ||
+        selectingRef.current ||
+        moveRef.current ||
+        resizeRef.current ||
+        !previewRef.current ||
+        !inputSize
+      ) {
+        return;
+      }
       event.stopPropagation();
-
-      const rect = previewRef.current.getBoundingClientRect();
-      const mouseX = event.clientX - rect.left;
-      const mouseY = event.clientY - rect.top;
 
       const delta = -event.deltaY;
       const step = 0.1;
@@ -689,49 +879,56 @@ export function MirrorPage() {
       );
 
       if (nextZoom !== selectionZoom) {
-        // 计算缩放比例变化
-        const scaleFactor = nextZoom / selectionZoom;
+        const currentTransform = getPreviewTransform(
+          inputSize.width,
+          inputSize.height,
+          selectionZoom
+        );
+        const nextTransform = getPreviewTransform(
+          inputSize.width,
+          inputSize.height,
+          nextZoom
+        );
+        if (!currentTransform || !nextTransform) {
+          return;
+        }
 
-        // 计算新的区域位置，保持鼠标位置不变
-        // 公式推导：
-        // (x - mouseX) * scaleFactor + mouseX = newX
-        // newX = x * scaleFactor + mouseX * (1 - scaleFactor)
-
-        // 由于 regions 存储的是相对于原始图片尺寸的坐标，我们需要先转换到屏幕坐标系进行计算，然后再转换回去
-        // 但这里我们直接修改 regions 的逻辑是：regions 存储的是屏幕坐标系下的位置 (根据 mapMediaRegionsToScreen 和 toImageRegions 的逻辑推断)
-        // 实际上，regions 存储的是相对于 previewRef 容器的坐标。
-
-        // 修正：regions 存储的是相对于 previewRef 容器的坐标。
-        // 当 zoom 发生变化时，previewRef 的内容（img/video）会缩放，但 regions 是绝对定位的 div。
-        // 为了让 regions 跟随图片缩放，我们需要调整 regions 的坐标和大小。
-
-        // 之前的逻辑是围绕中心点缩放：
-        // const cx = rect.width / 2;
-        // const cy = rect.height / 2;
-        // x = cx + (r.x - cx) * factor;
-
-        // 现在改为围绕鼠标点缩放：
-        // x = mouseX + (r.x - mouseX) * factor;
-
-        const nextRegions = regions.map((r: Region) => {
-          const x = mouseX + (r.x - mouseX) * scaleFactor;
-          const y = mouseY + (r.y - mouseY) * scaleFactor;
-          const width = r.width * scaleFactor;
-          const height = r.height * scaleFactor;
-          return {
-            ...r,
-            x,
-            y,
-            width,
-            height,
-          };
-        });
-
-        setRegions(nextRegions);
+        // The media element scales around its center. Preserve each region's
+        // source-media coordinates and project it with the new zoom transform.
+        setRegions((currentRegions) =>
+          currentRegions.map((region: Region) => {
+            const mediaX =
+              (region.x - currentTransform.offsetX) / currentTransform.scale;
+            const mediaY =
+              (region.y - currentTransform.offsetY) / currentTransform.scale;
+            const mediaWidth = region.width / currentTransform.scale;
+            const mediaHeight = region.height / currentTransform.scale;
+            return {
+              ...region,
+              x: mediaX * nextTransform.scale + nextTransform.offsetX,
+              y: mediaY * nextTransform.scale + nextTransform.offsetY,
+              width: mediaWidth * nextTransform.scale,
+              height: mediaHeight * nextTransform.scale,
+            };
+          })
+        );
+        previewTransformRef.current = {
+          width: nextTransform.rect.width,
+          height: nextTransform.rect.height,
+          scale: nextTransform.scale,
+          offsetX: nextTransform.offsetX,
+          offsetY: nextTransform.offsetY,
+        };
         setSelectionZoom(nextZoom);
       }
     },
-    [showSelection, selectionZoom, regions]
+    [
+      getPreviewTransform,
+      inputSize,
+      isDetectingFaces,
+      selectionZoom,
+      showSelection,
+    ]
   );
 
   const handlePointerDown = useCallback(
@@ -740,8 +937,23 @@ export function MirrorPage() {
         return;
       }
       const rect = previewRef.current.getBoundingClientRect();
-      const startX = clamp(event.clientX - rect.left, 0, rect.width);
-      const startY = clamp(event.clientY - rect.top, 0, rect.height);
+      const previewBounds = getEditablePreviewBounds();
+      if (!previewBounds) {
+        return;
+      }
+      const bounds = previewBounds.visible;
+      const rawX = event.clientX - rect.left;
+      const rawY = event.clientY - rect.top;
+      if (
+        rawX < bounds.left ||
+        rawX > bounds.right ||
+        rawY < bounds.top ||
+        rawY > bounds.bottom
+      ) {
+        return;
+      }
+      const startX = clamp(rawX, bounds.left, bounds.right);
+      const startY = clamp(rawY, bounds.top, bounds.bottom);
       previewRef.current.setPointerCapture(event.pointerId);
       resizeRef.current = null;
       moveRef.current = null;
@@ -750,7 +962,7 @@ export function MirrorPage() {
       startPointRef.current = { x: startX, y: startY };
       setDraftRegion({ x: startX, y: startY, width: 0, height: 0 });
     },
-    [canSelect]
+    [canSelect, getEditablePreviewBounds]
   );
 
   const handlePointerMove = useCallback(
@@ -759,8 +971,21 @@ export function MirrorPage() {
         return;
       }
       const rect = previewRef.current.getBoundingClientRect();
-      const currentX = clamp(event.clientX - rect.left, 0, rect.width);
-      const currentY = clamp(event.clientY - rect.top, 0, rect.height);
+      const previewBounds = getEditablePreviewBounds();
+      if (!previewBounds) {
+        return;
+      }
+      const bounds = previewBounds.full;
+      const currentX = clamp(
+        event.clientX - rect.left,
+        bounds.left,
+        bounds.right
+      );
+      const currentY = clamp(
+        event.clientY - rect.top,
+        bounds.top,
+        bounds.bottom
+      );
 
       if (resizeRef.current) {
         const { index, handle, startX, startY, origin } = resizeRef.current;
@@ -775,25 +1000,25 @@ export function MirrorPage() {
 
         switch (handle) {
           case "nw":
-            newX = clamp(x + dx, 0, x + width - minSize);
-            newY = clamp(y + dy, 0, y + height - minSize);
+            newX = clamp(x + dx, bounds.left, x + width - minSize);
+            newY = clamp(y + dy, bounds.top, y + height - minSize);
             newW = width - (newX - x);
             newH = height - (newY - y);
             break;
           case "ne":
-            newY = clamp(y + dy, 0, y + height - minSize);
-            newW = clamp(width + dx, minSize, rect.width - x);
+            newY = clamp(y + dy, bounds.top, y + height - minSize);
+            newW = clamp(width + dx, minSize, bounds.right - x);
             newH = height - (newY - y);
             break;
           case "sw":
-            newX = clamp(x + dx, 0, x + width - minSize);
+            newX = clamp(x + dx, bounds.left, x + width - minSize);
             newW = width - (newX - x);
-            newH = clamp(height + dy, minSize, rect.height - y);
+            newH = clamp(height + dy, minSize, bounds.bottom - y);
             break;
           case "se":
           default:
-            newW = clamp(width + dx, minSize, rect.width - x);
-            newH = clamp(height + dy, minSize, rect.height - y);
+            newW = clamp(width + dx, minSize, bounds.right - x);
+            newH = clamp(height + dy, minSize, bounds.bottom - y);
             break;
         }
 
@@ -817,8 +1042,16 @@ export function MirrorPage() {
         const { index, startX, startY, origin } = moveRef.current;
         const dx = currentX - startX;
         const dy = currentY - startY;
-        const newX = clamp(origin.x + dx, 0, rect.width - origin.width);
-        const newY = clamp(origin.y + dy, 0, rect.height - origin.height);
+        const newX = clamp(
+          origin.x + dx,
+          bounds.left,
+          Math.max(bounds.left, bounds.right - origin.width)
+        );
+        const newY = clamp(
+          origin.y + dy,
+          bounds.top,
+          Math.max(bounds.top, bounds.bottom - origin.height)
+        );
 
         setRegions((prev: Region[]) =>
           prev.map((region, idx) =>
@@ -844,7 +1077,7 @@ export function MirrorPage() {
       const height = Math.abs(currentY - start.y);
       setDraftRegion({ x, y, width, height });
     },
-    []
+    [getEditablePreviewBounds]
   );
 
   const finishSelection = useCallback(
@@ -899,8 +1132,13 @@ export function MirrorPage() {
       }
 
       const rect = previewRef.current.getBoundingClientRect();
-      const startX = clamp(event.clientX - rect.left, 0, rect.width);
-      const startY = clamp(event.clientY - rect.top, 0, rect.height);
+      const previewBounds = getEditablePreviewBounds();
+      if (!previewBounds) {
+        return;
+      }
+      const bounds = previewBounds.full;
+      const startX = clamp(event.clientX - rect.left, bounds.left, bounds.right);
+      const startY = clamp(event.clientY - rect.top, bounds.top, bounds.bottom);
       previewRef.current.setPointerCapture(event.pointerId);
       selectingRef.current = false;
       startPointRef.current = null;
@@ -914,7 +1152,13 @@ export function MirrorPage() {
       };
       setSelectedRegionIndex(index);
     },
-    [canSelect, regions, activeFaceSourceId, isDeepSwapMode]
+    [
+      canSelect,
+      getEditablePreviewBounds,
+      regions,
+      activeFaceSourceId,
+      isDeepSwapMode,
+    ]
   );
 
   const handleResizePointerDown = useCallback(
@@ -925,8 +1169,13 @@ export function MirrorPage() {
         }
         event.stopPropagation();
         const rect = previewRef.current.getBoundingClientRect();
-        const startX = clamp(event.clientX - rect.left, 0, rect.width);
-        const startY = clamp(event.clientY - rect.top, 0, rect.height);
+        const previewBounds = getEditablePreviewBounds();
+        if (!previewBounds) {
+          return;
+        }
+        const bounds = previewBounds.full;
+        const startX = clamp(event.clientX - rect.left, bounds.left, bounds.right);
+        const startY = clamp(event.clientY - rect.top, bounds.top, bounds.bottom);
         previewRef.current.setPointerCapture(event.pointerId);
         moveRef.current = null;
         resizeRef.current = {
@@ -938,7 +1187,7 @@ export function MirrorPage() {
         };
         setSelectedRegionIndex(index);
       },
-    [canSelect, regions]
+    [canSelect, getEditablePreviewBounds, regions]
   );
 
   const handleDeleteSelected = useCallback(() => {
@@ -974,6 +1223,9 @@ export function MirrorPage() {
   }, []);
 
   const handleToggleMultiFaceMode = useCallback(() => {
+    if (isStartingSwap) {
+      return;
+    }
     setIsMultiFaceMode((prev: boolean) => {
       const next = !prev;
       if (!next) {
@@ -1047,7 +1299,7 @@ export function MirrorPage() {
       return [...updated, ...additionsByPath.values()];
     });
     setNotice(null);
-  }, []);
+  }, [isStartingSwap]);
 
   const handleOpenFaceSourcePicker = useCallback(async () => {
     if (isWeb) {
@@ -1168,6 +1420,11 @@ export function MirrorPage() {
   const handleVideoTimelineChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       const next = Number(event.target.value);
+      faceDetectionRequestRef.current += 1;
+      setIsDetectingFaces(false);
+      setRegions([]);
+      setDraftRegion(null);
+      setSelectedRegionIndex(null);
       setVideoKeyFrameMs(
         Number.isFinite(next) ? Math.max(0, Math.round(next)) : 0
       );
@@ -1184,18 +1441,22 @@ export function MirrorPage() {
     const inputIdentity = getAssetIdentity(input);
     const requestId = ++faceDetectionRequestRef.current;
     const mediaSize = inputSize;
+    const keyFrameMs = Math.max(0, Math.round(videoKeyFrameMs));
     setNotice(null);
+    setRegions([]);
+    setDraftRegion(null);
+    setSelectedRegionIndex(null);
     setSelectionZoom(1);
     setIsDetectingFaces(true);
     try {
       const detected = isWeb
         ? await webClient.detectVideoFaces(
           input.path,
-          Math.max(0, Math.round(videoKeyFrameMs))
+          keyFrameMs
         )
         : await Server.detectVideoFaces(
           input.path,
-          Math.max(0, Math.round(videoKeyFrameMs))
+          keyFrameMs
         );
       if (
         faceDetectionRequestRef.current !== requestId ||
@@ -1214,7 +1475,8 @@ export function MirrorPage() {
       const screenRegions = mapMediaRegionsToScreen(
         detected.regions || [],
         frameWidth,
-        frameHeight
+        frameHeight,
+        1
       ).map((region: Region) => ({
         x: region.x,
         y: region.y,
@@ -1334,11 +1596,24 @@ export function MirrorPage() {
   );
 
   const handleStartSwap = useCallback(async () => {
-    const me = kMirrorStates.me;
-    const input = kMirrorStates.input;
-    if (!me || !input) {
+    if (isSwapping || swapStartingRef.current) {
       return;
     }
+    swapStartingRef.current = true;
+    setIsStartingSwap(true);
+    const requestId = ++swapRequestRef.current;
+    try {
+      const me = kMirrorStates.me;
+      const input = kMirrorStates.input;
+      if (!me || !input) {
+        return;
+      }
+      const meIdentity = getAssetIdentity(me);
+      const inputIdentity = getAssetIdentity(input);
+      const isCurrentSwapRequest = () =>
+        swapRequestRef.current === requestId &&
+        getAssetIdentity(kMirrorStates.me) === meIdentity &&
+        getAssetIdentity(kMirrorStates.input) === inputIdentity;
 
     const beginSwap = () => {
       setNotice(null);
@@ -1355,6 +1630,9 @@ export function MirrorPage() {
 
     if (input.type === "video") {
       const selectedGpuProvider = await chooseVideoGpuProvider();
+      if (!isCurrentSwapRequest()) {
+        return;
+      }
       if (!selectedGpuProvider) {
         return;
       }
@@ -1463,6 +1741,10 @@ export function MirrorPage() {
               }
         );
 
+        if (!isCurrentSwapRequest()) {
+          return;
+        }
+
         if (videoTaskResult.configId) {
           setTaskConfigIdInput(videoTaskResult.configId);
         }
@@ -1488,7 +1770,7 @@ export function MirrorPage() {
         if (videoTaskResult.result) {
           kMirrorStates.result = {
             src: isWeb
-              ? `${webClient.buildFileUrl(videoTaskResult.result)}?t=${Date.now()}`
+              ? withCacheBust(webClient.buildFileUrl(videoTaskResult.result))
               : `${convertFileSrcSafe(videoTaskResult.result)}?t=${Date.now()}`,
             path: videoTaskResult.result,
             type: "video",
@@ -1530,6 +1812,10 @@ export function MirrorPage() {
           }
       );
 
+      if (!isCurrentSwapRequest()) {
+        return;
+      }
+
       if (videoTaskResult.configId) {
         setTaskConfigIdInput(videoTaskResult.configId);
       }
@@ -1555,7 +1841,7 @@ export function MirrorPage() {
       if (videoTaskResult.result) {
         kMirrorStates.result = {
           src: isWeb
-            ? `${webClient.buildFileUrl(videoTaskResult.result)}?t=${Date.now()}`
+            ? withCacheBust(webClient.buildFileUrl(videoTaskResult.result))
             : `${convertFileSrcSafe(videoTaskResult.result)}?t=${Date.now()}`,
           path: videoTaskResult.result,
           type: "video",
@@ -1650,11 +1936,15 @@ export function MirrorPage() {
           }
     );
 
+    if (!isCurrentSwapRequest()) {
+      return;
+    }
+
     setSuccess(result != null);
     if (result) {
       kMirrorStates.result = {
         src: isWeb
-          ? `${webClient.buildFileUrl(result)}?t=${Date.now()}`
+          ? withCacheBust(webClient.buildFileUrl(result))
           : `${convertFileSrcSafe(result)}?t=${Date.now()}`,
         path: result,
         type: "image",
@@ -1664,6 +1954,12 @@ export function MirrorPage() {
       setIsEditingRegions(true);
     }
     rebuild.current();
+    } finally {
+      if (swapRequestRef.current === requestId) {
+        swapStartingRef.current = false;
+        setIsStartingSwap(false);
+      }
+    }
   }, [
     buildResultName,
     chooseVideoGpuProvider,
@@ -1673,6 +1969,7 @@ export function MirrorPage() {
     generateTaskConfigId,
     isDeepSwapMode,
     isMultiFaceMode,
+    isSwapping,
     isWeb,
     regions,
     swapFace,
@@ -1695,7 +1992,7 @@ export function MirrorPage() {
       setNotice(t("Download failed. Please try again."));
       return;
     }
-    setNotice(t("Download complete."));
+    setNotice(t("Download started."));
   }, [isWeb, t, webClient]);
 
   const handleChangePassword = useCallback(async () => {
@@ -1719,14 +2016,24 @@ export function MirrorPage() {
   }, [isWeb, navigate, t, webClient]);
 
   const handleResetAll = useCallback(() => {
+    swapRequestRef.current += 1;
+    swapStartingRef.current = false;
+    setIsStartingSwap(false);
+    void cancelSwap();
+    inputUploadAbortRef.current?.abort();
+    inputUploadAbortRef.current = null;
     inputUploadRequestRef.current += 1;
+    libraryUploadAbortRef.current?.abort();
+    libraryUploadAbortRef.current = null;
+    libraryUploadRequestRef.current += 1;
     faceDetectionRequestRef.current += 1;
     kMirrorStates.isMe = true;
     kMirrorStates.me = undefined;
     kMirrorStates.input = undefined;
     kMirrorStates.result = undefined;
     setNotice(null);
-    setIsUploading(false);
+    setIsInputUploading(false);
+    setIsLibraryUploading(false);
     setIsEditingRegions(false);
     setIsMultiFaceMode(false);
     setIsDeepSwapMode(false);
@@ -1752,9 +2059,12 @@ export function MirrorPage() {
     inputPathRef.current = null;
     autoDetectedImagePathRef.current = null;
     rebuild.current();
-  }, []);
+  }, [cancelSwap]);
 
   const { ref, isOverTarget } = useDragDrop(async ({ paths, files }) => {
+    if (isStartingSwap || isSwapping) {
+      return;
+    }
     const shouldAddFaceSources =
       !kMirrorStates.isMe &&
       isEditingRegions &&
@@ -1810,7 +2120,6 @@ export function MirrorPage() {
         type: "image",
       };
       setNotice(null);
-      rebuild.current();
     } else {
       if (!isImage && !isVideo) {
         setNotice(
@@ -1826,14 +2135,13 @@ export function MirrorPage() {
         type: isVideo ? "video" : "image",
       };
       setNotice(null);
-      rebuild.current();
     }
 
     if (kMirrorStates.me && kMirrorStates.input) {
       kMirrorStates.result = undefined;
-      rebuild.current();
       setIsEditingRegions(true);
     }
+    rebuild.current();
   });
 
   const isReady = kMirrorStates.me && kMirrorStates.input;
@@ -1871,6 +2179,9 @@ export function MirrorPage() {
         "Please assign a face source to each selected area."
       ),
       "config-not-found": t("Task config ID not found. Please verify and try again."),
+      "task-already-running": t("Another task with this ID is already running."),
+      "task-not-found": t("The video task could not be found. Please try again."),
+      "missing-result": t("The task finished without producing a result."),
       "invalid-regions": t("Invalid selected regions. Please reselect areas."),
       "polling-timeout": t("Video swapping... This may take a while, please wait."),
     };
@@ -2211,6 +2522,7 @@ export function MirrorPage() {
                     step={40}
                     value={Math.min(videoKeyFrameMs, Math.max(videoDurationMs, 0))}
                     onChange={handleVideoTimelineChange}
+                    disabled={isStartingSwap || isSwapping}
                   />
                   <span className="video-timeline-value">
                     {(Math.max(videoKeyFrameMs, 0) / 1000).toFixed(2)}s
