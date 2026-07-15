@@ -62,6 +62,37 @@ python web_server.py
 MIRROR_HOST=0.0.0.0 MIRROR_PORT=9000 python -m magic.app
 ```
 
+Windows 下 `tinyface` 会先拉取 CPU 版 ONNX Runtime。需要 GPU 开发环境时，
+请在仓库根目录执行以下二选一命令，确保 DirectML 和 CUDA 不会互相覆盖：
+
+```powershell
+# 推荐：兼容 NVIDIA / AMD / Intel，无需 CUDA Toolkit
+.\scripts\install-windows-ort.ps1 -Runtime directml
+
+# NVIDIA CUDA；附加开关会安装并打包 CUDA 12.9 / cuDNN 9 运行库
+.\scripts\install-windows-ort.ps1 -Runtime cuda -BundleCudaDependencies
+```
+
+### Windows 服务端发布包
+
+`Build Server` GitHub Action 会分别构建并验证两个互斥的 ONNX Runtime：
+
+Windows Runner 使用 Python 3.11：DirectML 固定为 ORT 1.23.0，CUDA 固定为
+ORT 1.27.0（RTX 50 系列需要 1.27+ 才能实际执行 CUDA kernel）。
+
+- `server_windows_x86_64.zip`：默认通用包，CPU + DirectML，保持客户端现有下载地址兼容。
+- `server_windows_x86_64_directml.zip`：与默认包内容相同，名称明确的 DirectML 包。
+- `server_windows_x86_64_cuda.zip`：CPU + CUDA，自带 CUDA 12.9、cuDNN、cuBLAS 和 cuFFT DLL，保留在 Actions Artifact 中。
+
+由于 CUDA 自包含包包含模型和完整 GPU 运行库，可能超过 GitHub Release 的 2 GiB
+单文件限制；稳定 Release 只上传 DirectML 包，CUDA 包可从对应 Action 的 Artifacts
+下载。
+
+官方 `onnxruntime-directml` 与 `onnxruntime-gpu` 都提供同名 Python 模块，不能
+安全安装在同一 Python 进程中。因此发布流程使用两个独立运行时产物，而不是把
+两个 wheel 覆盖到同一个目录。每个产物都会运行冻结后的 `server.exe` 检查目标
+Provider；检查失败时 Action 会直接失败，不再发布伪 GPU 包。
+
 ### Docker
 
 ```bash

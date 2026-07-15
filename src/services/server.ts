@@ -9,6 +9,9 @@ import {
   fetchWithTimeout,
 } from "./utils";
 
+// Keep this in sync with src-python/pyproject.toml and the server release tag.
+const SERVER_PACKAGE_VERSION = "2.0.0";
+
 export type ServerStatus = "idle" | "launching" | "running";
 
 export interface Region {
@@ -99,21 +102,33 @@ class _Server {
 
   async isDownloaded() {
     try {
+      const osType = type();
+      const rootDir = await this.rootDir();
       const binaryPath = await join(
-        await this.rootDir(),
-        type() === "windows" ? "server.exe" : "server.bin"
+        rootDir,
+        osType === "windows" ? "server.exe" : "server.bin"
       );
       const exists = await invoke<boolean>("file_exists", {
         path: binaryPath,
       });
-      if (exists && type() === "macos") {
+      if (!exists) {
+        return false;
+      }
+      if (osType === "windows") {
+        const markerPath = await join(
+          rootDir,
+          `server-version-${SERVER_PACKAGE_VERSION}.ok`
+        );
+        return await invoke<boolean>("file_exists", { path: markerPath });
+      }
+      if (osType === "macos") {
         const output = await Command.create("chmod", [
           "755",
           binaryPath,
         ]).execute();
         return output.code === 0;
       }
-      return exists;
+      return true;
     } catch (error) {
       return false;
     }

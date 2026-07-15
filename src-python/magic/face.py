@@ -109,13 +109,24 @@ def _get_available_execution_providers():
     try:
         import onnxruntime as ort
 
-        if hasattr(ort, 'preload_dlls'):
+        providers = list(ort.get_available_providers() or [])
+        if 'CUDAExecutionProvider' in providers and hasattr(ort, 'preload_dlls'):
             try:
-                ort.preload_dlls()
+                capi_dir = os.path.join(os.path.dirname(ort.__file__), 'capi')
+                bundled_cuda_dlls = (
+                    os.path.isdir(capi_dir)
+                    and any(
+                        name.lower().startswith(('cublas', 'cudnn', 'cudart'))
+                        for name in os.listdir(capi_dir)
+                    )
+                )
+                if bundled_cuda_dlls:
+                    ort.preload_dlls(directory=capi_dir)
+                else:
+                    ort.preload_dlls()
             except Exception as e:
                 print(f'[WARN] ONNX Runtime GPU DLL 预加载失败: {str(e)}')
-        providers = ort.get_available_providers()
-        return list(providers) if providers else []
+        return providers
     except Exception as e:
         print(f'[WARN] 获取 ExecutionProvider 失败: {str(e)}')
         return []

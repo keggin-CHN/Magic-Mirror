@@ -127,7 +127,7 @@
   "CUDA (NVIDIA GPU)": "CUDA (NVIDIA GPU)",
   "DirectML (Recommended for Windows)": "DirectML (Recommended for Windows)",
   "CPU (Compatible, slower)": "CPU (Compatible, slower)",
-  "downloadURL": "https://github.com/keggin-CHN/Magic-Mirror/releases/download/server-v1.0.0/server_{{type}}_{{arch}}.zip",
+  "downloadURL": "https://github.com/keggin-CHN/Magic-Mirror/releases/download/server-v2.0.0/server_{{type}}_{{arch}}.zip",
   "downloadTutorial": "https://github.com/keggin-CHN/Magic-Mirror/blob/main/docs/en/usage.md",
   "aboutLink": "https://github.com/keggin-CHN/Magic-Mirror"
 }

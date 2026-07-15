@@ -73,6 +73,32 @@ def _append_boot_log(text: str) -> None:
         pass
 
 
+def _check_ort_provider_from_cli() -> int | None:
+    """Validate a provider embedded in the frozen executable for release CI."""
+    flag = '--check-ort-provider'
+    if flag not in sys.argv:
+        return None
+
+    try:
+        index = sys.argv.index(flag)
+        expected = sys.argv[index + 1]
+    except (ValueError, IndexError):
+        _append_boot_log(f'{flag} requires a provider name')
+        return 2
+
+    try:
+        import onnxruntime as ort
+
+        providers = list(ort.get_available_providers() or [])
+        _append_boot_log(
+            f'onnxruntime={ort.__version__}, providers={providers}, expected={expected}'
+        )
+        return 0 if expected in providers else 3
+    except Exception as error:
+        _append_boot_log(f'ONNX Runtime provider check failed: {error!r}')
+        return 4
+
+
 class _GracefulWSGIServer(ThreadingMixIn, WSGIServer):
     """Thread-per-request WSGI server with graceful shutdown support."""
 
@@ -95,6 +121,10 @@ class _GracefulWSGIServer(ThreadingMixIn, WSGIServer):
 
 
 if __name__ == '__main__':
+    provider_check_exit = _check_ort_provider_from_cli()
+    if provider_check_exit is not None:
+        sys.exit(provider_check_exit)
+
     _append_boot_log('=== boot ===')
     _append_boot_log(f'exe={sys.executable}')
     _append_boot_log(f'cwd={os.getcwd()}')
