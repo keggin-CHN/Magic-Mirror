@@ -1,149 +1,142 @@
 #!/usr/bin/env python3
-"""
-检查系统是否支持GPU加速（DirectML/CUDA）
-用于Magic-Mirror项目的GPU加速诊断
+"""Verify ONNX Runtime GPU providers on Windows.
+
+Provider names alone are not enough: a CPU-only ONNX Runtime build, or a
+missing CUDA/cuDNN DLL, can still report ``CUDAExecutionProvider`` as available.
+This script creates a tiny ONNX model and verifies that the selected provider
+can initialize a real inference session.
 """
 
+from __future__ import annotations
+
+import os
 import sys
+import tempfile
 
-def check_gpu_support():
-    """检查系统GPU加速支持情况"""
+
+def _configure_console_encoding() -> None:
+    """Keep the diagnostic usable under the default Windows GBK console."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except AttributeError:
+            pass
+
+
+_configure_console_encoding()
+
+
+def _probe_provider(ort, provider: str) -> tuple[bool, str]:
+    """Initialize and run a tiny ONNX session with a requested provider."""
+    try:
+        import numpy as np
+        import onnx
+        from onnx import TensorProto, helper
+
+        node = helper.make_node("Add", ["x", "y"], ["z"])
+        graph = helper.make_graph(
+            [node],
+            "magic_mirror_gpu_probe",
+            [
+                helper.make_tensor_value_info("x", TensorProto.FLOAT, [2]),
+                helper.make_tensor_value_info("y", TensorProto.FLOAT, [2]),
+            ],
+            [helper.make_tensor_value_info("z", TensorProto.FLOAT, [2])],
+        )
+        model = helper.make_model(
+            graph,
+            opset_imports=[helper.make_opsetid("", 13)],
+        )
+        model.ir_version = min(model.ir_version, 10)
+
+        path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as handle:
+                path = handle.name
+            onnx.save(model, path)
+            session = ort.InferenceSession(
+                path,
+                providers=[provider, "CPUExecutionProvider"],
+            )
+            active = session.get_providers() or []
+            if provider not in active:
+                return False, f"provider fell back to {active}"
+            result = session.run(
+                None,
+                {
+                    "x": np.array([1, 2], dtype=np.float32),
+                    "y": np.array([3, 4], dtype=np.float32),
+                },
+            )[0]
+            if not np.allclose(result, [4, 6]):
+                return False, f"unexpected probe result: {result!r}"
+            return True, f"active sessions: {active}"
+        finally:
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    except Exception as error:
+        return False, f"{type(error).__name__}: {error}"
+
+
+def check_gpu_support() -> bool:
     print("=" * 60)
-    print("Magic-Mirror GPU加速支持检查工具")
+    print("Magic-Mirror GPU acceleration check")
     print("=" * 60)
-    print()
-    
-    # 1. 检查 onnxruntime 是否安装
-    print("【步骤 1】检查 onnxruntime 是否安装...")
+
     try:
         import onnxruntime as ort
-        print(f"✅ onnxruntime 已安装，版本: {ort.__version__}")
     except ImportError:
-        print("❌ onnxruntime 未安装")
-        print("   请运行: pip install onnxruntime")
+        print("[FAIL] onnxruntime is not installed")
+        print("       Install the Windows dependency set first.")
         return False
-    
-    print()
-    
-    # 2. 检查可用的 ExecutionProvider
-    print("【步骤 2】检查可用的 ExecutionProvider...")
-    try:
-        available_providers = ort.get_available_providers()
-        print(f"✅ 检测到 {len(available_providers)} 个 ExecutionProvider:")
-        for i, provider in enumerate(available_providers, 1):
-            print(f"   {i}. {provider}")
-    except Exception as e:
-        print(f"❌ 无法获取 ExecutionProvider: {e}")
-        return False
-    
-    print()
-    
-    # 3. 检查 GPU 加速支持
-    print("【步骤 3】检查 GPU 加速支持...")
-    has_gpu = False
-    gpu_type = None
-    
-    if 'DmlExecutionProvider' in available_providers:
-        print("✅ 支持 DirectML (Windows 通用 GPU 加速)")
-        has_gpu = True
-        gpu_type = "DirectML"
-    else:
-        print("❌ 不支持 DirectML")
-        print("   DirectML 需要:")
-        print("   - Windows 10 版本 1903 或更高")
-        print("   - 安装 onnxruntime-directml: pip install onnxruntime-directml")
-    
-    print()
-    
-    if 'CUDAExecutionProvider' in available_providers:
-        print("✅ 支持 CUDA (NVIDIA GPU 加速)")
-        has_gpu = True
-        gpu_type = "CUDA" if gpu_type is None else f"{gpu_type} + CUDA"
-    else:
-        print("❌ 不支持 CUDA")
-        print("   CUDA 需要:")
-        print("   - NVIDIA GPU")
-        print("   - 安装 CUDA Toolkit")
-        print("   - 安装 onnxruntime-gpu: pip install onnxruntime-gpu")
-    
-    print()
-    
-    # 4. 测试 GPU 推理
-    if has_gpu:
-        print("【步骤 4】测试 GPU 推理能力...")
+
+    print(f"onnxruntime: {ort.__version__}")
+    if hasattr(ort, "preload_dlls"):
         try:
-            import numpy as np
-            
-            # 创建一个简单的测试模型
-            providers = []
-            if 'DmlExecutionProvider' in available_providers:
-                providers.append('DmlExecutionProvider')
-            elif 'CUDAExecutionProvider' in available_providers:
-                providers.append('CUDAExecutionProvider')
-            providers.append('CPUExecutionProvider')
-            
-            print(f"   尝试使用 Provider: {providers[0]}")
-            
-            # 注意：这里只是测试 Provider 是否可用
-            # 实际模型加载需要真实的 ONNX 模型文件
-            print("✅ GPU Provider 可用")
-            print(f"   推荐使用: {providers[0]}")
-            
-        except Exception as e:
-            print(f"⚠️  GPU Provider 测试失败: {e}")
-            print("   这可能是正常的，因为没有加载实际模型")
-    
-    print()
-    
-    # 5. 总结
+            # Helps onnxruntime-gpu find CUDA/cuDNN wheels installed by pip.
+            ort.preload_dlls()
+        except Exception as error:
+            print(f"[WARN] CUDA DLL preload failed: {error}")
+
+    available = ort.get_available_providers()
+    print(f"registered providers: {', '.join(available)}")
+
+    candidates = [
+        ("DmlExecutionProvider", "DirectML"),
+        ("CUDAExecutionProvider", "CUDA"),
+    ]
+    verified = []
+    for provider, label in candidates:
+        if provider not in available:
+            print(f"[NO] {label}: provider is not registered")
+            continue
+        ok, detail = _probe_provider(ort, provider)
+        if ok:
+            verified.append(label)
+            print(f"[OK] {label}: real ONNX session initialized ({detail})")
+        else:
+            print(f"[FAIL] {label}: registered but unusable ({detail})")
+
     print("=" * 60)
-    print("【检查结果总结】")
-    print("=" * 60)
-    
-    if has_gpu:
-        print(f"✅ 系统支持 GPU 加速 ({gpu_type})")
-        print()
-        print("使用方法:")
-        print("  在调用视频换脸函数时，传入 use_gpu=True 参数")
-        print("  例如: swap_face_video(input_path, face_path, use_gpu=True)")
-        print()
-        print("注意事项:")
-        print("  - GPU 模式使用 2 个处理线程")
-        print("  - 如果 GPU 初始化失败，会自动回退到 CPU 模式")
-        print("  - 确保所有 ONNX 模型文件存在于 models 目录")
-    else:
-        print("❌ 系统不支持 GPU 加速，将使用 CPU 模式")
-        print()
-        print("如何启用 GPU 加速:")
-        print()
-        print("【Windows 用户 - 推荐使用 DirectML】")
-        print("  1. 确保 Windows 10 版本 1903 或更高")
-        print("  2. 卸载现有 onnxruntime:")
-        print("     pip uninstall onnxruntime onnxruntime-gpu")
-        print("  3. 安装 onnxruntime-directml:")
-        print("     pip install onnxruntime-directml")
-        print()
-        print("【NVIDIA GPU 用户 - 使用 CUDA】")
-        print("  1. 安装 CUDA Toolkit (11.x 或 12.x)")
-        print("  2. 安装 cuDNN")
-        print("  3. 卸载现有 onnxruntime:")
-        print("     pip uninstall onnxruntime onnxruntime-directml")
-        print("  4. 安装 onnxruntime-gpu:")
-        print("     pip install onnxruntime-gpu")
-    
-    print("=" * 60)
-    return has_gpu
+    if verified:
+        print(f"GPU acceleration is ready: {', '.join(verified)}")
+        preferred = "DirectML" if "DirectML" in verified else verified[0]
+        print(
+            f"For the Windows desktop app, select {preferred} "
+            "in the video mode prompt."
+        )
+        return True
+
+    print("No usable GPU provider was verified; processing will fall back to CPU.")
+    print("Recommended Windows setup: pip install onnxruntime-directml")
+    return False
 
 
 if __name__ == "__main__":
     try:
-        result = check_gpu_support()
-        sys.exit(0 if result else 1)
+        sys.exit(0 if check_gpu_support() else 1)
     except KeyboardInterrupt:
-        print("\n\n检查已取消")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n\n❌ 检查过程出错: {e}")
-        import traceback
-        traceback.print_exc()
         sys.exit(1)

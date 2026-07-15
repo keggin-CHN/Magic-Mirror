@@ -56,6 +56,7 @@ type ResizeHandle = "nw" | "ne" | "sw" | "se";
 const kDefaultFaceSourceId = "default-me";
 const kMinSelectionZoom = 0.5;
 const kMaxSelectionZoom = 4;
+let kPreviewRevision = 0;
 
 const kMirrorStates: {
   isMe: boolean;
@@ -66,6 +67,16 @@ const kMirrorStates: {
 
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(value, max));
+
+const getAssetIdentity = (asset: Asset | undefined) =>
+  asset ? `${asset.type || "image"}:${asset.path}:${asset.src}` : "";
+
+const convertLocalFileSrcFresh = (path: string) => {
+  kPreviewRevision += 1;
+  const src = convertFileSrcSafe(path);
+  const separator = src.includes("?") ? "&" : "?";
+  return `${src}${separator}previewRevision=${Date.now()}-${kPreviewRevision}`;
+};
 
 export function MirrorPage() {
   const [flag, setFlag] = useState(false);
@@ -129,6 +140,8 @@ export function MirrorPage() {
   const mainInputRef = useRef<HTMLInputElement | null>(null);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const autoDetectedImagePathRef = useRef<string | null>(null);
+  const faceDetectionRequestRef = useRef(0);
+  const inputUploadRequestRef = useRef(0);
   const [videoDurationMs, setVideoDurationMs] = useState(0);
   const [videoKeyFrameMs, setVideoKeyFrameMs] = useState(0);
   const [isDetectingFaces, setIsDetectingFaces] = useState(false);
@@ -290,11 +303,17 @@ export function MirrorPage() {
         return null;
       }
       setIsUploading(true);
+      const requestId = ++inputUploadRequestRef.current;
       let uploaded: UploadResult | null = null;
       try {
         uploaded = await webClient.uploadFile(file);
       } finally {
-        setIsUploading(false);
+        if (inputUploadRequestRef.current === requestId) {
+          setIsUploading(false);
+        }
+      }
+      if (inputUploadRequestRef.current !== requestId) {
+        return null;
       }
       if (!uploaded) {
         setNotice(t("Upload failed. Please try again."));
@@ -323,10 +342,11 @@ export function MirrorPage() {
       if (!files || files.length === 0) {
         return;
       }
-      if (isWeb) {
-        await uploadInputFile(files[0]);
-      }
+      const file = files[0];
       event.target.value = "";
+      if (isWeb) {
+        await uploadInputFile(file);
+      }
     },
     [isWeb, uploadInputFile]
   );
@@ -349,6 +369,8 @@ export function MirrorPage() {
   useEffect(() => {
     const input = kMirrorStates.input;
     if (!input) {
+      faceDetectionRequestRef.current += 1;
+      setIsDetectingFaces(false);
       setInputSize(null);
       setRegions([]);
       setDraftRegion(null);
@@ -370,18 +392,20 @@ export function MirrorPage() {
       return;
     }
 
-    const inputIdentity = `${input.type || "image"}:${input.path}`;
+    const inputIdentity = getAssetIdentity(input);
     if (inputPathRef.current === inputIdentity) {
       return;
     }
 
+    faceDetectionRequestRef.current += 1;
+    setIsDetectingFaces(false);
     inputPathRef.current = inputIdentity;
     autoDetectedImagePathRef.current = null;
     setRegions([]);
     setDraftRegion(null);
     setIsEditingRegions(true);
     setSelectedRegionIndex(null);
-    // setInputSize(null); // Keep the old size until the new media loads to prevent UI stuttering
+    setInputSize(null);
     setVideoDurationMs(0);
     setVideoKeyFrameMs(0);
     selectingRef.current = false;
@@ -536,39 +560,42 @@ export function MirrorPage() {
     return imageRegions;
   }, [regions, inputSize, selectionObjectFit, showSelection, selectionZoom]);
 
-  useEffect(() => {
-    if (!showSelection || !isImageInput || !inputSize) {
-      return;
-    }
+  const handleDetectImageFaces = useCallback(async (force = false) => {
     const input = kMirrorStates.input;
-    if (!input || input.type !== "image") {
+    if (!input || input.type !== "image" || !inputSize) {
       return;
     }
-    if (autoDetectedImagePathRef.current === input.path) {
+    const inputIdentity = getAssetIdentity(input);
+    if (!force && autoDetectedImagePathRef.current === inputIdentity) {
       return;
     }
 
-    autoDetectedImagePathRef.current = input.path;
-    let cancelled = false;
-
-  (async () => {
+    autoDetectedImagePathRef.current = inputIdentity;
+    const requestId = ++faceDetectionRequestRef.current;
+    const mediaSize = inputSize;
+    setNotice(null);
+    setSelectionZoom(1);
+    setIsDetectingFaces(true);
     try {
-      setIsDetectingFaces(true);
       const detected = isWeb
         ? await webClient.detectImageFaces(input.path)
         : await Server.detectImageFaces(input.path);
-      if (cancelled) {
+      if (
+        faceDetectionRequestRef.current !== requestId ||
+        getAssetIdentity(kMirrorStates.input) !== inputIdentity
+      ) {
         return;
       }
 
       if (detected.error) {
+        setNotice(t("Failed to detect faces."));
         return;
       }
 
       const screenRegions = mapMediaRegionsToScreen(
         detected.regions || [],
-        inputSize.width,
-        inputSize.height
+        mediaSize.width,
+        mediaSize.height
       ).map((region: Region) => ({
         x: region.x,
         y: region.y,
@@ -582,24 +609,22 @@ export function MirrorPage() {
         setNotice(t("No face detected in selected areas."));
       }
     } finally {
-      if (!cancelled) {
+      if (faceDetectionRequestRef.current === requestId) {
         setIsDetectingFaces(false);
       }
     }
-  })();
+  }, [inputSize, isWeb, mapMediaRegionsToScreen, t, webClient]);
 
-  return () => {
-    cancelled = true;
-    setIsDetectingFaces(false);
-  };
+  useEffect(() => {
+    if (!showSelection || !isImageInput || !inputSize) {
+      return;
+    }
+    void handleDetectImageFaces(false);
   }, [
+    handleDetectImageFaces,
     showSelection,
     isImageInput,
     inputSize,
-    mapMediaRegionsToScreen,
-    t,
-    isWeb,
-    webClient,
   ]);
 
   useEffect(() => {
@@ -1000,7 +1025,7 @@ export function MirrorPage() {
       .map((path: string, idx: number) => ({
         id: `face-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
         path,
-        src: convertFileSrcSafe(path),
+        src: convertLocalFileSrcFresh(path),
       }));
 
     if (!additions.length) {
@@ -1008,12 +1033,18 @@ export function MirrorPage() {
     }
 
     setFaceSources((prev: FaceAsset[]) => {
-      const existed = new Set(prev.map((item) => item.path));
-      const deduped = additions.filter((item) => !existed.has(item.path));
-      if (!deduped.length) {
-        return prev;
-      }
-      return [...prev, ...deduped];
+      const additionsByPath = new Map(
+        additions.map((item: FaceAsset) => [item.path, item])
+      );
+      const updated = prev.map((item: FaceAsset) => {
+        const replacement = additionsByPath.get(item.path);
+        if (!replacement) {
+          return item;
+        }
+        additionsByPath.delete(item.path);
+        return { ...item, src: replacement.src };
+      });
+      return [...updated, ...additionsByPath.values()];
     });
     setNotice(null);
   }, []);
@@ -1057,17 +1088,17 @@ export function MirrorPage() {
       if (!files || files.length === 0) {
         return;
       }
+      const fileList = Array.from(files);
+      event.target.value = "";
 
       if (isWeb) {
-        await uploadLibraryFiles(Array.from(files), {
+        await uploadLibraryFiles(fileList, {
           selectFirst: kMirrorStates.isMe,
           addToFaceSources: !kMirrorStates.isMe && isMultiFaceMode,
         });
-        event.target.value = "";
         return;
       }
 
-      const fileList = Array.from(files);
       const paths = fileList
         .map((file) => (file as any).path)
         .filter((path): path is string => !!path);
@@ -1077,8 +1108,6 @@ export function MirrorPage() {
       } else {
         console.warn("无法获取文件路径，请确保在 Tauri 环境中运行");
       }
-
-      event.target.value = "";
     },
     [addFaceSourcesFromPaths, isMultiFaceMode, isWeb, uploadLibraryFiles]
   );
@@ -1152,42 +1181,56 @@ export function MirrorPage() {
       return;
     }
 
+    const inputIdentity = getAssetIdentity(input);
+    const requestId = ++faceDetectionRequestRef.current;
+    const mediaSize = inputSize;
     setNotice(null);
     setSelectionZoom(1);
     setIsDetectingFaces(true);
-    const detected = isWeb
-      ? await webClient.detectVideoFaces(
-        input.path,
-        Math.max(0, Math.round(videoKeyFrameMs))
-      )
-      : await Server.detectVideoFaces(
-        input.path,
-        Math.max(0, Math.round(videoKeyFrameMs))
-      );
-    setIsDetectingFaces(false);
+    try {
+      const detected = isWeb
+        ? await webClient.detectVideoFaces(
+          input.path,
+          Math.max(0, Math.round(videoKeyFrameMs))
+        )
+        : await Server.detectVideoFaces(
+          input.path,
+          Math.max(0, Math.round(videoKeyFrameMs))
+        );
+      if (
+        faceDetectionRequestRef.current !== requestId ||
+        getAssetIdentity(kMirrorStates.input) !== inputIdentity
+      ) {
+        return;
+      }
 
-    if (detected.error) {
-      setNotice(t("Failed to detect faces at key frame."));
-      return;
-    }
+      if (detected.error) {
+        setNotice(t("Failed to detect faces at key frame."));
+        return;
+      }
 
-    const frameWidth = detected.frameWidth || inputSize.width;
-    const frameHeight = detected.frameHeight || inputSize.height;
-    const screenRegions = mapMediaRegionsToScreen(
-      detected.regions || [],
-      frameWidth,
-      frameHeight
-    ).map((region: Region) => ({
-      x: region.x,
-      y: region.y,
-      width: region.width,
-      height: region.height,
-    }));
+      const frameWidth = detected.frameWidth || mediaSize.width;
+      const frameHeight = detected.frameHeight || mediaSize.height;
+      const screenRegions = mapMediaRegionsToScreen(
+        detected.regions || [],
+        frameWidth,
+        frameHeight
+      ).map((region: Region) => ({
+        x: region.x,
+        y: region.y,
+        width: region.width,
+        height: region.height,
+      }));
 
-    setRegions(screenRegions);
-    setSelectedRegionIndex(screenRegions.length ? 0 : null);
-    if (!screenRegions.length) {
-      setNotice(t("No face detected in selected areas."));
+      setRegions(screenRegions);
+      setSelectedRegionIndex(screenRegions.length ? 0 : null);
+      if (!screenRegions.length) {
+        setNotice(t("No face detected in selected areas."));
+      }
+    } finally {
+      if (faceDetectionRequestRef.current === requestId) {
+        setIsDetectingFaces(false);
+      }
     }
   }, [inputSize, isWeb, mapMediaRegionsToScreen, t, videoKeyFrameMs, webClient]);
 
@@ -1676,11 +1719,14 @@ export function MirrorPage() {
   }, [isWeb, navigate, t, webClient]);
 
   const handleResetAll = useCallback(() => {
+    inputUploadRequestRef.current += 1;
+    faceDetectionRequestRef.current += 1;
     kMirrorStates.isMe = true;
     kMirrorStates.me = undefined;
     kMirrorStates.input = undefined;
     kMirrorStates.result = undefined;
     setNotice(null);
+    setIsUploading(false);
     setIsEditingRegions(false);
     setIsMultiFaceMode(false);
     setIsDeepSwapMode(false);
@@ -1743,7 +1789,7 @@ export function MirrorPage() {
     }
 
     const path = paths[0];
-    const src = convertFileSrcSafe(path);
+    const src = convertLocalFileSrcFresh(path);
     const isVideo = isVideoFile(path);
     const isImage = isImageFile(path);
     const ext = getFileExtension(path);
@@ -2050,6 +2096,7 @@ export function MirrorPage() {
               >
                 {previewType === "video" ? (
                   <video
+                    key={previewSrc}
                     ref={previewVideoRef}
                     src={previewSrc}
                     className={`preview-media ${showSelection ? "rect-edit-mode zoomable" : ""}`}
@@ -2085,6 +2132,7 @@ export function MirrorPage() {
                   />
                 ) : (
                   <img
+                    key={previewSrc}
                     src={previewSrc}
                     className={`preview-media ${showSelection ? "rect-edit-mode zoomable" : ""}`}
                     style={{
@@ -2271,6 +2319,16 @@ export function MirrorPage() {
                 >
                   {t("Start Swap")}
                 </div>
+                {isImageInput && (
+                  <div
+                    className={`selection-btn ${isDetectingFaces || !inputSize ? "disabled" : ""}`}
+                    onClick={() => void handleDetectImageFaces(true)}
+                  >
+                    {isDetectingFaces
+                      ? t("Detecting faces...")
+                      : t("Re-detect Faces")}
+                  </div>
+                )}
                 <div
                   className={`selection-btn ${selectedRegionIndex === null ? "disabled" : ""}`}
                   onClick={handleDeleteSelected}

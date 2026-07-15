@@ -87,6 +87,11 @@ def _get_available_execution_providers():
     try:
         import onnxruntime as ort
 
+        if hasattr(ort, 'preload_dlls'):
+            try:
+                ort.preload_dlls()
+            except Exception as e:
+                print(f'[WARN] ONNX Runtime GPU DLL 预加载失败: {str(e)}')
         providers = ort.get_available_providers()
         return list(providers) if providers else []
     except Exception as e:
@@ -94,18 +99,88 @@ def _get_available_execution_providers():
         return []
 
 
+@lru_cache(maxsize=None)
+def _is_execution_provider_ready(provider: str) -> bool:
+    """Verify that a provider can create and run a real ONNX session."""
+    path = None
+    try:
+        import onnx
+        import onnxruntime as ort
+        from onnx import TensorProto, helper
+
+        node = helper.make_node('Add', ['x', 'y'], ['z'])
+        graph = helper.make_graph(
+            [node],
+            'magic_mirror_gpu_probe',
+            [
+                helper.make_tensor_value_info('x', TensorProto.FLOAT, [2]),
+                helper.make_tensor_value_info('y', TensorProto.FLOAT, [2]),
+            ],
+            [helper.make_tensor_value_info('z', TensorProto.FLOAT, [2])],
+        )
+        model = helper.make_model(
+            graph,
+            opset_imports=[helper.make_opsetid('', 13)],
+        )
+        model.ir_version = min(model.ir_version, 10)
+
+        with tempfile.NamedTemporaryFile(suffix='.onnx', delete=False) as handle:
+            path = handle.name
+        onnx.save(model, path)
+        session = ort.InferenceSession(
+            path,
+            providers=[provider, 'CPUExecutionProvider'],
+        )
+        active_providers = session.get_providers() or []
+        if provider not in active_providers:
+            print(
+                f'[WARN] GPU Provider 未激活: requested={provider}, '
+                f'active={active_providers}'
+            )
+            return False
+        output = session.run(
+            None,
+            {
+                'x': np.array([1, 2], dtype=np.float32),
+                'y': np.array([3, 4], dtype=np.float32),
+            },
+        )[0]
+        ready = bool(np.allclose(output, [4, 6]))
+        if not ready:
+            print(f'[WARN] GPU Provider 推理结果异常: {provider}, output={output}')
+        return ready
+    except Exception as e:
+        print(f'[WARN] GPU Provider 验证失败({provider}): {str(e)}')
+        return False
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 def get_gpu_acceleration_modes():
     """返回当前环境可用的加速模式，供前端在视频换脸前选择。"""
     available_providers = _get_available_execution_providers()
+    verified_providers = [
+        provider
+        for provider in ('DmlExecutionProvider', 'CUDAExecutionProvider')
+        if provider in available_providers and _is_execution_provider_ready(provider)
+    ]
     modes = [{'id': 'cpu', 'name': 'CPU'}]
 
-    if 'DmlExecutionProvider' in available_providers:
+    if 'DmlExecutionProvider' in verified_providers:
         modes.append({'id': 'directml', 'name': 'DirectML'})
 
-    if 'CUDAExecutionProvider' in available_providers:
+    if 'CUDAExecutionProvider' in verified_providers:
         modes.append({'id': 'cuda', 'name': 'CUDA'})
 
-    return {'modes': modes, 'availableProviders': available_providers}
+    return {
+        'modes': modes,
+        'availableProviders': available_providers,
+        'verifiedProviders': verified_providers,
+    }
 
 
 def _normalize_gpu_provider(gpu_provider: str):
@@ -135,7 +210,7 @@ def _resolve_execution_provider(gpu_provider: str):
         candidates = ['DmlExecutionProvider', 'CUDAExecutionProvider']
 
     for provider in candidates:
-        if provider in available_providers:
+        if provider in available_providers and _is_execution_provider_ready(provider):
             return provider
     return None
 
@@ -152,6 +227,39 @@ def _resolve_gpu_pool_size(num_workers: int) -> int:
             print(f'[WARN] 无效 MAGIC_GPU_POOL_SIZE={env_val}，将使用自动策略')
     # 默认最多 4 个实例，避免显存占用过高
     return max(1, min(int(num_workers or 1), 4))
+
+
+def _prepare_tinyface_with_provider(tf_instance, selected_provider: str):
+    """Prepare TinyFace with the provider consumed by TinyFace 1.x."""
+    config = tf_instance.config
+    providers = [selected_provider, 'CPUExecutionProvider']
+    provider_attr = (
+        'face_inference_providers'
+        if hasattr(config, 'face_inference_providers')
+        else 'execution_providers'
+    )
+    previous_providers = getattr(config, provider_attr, None)
+    setattr(config, provider_attr, providers)
+    try:
+        tf_instance.prepare()
+    finally:
+        if previous_providers is not None:
+            setattr(config, provider_attr, previous_providers)
+
+
+def _tinyface_active_providers(tf_instance):
+    """Return providers reported by TinyFace's prepared ONNX sessions."""
+    active = []
+    for component_name in ('detector', 'embedder', 'swapper', 'enhancer'):
+        component = getattr(tf_instance, component_name, None)
+        session = getattr(component, '_session', None)
+        if session is None or not hasattr(session, 'get_providers'):
+            continue
+        try:
+            active.extend(session.get_providers() or [])
+        except Exception:
+            continue
+    return list(dict.fromkeys(active))
 
 
 def _init_gpu_models(gpu_provider: str = 'auto', pool_size: int = 1):
@@ -201,11 +309,14 @@ def _init_gpu_models(gpu_provider: str = 'auto', pool_size: int = 1):
                     'inswapper_128_fp16.onnx'
                 )
                 tf_gpu.config.face_enhancer_model = _get_model_path('gfpgan_1.4.onnx')
-                tf_gpu.config.execution_providers = [
-                    selected_provider,
-                    'CPUExecutionProvider',
-                ]
-                tf_gpu.prepare()
+                _prepare_tinyface_with_provider(tf_gpu, selected_provider)
+                active_providers = _tinyface_active_providers(tf_gpu)
+                if selected_provider not in active_providers:
+                    raise RuntimeError(
+                        f'provider-not-active: requested={selected_provider}, '
+                        f'active={active_providers}'
+                    )
+                print(f'[INFO] GPU session providers: {active_providers}')
                 instances.append(tf_gpu)
                 locks.append(threading.RLock())
 
