@@ -27,13 +27,20 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($Runtime -eq "directml") {
     $package = "onnxruntime-directml==$Version"
+    python -m pip install --no-cache-dir --force-reinstall $package
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install $package"
+    }
 } else {
     $package = "onnxruntime-gpu==$Version"
-}
-
-python -m pip install --no-cache-dir --force-reinstall $package
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to install $package"
+    Write-Host "Installing $package for CUDA 12..."
+    python -m pip install $package --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ --no-deps
+    if ($LASTEXITCODE -ne 0) { throw "Failed to fetch CUDA 12 wheel" }
+    # Install dependencies from PyPI
+    python -m pip install $package
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install $package"
+    }
 }
 
 if ($Runtime -eq "cuda" -and $BundleCudaDependencies) {
