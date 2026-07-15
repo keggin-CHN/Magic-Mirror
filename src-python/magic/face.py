@@ -113,6 +113,10 @@ def _get_available_execution_providers():
         if 'CUDAExecutionProvider' in providers and hasattr(ort, 'preload_dlls'):
             try:
                 capi_dir = os.path.join(os.path.dirname(ort.__file__), 'capi')
+                exe_capi_dir = os.path.join(os.path.dirname(sys.executable or ''), 'onnxruntime', 'capi')
+                if not os.path.isdir(capi_dir) and os.path.isdir(exe_capi_dir):
+                    capi_dir = exe_capi_dir
+
                 bundled_cuda_dlls = (
                     os.path.isdir(capi_dir)
                     and any(
