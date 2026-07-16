@@ -837,9 +837,12 @@ def _swap_face_video(
         else:
             _emit_stage(stage_callback, 'using-cpu')
 
-        bootstrap_tf, bootstrap_lock = tf_pool[0]
-        with bootstrap_lock:
-            destination_face = bootstrap_tf.get_one_face(_read_image(face_path))
+        if face_path.endswith('.json'):
+            destination_face = _get_one_face(face_path)
+        else:
+            bootstrap_tf, bootstrap_lock = tf_pool[0]
+            with bootstrap_lock:
+                destination_face = bootstrap_tf.get_one_face(_read_image(face_path))
         if destination_face is None:
             raise RuntimeError('no-face-detected')
         print('[SUCCESS] 成功提取目标人脸')
@@ -2103,9 +2106,12 @@ def _swap_face_video_by_sources(
         bootstrap_tf, bootstrap_lock = tf_pool[0]
         destination_faces = {}
         for source_id, source_path in face_sources.items():
-            face_img = _read_image(source_path)
-            with bootstrap_lock:
-                destination_face = bootstrap_tf.get_one_face(face_img)
+            if source_path.endswith('.json'):
+                destination_face = _get_one_face(source_path)
+            else:
+                face_img = _read_image(source_path)
+                with bootstrap_lock:
+                    destination_face = bootstrap_tf.get_one_face(face_img)
             if destination_face is None:
                 raise RuntimeError('no-face-detected')
             destination_faces[str(source_id)] = destination_face
@@ -3085,9 +3091,12 @@ def _load_destination_faces(face_paths, tf_instance=None, tf_lock=None):
             face_path = face_path.get('path')
         if not isinstance(face_path, str) or not face_path:
             continue
-        face_img = _read_image(face_path)
-        with tf_lock:
-            destination_face = tf_instance.get_one_face(face_img)
+        if face_path.endswith('.json'):
+            destination_face = _get_one_face(face_path)
+        else:
+            face_img = _read_image(face_path)
+            with tf_lock:
+                destination_face = tf_instance.get_one_face(face_img)
         if destination_face is None:
             print(f'[WARN] 目标脸素材未检测到人脸，已跳过: {face_path}')
             continue
