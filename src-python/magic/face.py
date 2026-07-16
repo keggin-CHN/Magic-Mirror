@@ -794,6 +794,39 @@ def _swap_face_video(
 
         if width <= 0 or height <= 0:
             print('[WARN] 无法获取视频尺寸，尝试读取第一帧')
+
+    def _mark_worker_done():
+        """Mark a worker thread as done."""
+        with workers_done_lock:
+            workers_done_count['count'] += 1
+            if workers_done_count['count'] >= num_workers:
+                workers_done_event.set()
+
+    try:
+        _raise_if_cancelled(cancel_event)
+        _emit_stage(stage_callback, 'opening-video')
+        print(f'[INFO] 打开视频文件: {input_path}')
+        cap = cv2.VideoCapture(input_path)
+        if not cap.isOpened():
+            raise RuntimeError('video-open-failed')
+
+        _emit_stage(stage_callback, 'reading-video-metadata')
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not fps or fps <= 0:
+            fps = 25.0
+            print(f'[WARN] 无法获取视频FPS，使用默认值: {fps}')
+        else:
+            print(f'[INFO] 视频FPS: {fps}')
+
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        total_frames = _resolve_total_frames(input_path, fps, total_frames)
+
+        print(f'[INFO] 视频尺寸: {width}x{height}, 总帧数: {total_frames}')
+
+        if width <= 0 or height <= 0:
+            print('[WARN] 无法获取视频尺寸，尝试读取第一帧')
             ok, frame = cap.read()
             if not ok:
                 raise RuntimeError('video-open-failed')
@@ -837,9 +870,12 @@ def _swap_face_video(
         else:
             _emit_stage(stage_callback, 'using-cpu')
 
-        bootstrap_tf, bootstrap_lock = tf_pool[0]
-        with bootstrap_lock:
-            destination_face = bootstrap_tf.get_one_face(_read_image(face_path))
+        if face_path.endswith('.json'):
+            destination_face = _get_one_face(face_path)
+        else:
+            bootstrap_tf, bootstrap_lock = tf_pool[0]
+            with bootstrap_lock:
+                destination_face = bootstrap_tf.get_one_face(_read_image(face_path))
         if destination_face is None:
             raise RuntimeError('no-face-detected')
         print('[SUCCESS] 成功提取目标人脸')
@@ -2103,9 +2139,12 @@ def _swap_face_video_by_sources(
         bootstrap_tf, bootstrap_lock = tf_pool[0]
         destination_faces = {}
         for source_id, source_path in face_sources.items():
-            face_img = _read_image(source_path)
-            with bootstrap_lock:
-                destination_face = bootstrap_tf.get_one_face(face_img)
+            if source_path.endswith('.json'):
+                destination_face = _get_one_face(source_path)
+            else:
+                face_img = _read_image(source_path)
+                with bootstrap_lock:
+                    destination_face = bootstrap_tf.get_one_face(face_img)
             if destination_face is None:
                 raise RuntimeError('no-face-detected')
             destination_faces[str(source_id)] = destination_face
@@ -3061,38 +3100,6 @@ def _swap_face_video_deep(
         )
         _raise_if_cancelled(cancel_event)
         return save_path
-
-    except Exception as e:
-        _log_error('_swap_face_video_deep', e)
-        raise
-    finally:
-        if cap is not None:
-            cap.release()
-        if temp_dir and os.path.isdir(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def _load_destination_faces(face_paths, tf_instance=None, tf_lock=None):
-    """Load destination face embeddings."""
-    if tf_instance is None:
-        tf_instance = _tf
-    if tf_lock is None:
-        tf_lock = _tf_lock
-
-    destination_faces = []
-    for face_path in face_paths:
-        if isinstance(face_path, dict):
-            face_path = face_path.get('path')
-        if not isinstance(face_path, str) or not face_path:
-            continue
-        face_img = _read_image(face_path)
-        with tf_lock:
-            destination_face = tf_instance.get_one_face(face_img)
-        if destination_face is None:
-            print(f'[WARN] 目标脸素材未检测到人脸，已跳过: {face_path}')
-            continue
-        destination_faces.append(destination_face)
-    return destination_faces
 
 
 def _sort_boxes_by_position(boxes):
