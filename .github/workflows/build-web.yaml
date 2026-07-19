@@ -89,7 +89,7 @@ jobs:
           done
       - name: Build web server binary
         run: |
-          python -m nuitka --standalone --assume-yes-for-downloads \
+          python -O -m nuitka --standalone --assume-yes-for-downloads \
             --include-package=onnx \
             --include-package=google.protobuf \
             --include-package=onnxruntime \

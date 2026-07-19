@@ -46,7 +46,10 @@ $nuitkaArgs = @(
     "src-python/server.py"
 )
 
-python -m nuitka @nuitkaArgs
+# Nuitka 2.8.x/4.1.x can trip an internal timing assertion while optimizing
+# large standalone Windows builds. Run the compiler process with Python asserts
+# disabled; this does not pass no_asserts to the frozen server.
+python -O -m nuitka @nuitkaArgs
 if ($LASTEXITCODE -ne 0) {
     throw "Nuitka build failed"
 }

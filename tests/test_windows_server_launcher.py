@@ -14,3 +14,9 @@ def test_launcher_does_not_kill_every_server_exe_process():
     assert 'Win32_Process' in source
     assert 'ExecutablePath' in source
 
+
+def test_windows_build_runs_nuitka_with_compiler_asserts_disabled():
+    source = BUILD_SCRIPT.read_text(encoding='utf-8')
+
+    assert 'python -O -m nuitka @nuitkaArgs' in source
+    assert '--python-flag=no_asserts' not in source
