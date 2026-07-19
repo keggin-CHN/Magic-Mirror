@@ -47,10 +47,38 @@ $nuitkaArgs = @(
 )
 
 # Nuitka 2.8.x/4.1.x can trip an internal timing assertion while optimizing
-# large standalone Windows builds. Run the compiler process with Python asserts
-# disabled; this does not pass no_asserts to the frozen server.
+# large standalone builds. Patch only that compiler timing assertion and run
+# the compiler with PYTHONOPTIMIZE propagated to helper subprocesses; neither
+# change passes no_asserts to the frozen server.
+$nuitkaModuleRegistry = python -c "import nuitka.ModuleRegistry, pathlib; print(pathlib.Path(nuitka.ModuleRegistry.__file__).resolve())"
+if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $nuitkaModuleRegistry -PathType Leaf)) {
+    throw "Unable to locate Nuitka ModuleRegistry.py"
+}
+$moduleRegistrySource = Get-Content -LiteralPath $nuitkaModuleRegistry -Raw
+$timingAssert = "        assert micro_passes == 0"
+if ($moduleRegistrySource.Contains($timingAssert)) {
+    $moduleRegistrySource = $moduleRegistrySource.Replace(
+        $timingAssert,
+        "        # Patched by build-windows-server.ps1: cached timing info can include micro passes.`n        pass"
+    )
+    Set-Content -LiteralPath $nuitkaModuleRegistry -Value $moduleRegistrySource -Encoding UTF8
+    Write-Host "Patched Nuitka timing assertion in $nuitkaModuleRegistry"
+} else {
+    Write-Host "Nuitka timing assertion patch was not needed"
+}
+
+$previousPythonOptimize = [Environment]::GetEnvironmentVariable("PYTHONOPTIMIZE", "Process")
+$env:PYTHONOPTIMIZE = "1"
+$optimizeLevel = python -c "import sys; print(sys.flags.optimize)"
+Write-Host "Nuitka compiler Python optimize level: $optimizeLevel"
 python -O -m nuitka @nuitkaArgs
-if ($LASTEXITCODE -ne 0) {
+$nuitkaExitCode = $LASTEXITCODE
+if ($null -eq $previousPythonOptimize) {
+    Remove-Item Env:PYTHONOPTIMIZE -ErrorAction SilentlyContinue
+} else {
+    $env:PYTHONOPTIMIZE = $previousPythonOptimize
+}
+if ($nuitkaExitCode -ne 0) {
     throw "Nuitka build failed"
 }
 

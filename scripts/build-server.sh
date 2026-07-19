@@ -19,7 +19,7 @@ die() {
 
 log "Building server..."
 
-python -O -m nuitka --standalone --unstripped --assume-yes-for-downloads \
+PYTHONOPTIMIZE=1 python -O -m nuitka --standalone --unstripped --assume-yes-for-downloads \
   --include-package=onnx \
   --include-package=google.protobuf \
   --include-package=onnxruntime \

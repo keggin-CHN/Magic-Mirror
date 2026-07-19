@@ -18,5 +18,10 @@ def test_launcher_does_not_kill_every_server_exe_process():
 def test_windows_build_runs_nuitka_with_compiler_asserts_disabled():
     source = BUILD_SCRIPT.read_text(encoding='utf-8')
 
+    assert 'nuitka.ModuleRegistry' in source
+    assert 'Patched Nuitka timing assertion' in source
+    assert 'assert micro_passes == 0' in source
+    assert '$env:PYTHONOPTIMIZE = "1"' in source
+    assert 'Nuitka compiler Python optimize level' in source
     assert 'python -O -m nuitka @nuitkaArgs' in source
     assert '--python-flag=no_asserts' not in source
