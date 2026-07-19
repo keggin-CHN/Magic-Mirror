@@ -36,7 +36,10 @@ $nuitkaArgs = @(
     "--include-package=cv2",
     "--include-package=numpy",
     "--include-package=tinyface",
-    "--include-package=bottle",
+    "--include-package=fastapi",
+    "--include-package=uvicorn",
+    "--include-package=multipart",
+    "--include-package=av",
     "--include-package-data=onnx",
     "--include-data-files=src-python/models/*.onnx=models/",
     "--output-dir=$OutputDir",
@@ -144,7 +147,9 @@ $launcherLines = @(
     'setlocal enableextensions',
     'cd /d "%~dp0"',
     '',
-    'taskkill /f /im server.exe >nul 2>&1',
+    'if exist "%~dp0server.pid" (',
+    '  powershell -NoProfile -ExecutionPolicy Bypass -Command "$pidFile = Join-Path $PSScriptRoot ''server.pid''; $server = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot ''server.exe'')).Path; $pidText = Get-Content -LiteralPath $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1; if ($pidText -match ''^\d+$'') { $proc = Get-CimInstance Win32_Process -Filter (''ProcessId='' + $pidText) -ErrorAction SilentlyContinue; if ($proc -and $proc.ExecutablePath -and [string]::Equals((Resolve-Path -LiteralPath $proc.ExecutablePath).Path, $server, [System.StringComparison]::OrdinalIgnoreCase)) { Stop-Process -Id ([int]$pidText) -Force -ErrorAction SilentlyContinue } }"',
+    ')',
     '',
     'for %%F in (',
     '  vcruntime140.dll',
@@ -162,7 +167,7 @@ $launcherLines = @(
     ')',
     '',
     'if not exist "%~dp0server.exe" exit /b 1',
-    'start "" "%~dp0server.exe"',
+    'powershell -NoProfile -ExecutionPolicy Bypass -Command "$server = Join-Path $PSScriptRoot ''server.exe''; $proc = Start-Process -FilePath $server -WorkingDirectory $PSScriptRoot -PassThru; Set-Content -LiteralPath (Join-Path $PSScriptRoot ''server.pid'') -Value $proc.Id"',
     'exit /b 0'
 )
 $launcherLines | Set-Content -LiteralPath $launcherPath -Encoding ASCII

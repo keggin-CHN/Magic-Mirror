@@ -7,7 +7,8 @@ Magic Mirror 是一个基于 React、Tauri、Python ONNX Runtime 和 Android 的
 - [安装指南](install.md)
 - [使用说明](usage.md)
 - [常见问题](faq.md)
-- [API 文档](../API.md)
+- [API 文档](API.md)
+- [优化更新记录](../optimization-summary.md)
 
 ## 项目信息
 

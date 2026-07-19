@@ -1,10 +1,8 @@
 import os
-import signal
 import sys
 import time
 import traceback
-from socketserver import ThreadingMixIn
-from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
+from collections.abc import Sequence
 
 
 def _is_dir_writable(path: str) -> bool:
@@ -26,12 +24,7 @@ def _is_dir_writable(path: str) -> bool:
 
 
 def _boot_log_path() -> str:
-    """
-    Release 包默认禁用控制台（Nuitka --windows-console-mode=disable），
-    导致启动阶段异常会“无输出秒退”。
-    启动日志优先写入 exe 所在目录（例如 C:\\Users\\Keggin\\MagicMirror\\），
-    若不可写则回退到当前工作目录，最后回退到临时目录。
-    """
+    """Return a writable boot log path for frozen no-console releases."""
     import tempfile
 
     candidates = []
@@ -69,19 +62,20 @@ def _append_boot_log(text: str) -> None:
             if not text.endswith('\n'):
                 f.write('\n')
     except Exception:
-        # 启动日志不应影响主流程
+        # Boot logging must never prevent the main process from continuing.
         pass
 
 
-def _check_ort_provider_from_cli() -> int | None:
+def _check_ort_provider_from_cli(argv: Sequence[str] | None = None) -> int | None:
     """Validate a provider embedded in the frozen executable for release CI."""
+    args = list(sys.argv if argv is None else argv)
     flag = '--check-ort-provider'
-    if flag not in sys.argv:
+    if flag not in args:
         return None
 
     try:
-        index = sys.argv.index(flag)
-        expected = sys.argv[index + 1]
+        index = args.index(flag)
+        expected = args[index + 1]
     except (ValueError, IndexError):
         _append_boot_log(f'{flag} requires a provider name')
         return 2
@@ -99,63 +93,41 @@ def _check_ort_provider_from_cli() -> int | None:
         return 4
 
 
-class _GracefulWSGIServer(ThreadingMixIn, WSGIServer):
-    """Thread-per-request WSGI server with graceful shutdown support."""
-
-    daemon_threads = True
-    allow_reuse_address = True
-
-    def __init__(self, *args, **kwargs):
-        """Initialize the HTTP server."""
-        super().__init__(*args, **kwargs)
-        self._shutting_down = False
-
-    def shutdown_graceful(self, signum, frame):
-        """Handle graceful shutdown signals."""
-        sig_name = (
-            signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
-        )
-        _append_boot_log(f'received {sig_name}, shutting down gracefully...')
-        self._shutting_down = True
-        self.shutdown()
+def _parse_port(env_name: str, default: int) -> int:
+    raw_value = os.environ.get(env_name, str(default))
+    try:
+        port = int(raw_value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f'{env_name} must be an integer, got {raw_value!r}'
+        ) from error
+    if not 1 <= port <= 65535:
+        raise ValueError(f'{env_name} must be between 1 and 65535, got {port}')
+    return port
 
 
-if __name__ == '__main__':
-    provider_check_exit = _check_ort_provider_from_cli()
+def main(argv: Sequence[str] | None = None) -> int:
+    args = list(sys.argv if argv is None else argv)
+    provider_check_exit = _check_ort_provider_from_cli(args)
     if provider_check_exit is not None:
-        sys.exit(provider_check_exit)
+        return provider_check_exit
 
     _append_boot_log('=== boot ===')
     _append_boot_log(f'exe={sys.executable}')
     _append_boot_log(f'cwd={os.getcwd()}')
-    _append_boot_log(f'argv={sys.argv!r}')
+    _append_boot_log(f'argv={args!r}')
     _append_boot_log(f'pid={os.getpid()}')
 
-    host = os.environ.get('MIRROR_HOST', '0.0.0.0')
-    port = int(os.environ.get('MIRROR_PORT', '8023'))
-
     try:
+        host = os.environ.get('MIRROR_HOST', '0.0.0.0')
+        port = _parse_port('MIRROR_PORT', 8023)
+
+        import uvicorn
         from magic.app import app
 
         _append_boot_log('import magic.app: OK')
-        _append_boot_log(f'starting threaded wsgi server on {host}:{port}')
-        httpd = make_server(
-            host,
-            port,
-            app,
-            server_class=_GracefulWSGIServer,
-            handler_class=WSGIRequestHandler,
-        )
-
-        # Register graceful shutdown handlers
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                signal.signal(sig, httpd.shutdown_graceful)
-            except (OSError, ValueError):
-                pass
-
-        _append_boot_log(f'server ready on {host}:{port}')
-        httpd.serve_forever()
+        _append_boot_log(f'starting ASGI server on {host}:{port}')
+        uvicorn.run(app, host=host, port=port, log_config=None)
     except Exception as e:
         _append_boot_log('boot failed:')
         _append_boot_log(f'error={e!r}')
@@ -163,6 +135,11 @@ if __name__ == '__main__':
             ''.join(traceback.format_exception(type(e), e, e.__traceback__))
         )
         _append_boot_log('exit=1')
-        # 双击启动时，留一点时间让文件落盘
+        # Give double-click launches a moment to flush the boot log.
         time.sleep(0.2)
-        sys.exit(1)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

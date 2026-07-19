@@ -7,7 +7,7 @@ Magic Mirror is a cross-platform AI face swap application powered by React, Taur
 - [Install Guide](install.md)
 - [Usage Guide](usage.md)
 - [FAQ](faq.md)
-- [API Docs](../API.md)
+- [API Reference](API.md)
 
 ## Project Information
 

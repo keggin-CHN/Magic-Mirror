@@ -24,7 +24,7 @@
   "Password updated.": "Password updated.",
   "Update failed. Please try again.": "Update failed. Please try again.",
   "Login": "Login",
-  "Default password is 123456.": "Default password is 123456.",
+  "Default password is 123456.": "Source default is 123456. Production installers print the initial password.",
   "Password": "Password",
   "Enter password": "Enter password",
   "Please enter password.": "Please enter password.",

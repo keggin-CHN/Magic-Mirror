@@ -15,6 +15,7 @@ on:
       - "uno.config.ts"
       - ".github/workflows/build-app.yaml"
       - "!scripts/install-web.sh"
+      - "!scripts/install-server-linux.sh"
   pull_request:
     paths:
       - "src/**"
@@ -29,6 +30,7 @@ on:
       - "uno.config.ts"
       - ".github/workflows/build-app.yaml"
       - "!scripts/install-web.sh"
+      - "!scripts/install-server-linux.sh"
 
 jobs:
   build-for-windows:
@@ -69,7 +71,7 @@ jobs:
       - name: Build APP
         shell: pwsh
         run: |
-          pnpm install --no-frozen-lockfile
+          pnpm install --frozen-lockfile
           $VERSION = node -p "require('./package.json').version"
           Write-Host "Version: $VERSION"
           $CONFIG = "{""version"":""$VERSION""}"

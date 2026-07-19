@@ -53,13 +53,13 @@ cd src-python
 pip install -r requirements.txt
 
 # 桌面后端（端口 8023）
-python -m magic.app
+python server.py
 
 # Web 后端（端口 8033，带 JWT 鉴权）
 python web_server.py
 
 # 自定义端口
-MIRROR_HOST=0.0.0.0 MIRROR_PORT=9000 python -m magic.app
+MIRROR_HOST=0.0.0.0 MIRROR_PORT=9000 python server.py
 ```
 
 Windows 下 `tinyface` 会先拉取 CPU 版 ONNX Runtime。需要 GPU 开发环境时，
@@ -98,7 +98,7 @@ Provider；检查失败时 Action 会直接失败，不再发布伪 GPU 包。
 ```bash
 docker build -t magic-mirror:latest .
 docker run -p 8023:8023 magic-mirror:latest            # 桌面后端
-docker run -p 8033:8033 magic-mirror:latest python web_server.py  # Web 模式
+docker run -p 8033:8033 -e WEB_PORT=8033 magic-mirror:latest python web_server.py  # Web 模式
 ```
 
 ### Makefile
@@ -136,7 +136,7 @@ Magic-Mirror/
 │   ├── hooks/              # 自定义 Hooks（useSwapFace 等）
 │   ├── services/           # API 客户端与工具函数
 │   └── assets/locales/     # 多语言资源（zh / en）
-├── src-python/             # Python 后端（Bottle + ONNX Runtime）
+├── src-python/             # Python 后端（FastAPI + ONNX Runtime）
 │   ├── magic/              # 换脸核心模块（face detection、swap engine）
 │   └── web_server.py       # Web 模式 HTTP 服务（端口 8033，JWT 鉴权）
 ├── src-tauri/              # Tauri 2.0 Rust 桌面壳
@@ -154,9 +154,10 @@ Magic-Mirror/
 
 | 文件名 | 用途 |
 |--------|------|
-| `det_500m.onnx` | 人脸检测 |
-| `w600k_r50.onnx` | 人脸特征提取 |
-| `inswapper_128.onnx` | 人脸替换 |
+| `scrfd_2.5g.onnx` | 人脸检测 |
+| `arcface_w600k_r50.onnx` | 人脸特征提取 |
+| `inswapper_128_fp16.onnx` | 人脸替换 |
+| `gfpgan_1.4.onnx` | 人脸增强 |
 
 模型下载方式见 [安装指南](docs/cn/install.md)。
 
@@ -168,6 +169,12 @@ Magic-Mirror/
 |------|--------|------|
 | `MIRROR_HOST` | `0.0.0.0` | 监听地址 |
 | `MIRROR_PORT` | `8023` | 桌面后端端口 |
+| `WEB_HOST` | `0.0.0.0` | Web 后端监听地址 |
+| `WEB_PORT` | `8033` | Web 后端端口 |
+| `WEB_DATA_DIR` | `data/web` | Web 上传、素材库和配置目录 |
+| `WEB_DIST_DIR` | `dist-web` | Web 前端静态资源目录 |
+| `WEB_INITIAL_PASSWORD` | 无 | `web_server.py --init-config` 首次初始化密码 |
+| `VIDEO_TASK_CONFIG_SECRET` | 开发默认值 | 生产环境应使用随机值 |
 
 ---
 
@@ -175,7 +182,7 @@ Magic-Mirror/
 
 `src-python/web_server.py` 内置生产级安全加固：
 
-- **JWT 鉴权** — 登录获取 token，所有 API 需携带 `Authorization: Bearer <token>`
+- **Token / Cookie 鉴权** — 登录获取 token，同时设置 HttpOnly Cookie；API 支持 `Authorization: Bearer <token>`、Cookie 和兼容 token 入口
 - **TTL 垃圾回收** — 上传文件 24h、结果 4h、进度 6h 自动清理
 - **路径穿越防护** — `os.path.commonpath` 校验所有文件访问
 - **文件名清洗** — 正则过滤危险字符
@@ -191,16 +198,16 @@ Magic-Mirror/
 | `/api/login` | POST | 登录获取 token |
 | `/api/upload` | POST | 上传图片 / 视频 |
 | `/api/library` | GET / POST | 人脸库管理 |
-| `/api/taskdetect-faces` | POST | 检测图片人脸框 |
+| `/api/task/detect-faces` | POST | 检测图片人脸框 |
 | `/api/task/video/detect-faces` | POST | 检测视频关键帧人脸框 |
 | `/api/task` | POST | 创建图片换脸任务 |
 | `/api/task/video` | POST | 创建视频换脸任务 |
 | `/api/task/video/progress/<id>` | GET | 查询视频任务进度 |
 | `/api/task/<id>` | DELETE | 取消任务 |
 | `/api/file/<id>` | GET | 获取结果文件 |
-| `/api/download/<id>` | GET | 下载结果文件 |
+| `/api/download/<id>` | GET / HEAD | 下载结果文件；HEAD 用于下载前探测 |
 
-完整字段定义、请求/响应示例与错误码见 [docs/API.md](docs/API.md)。
+完整字段定义、请求/响应示例与错误码见 [中文 API 文档](docs/cn/API.md) / [English API Reference](docs/en/API.md)。
 
 ---
 
@@ -212,8 +219,8 @@ Magic-Mirror/
 | 状态管理 | xsta |
 | 多语言 | i18next + react-i18next |
 | 桌面壳 | Tauri 2.0（Rust） |
-| 后端 | Python 3.10、Bottle、ONNX Runtime |
-| 模型 | InsightFace（det_500m + w600k_r50）+ inswapper_128 |
+| 后端 | Python 3.10、FastAPI、ONNX Runtime |
+| 模型 | SCRFD + ArcFace + InSwapper + GFPGAN |
 | Android | Java、ONNX Runtime Android、MediaCodec |
 | CI/CD | GitHub Actions（多平台构建） |
 
@@ -235,7 +242,7 @@ Magic-Mirror/
 - [安装指南](docs/cn/install.md) | [Install Guide](docs/en/install.md)
 - [使用说明](docs/cn/usage.md) | [Usage Guide](docs/en/usage.md)
 - [常见问题](docs/cn/faq.md) | [FAQ](docs/en/faq.md)
-- [API 参考](docs/API.md)
+- [API 参考](docs/cn/API.md) | [API Reference](docs/en/API.md)
 
 ---
 

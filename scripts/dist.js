@@ -1,105 +1,120 @@
 #!/usr/bin/env node
 
 import fs from "fs/promises";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync } from "fs";
 import path from "path";
 
-// Helper to recursively find files
 async function findFiles(dir, predicate) {
   let results = [];
   if (!existsSync(dir)) return results;
 
-  try {
-    const list = await fs.readdir(dir, { withFileTypes: true });
-    for (const dirent of list) {
-      const fullPath = path.join(dir, dirent.name);
-      if (dirent.isDirectory()) {
-        results = results.concat(await findFiles(fullPath, predicate));
-      } else if (predicate(fullPath)) {
-        results.push(fullPath);
-      }
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results = results.concat(await findFiles(fullPath, predicate));
+    } else if (predicate(fullPath)) {
+      results.push(fullPath);
     }
-  } catch (err) {
-    console.error(`Error reading ${dir}: ${err.message}`);
   }
+
   return results;
 }
 
-const copyFile = async (from, to) => {
+async function copyFile(from, to) {
   if (!existsSync(from)) {
-    console.error(`Source file does not exist: ${from}`);
-    return false;
+    throw new Error(`Source file does not exist: ${from}`);
   }
 
-  const dirname = path.dirname(to);
-  if (!existsSync(dirname)) {
-    mkdirSync(dirname, { recursive: true });
-  }
-
+  await fs.mkdir(path.dirname(to), { recursive: true });
   await fs.copyFile(from, to);
   console.log(`Copied ${from} -> ${to}`);
-};
+}
+
+function usage() {
+  console.error("Usage: node scripts/dist.js <target-triple> <app-name>");
+}
+
+function platformExtensions(platform) {
+  switch (platform) {
+    case "darwin":
+      return [".dmg"];
+    case "win32":
+      return [".exe"];
+    case "linux":
+      return [".AppImage", ".deb"];
+    default:
+      throw new Error(
+        `Unsupported platform: ${platform}. Supported platforms: darwin, win32, linux.`,
+      );
+  }
+}
 
 async function main() {
-  const args = process.argv.slice(2);
-  const [target, appName] = args;
+  const [target, appName] = process.argv.slice(2);
+
+  if (!target || !appName) {
+    usage();
+    process.exit(2);
+  }
 
   console.log(`Target: ${target}`);
   console.log(`AppName: ${appName}`);
   console.log(`Platform: ${process.platform}`);
 
-  const targetBase = path.resolve("src-tauri/target");
+  const targetRoot = path.resolve("src-tauri/target");
+  const targetBase = existsSync(path.join(targetRoot, target))
+    ? path.join(targetRoot, target)
+    : targetRoot;
+  const extensions = platformExtensions(process.platform);
   console.log(`Searching in: ${targetBase}`);
 
-  let extensions = [];
-  switch (process.platform) {
-    case "darwin":
-      extensions = [".dmg"];
-      break;
-    case "win32":
-      extensions = [".exe"];
-      break;
-    case "linux":
-      extensions = [".AppImage", ".deb"];
-      break;
-    default:
-      console.error(`不支持的平台: ${process.platform}`);
-      console.error("支持的平台: darwin (macOS), win32 (Windows), linux (Linux)");
-      process.exit(1);
-  }
-
-  if (extensions.length === 0) {
-    console.error("❌ 无法确定目标平台的文件扩展名");
-    process.exit(1);
-  }
-
-  // Find all files with matching extensions in target directory
-  // that are also in a 'bundle' directory and 'release' directory
-  const files = await findFiles(targetBase, (filePath) => {
-    return extensions.some(ext => filePath.endsWith(ext)) &&
-      filePath.includes("release") &&
-      filePath.includes("bundle");
-  });
+  const files = await findFiles(targetBase, (filePath) => (
+    extensions.some((ext) => filePath.endsWith(ext)) &&
+    filePath.includes("release") &&
+    filePath.includes("bundle")
+  ));
 
   if (files.length === 0) {
-    console.error("No bundle files found!");
+    console.error("No bundle files found.");
 
-    // Debug: List all files in bundle directories
-    console.log("Listing all files in 'bundle' directories for debugging:");
-    const debugFiles = await findFiles(targetBase, (p) => p.includes("bundle"));
-    console.log(debugFiles.join("\n"));
+    const debugFiles = await findFiles(
+      targetBase,
+      (filePath) => filePath.includes("bundle"),
+    );
+    if (debugFiles.length > 0) {
+      console.error("Files found under bundle directories:");
+      console.error(debugFiles.join("\n"));
+    }
 
     process.exit(1);
   }
 
   console.log("Found candidates:", files);
 
-  // Copy found files
+  const filesByExtension = new Map();
   for (const file of files) {
     const ext = path.extname(file);
-    await copyFile(file, path.join("dist", appName + ext));
-    console.log(`✅ ${appName + ext}`);
+    filesByExtension.set(ext, [...(filesByExtension.get(ext) || []), file]);
+  }
+  const duplicateExtensions = [...filesByExtension.entries()]
+    .filter(([, candidates]) => candidates.length > 1);
+  if (duplicateExtensions.length > 0) {
+    for (const [ext, candidates] of duplicateExtensions) {
+      console.error(`Multiple bundle candidates found for ${ext}:`);
+      console.error(candidates.join("\n"));
+    }
+    process.exit(1);
+  }
+
+  for (const file of files) {
+    const ext = path.extname(file);
+    await copyFile(file, path.join("dist", `${appName}${ext}`));
+    console.log(`Prepared ${appName}${ext}`);
   }
 }
 
-main();
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

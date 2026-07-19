@@ -1,4 +1,5 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { isTauri } from "./runtime";
 
 export function convertFileSrcSafe(path: string) {
@@ -19,8 +20,7 @@ export async function openDialogSafe(options: {
 
 export async function openExternalSafe(url: string) {
   if (isTauri()) {
-    const { open } = await import("@tauri-apps/plugin-shell");
-    return open(url);
+    return openExternal(url);
   }
   if (typeof window !== "undefined") {
     window.open(url, "_blank", "noopener");

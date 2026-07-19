@@ -1,22 +1,27 @@
 .DS_Store
 node_modules
+package-lock.json
 .mypy_cache
 __pycache__
 *.egg-info
 .venv
 *.env
+*.log
 data
 models
 dist
 dist-web
 out
 temp
+.cache
+.pytest_cache
 test.*
 
 # IDE metadata
 .idea/
 .vscode/
 android-app/.idea/
+android-app/local.properties
 
 # Android/Gradle build artifacts
 android-app/.gradle/

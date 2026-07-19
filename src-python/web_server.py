@@ -1,17 +1,31 @@
+import asyncio
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
 import re
+import secrets
+import sys
 import threading
 import time
 import traceback
 import uuid
-from socketserver import ThreadingMixIn
 from typing import Dict, List, Optional
-from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from async_tasks import AsyncTask
-from bottle import Bottle, request, response, static_file
+from fastapi import (
+    Body,
+    FastAPI,
+    File,
+    Request,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from magic.face import (
     detect_face_boxes_in_image,
     detect_face_boxes_in_video,
@@ -37,12 +51,25 @@ from magic.task_config import (
 )
 from magic.video_task_executor import VideoTaskExecutor
 
-app = Bottle()
+app = FastAPI()
 
-# https://github.com/bottlepy/bottle/issues/881#issuecomment-244024649
-app.plugins[0].json_dumps = lambda *args, **kwargs: json.dumps(
-    *args, ensure_ascii=False, **kwargs
-).encode('utf8')
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.middleware('http')
+async def _request_context_middleware(request_obj: Request, call_next):
+    _maybe_run_gc()
+    response_obj = await call_next(request_obj)
+    response_obj.headers['Referrer-Policy'] = 'no-referrer'
+    response_obj.headers['X-Content-Type-Options'] = 'nosniff'
+    response_obj.headers['X-Frame-Options'] = 'DENY'
+    return response_obj
+
 
 ALLOWED_IMAGE_EXTS = {
     '.jpg',
@@ -65,13 +92,22 @@ ALLOWED_VIDEO_EXTS = {
 }
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-WEB_DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, 'data', 'web'))
+WEB_DATA_DIR = os.path.abspath(
+    os.environ.get('WEB_DATA_DIR') or os.path.join(BASE_DIR, 'data', 'web')
+)
 UPLOADS_DIR = os.path.abspath(os.path.join(WEB_DATA_DIR, 'uploads'))
 LIBRARY_DIR = os.path.abspath(os.path.join(WEB_DATA_DIR, 'library'))
 CONFIG_PATH = os.path.join(WEB_DATA_DIR, 'config.json')
-DIST_DIR = os.path.join(BASE_DIR, 'dist-web')
+DIST_DIR = os.path.abspath(
+    os.environ.get('WEB_DIST_DIR') or os.path.join(BASE_DIR, 'dist-web')
+)
 
 TOKEN_TTL_SECONDS = 7 * 24 * 3600
+AUTH_COOKIE_NAME = 'magic_mirror_token'
+PASSWORD_HASH_ITERATIONS = 600_000
+LOGIN_FAILURE_WINDOW_SECONDS = 15 * 60
+LOGIN_LOCKOUT_SECONDS = 60
+LOGIN_MAX_FAILURES = 5
 
 # Upload/cache TTL and size limits
 UPLOAD_TTL_SECONDS = 24 * 3600
@@ -79,10 +115,14 @@ RESULT_TTL_SECONDS = 4 * 3600
 PROGRESS_TTL_SECONDS = 6 * 3600
 MAX_UPLOAD_BYTES_IMAGE = 50 * 1024 * 1024
 MAX_UPLOAD_BYTES_VIDEO = 2 * 1024 * 1024 * 1024
+UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 SAFE_FILENAME_PATTERN = re.compile(r'[^A-Za-z0-9._\-]+')
 
 TOKENS: Dict[str, float] = {}
 TOKENS_LOCK = threading.RLock()
+LOGIN_FAILURES: Dict[str, List[float]] = {}
+LOGIN_FAILURES_LOCK = threading.RLock()
+CONFIG_LOCK = threading.RLock()
 
 UPLOADS: Dict[str, Dict[str, object]] = {}
 UPLOADS_LOCK = threading.RLock()
@@ -102,8 +142,9 @@ VIDEO_TASK_CONFIGS: Dict[str, Dict[str, object]] = {}
 VIDEO_TASK_CONFIGS_LOCK = threading.RLock()
 VIDEO_TASK_CONFIG_TTL_SECONDS = 7 * 24 * 3600
 VIDEO_TASK_CONFIG_TOKEN_PREFIX = 'cfg1'
+DEFAULT_VIDEO_TASK_CONFIG_SECRET = 'magic-mirror-config-secret'
 VIDEO_TASK_CONFIG_SECRET = os.environ.get(
-    'VIDEO_TASK_CONFIG_SECRET', 'magic-mirror-config-secret'
+    'VIDEO_TASK_CONFIG_SECRET', DEFAULT_VIDEO_TASK_CONFIG_SECRET
 )
 
 _LIBRARY_CACHE_LOCK = threading.RLock()
@@ -123,22 +164,92 @@ _ensure_dirs()
 
 def _load_config() -> dict:
     """Load or create the server configuration file with default password."""
-    if not os.path.exists(CONFIG_PATH):
-        _save_config({'password': '123456'})
-    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    with CONFIG_LOCK:
+        if not os.path.exists(CONFIG_PATH):
+            _save_config(_build_password_config('123456'))
+        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+
+def _init_config_from_environment() -> int:
+    """Create the web credential config from WEB_INITIAL_PASSWORD if missing."""
+    initial_password = os.environ.get('WEB_INITIAL_PASSWORD', '').strip()
+    with CONFIG_LOCK:
+        if os.path.exists(CONFIG_PATH):
+            print(f'[WEB] config already exists: {CONFIG_PATH}')
+            return 0
+        if not initial_password:
+            print('[WEB] WEB_INITIAL_PASSWORD is required for --init-config')
+            return 2
+        _save_config(_build_password_config(initial_password))
+    print(f'[WEB] initialized credential config: {CONFIG_PATH}')
+    return 0
 
 
 def _save_config(cfg: dict) -> None:
-    """Persist the server configuration to disk."""
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    """Atomically persist the server configuration to disk."""
+    config_dir = os.path.dirname(CONFIG_PATH)
+    os.makedirs(config_dir, exist_ok=True)
+    temp_path = os.path.join(config_dir, f'.config-{uuid.uuid4().hex}.tmp')
+    with CONFIG_LOCK:
+        try:
+            with open(temp_path, 'x', encoding='utf-8') as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+                f.write('\n')
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, CONFIG_PATH)
+            try:
+                os.chmod(CONFIG_PATH, 0o600)
+            except OSError:
+                pass
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def _build_password_config(password: str) -> dict:
+    """Build a salted PBKDF2 password record for on-disk storage."""
+    salt = secrets.token_bytes(16)
+    password_hash = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        salt,
+        PASSWORD_HASH_ITERATIONS,
+    )
+    return {
+        'passwordHash': password_hash.hex(),
+        'passwordSalt': salt.hex(),
+        'passwordIterations': PASSWORD_HASH_ITERATIONS,
+    }
+
+
+def _verify_password(password: str, cfg: dict) -> bool:
+    """Verify hashed credentials while accepting legacy plaintext configs."""
+    legacy_password = cfg.get('password')
+    if isinstance(legacy_password, str):
+        return hmac.compare_digest(password, legacy_password)
+
+    try:
+        iterations = int(cfg['passwordIterations'])
+        if iterations <= 0:
+            return False
+        salt = bytes.fromhex(str(cfg['passwordSalt']))
+        expected_hash = bytes.fromhex(str(cfg['passwordHash']))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    actual_hash = hashlib.pbkdf2_hmac(
+        'sha256', password.encode('utf-8'), salt, iterations
+    )
+    return hmac.compare_digest(actual_hash, expected_hash)
 
 
 def _issue_token() -> str:
     """Generate a new authentication token."""
-    token = uuid.uuid4().hex
+    token = secrets.token_urlsafe(32)
     with TOKENS_LOCK:
         TOKENS[token] = time.time()
     return token
@@ -157,27 +268,103 @@ def _cleanup_tokens() -> None:
             TOKENS.pop(token, None)
 
 
-def _extract_token() -> Optional[str]:
-    """Extract the authentication token from the request."""
-    auth = request.headers.get('Authorization', '')
+def _extract_token(request_obj: Request | WebSocket) -> Optional[str]:
+    """Extract the authentication token from an HTTP or WebSocket request."""
+    auth = request_obj.headers.get('Authorization', '')
     if auth.lower().startswith('bearer '):
         return auth[7:].strip()
-    return request.headers.get('X-Token') or request.query.get('token')
+    cookie_token = getattr(request_obj, 'cookies', {}).get(AUTH_COOKIE_NAME)
+    return (
+        cookie_token
+        or request_obj.headers.get('X-Token')
+        or request_obj.query_params.get('token')
+    )
 
 
-def _require_auth() -> bool:
-    """Validate the request token and reject unauthorized calls."""
+def _set_auth_cookie(response_obj: Response, token: str) -> None:
+    """Attach an HttpOnly same-site auth cookie for same-origin web clients."""
+    response_obj.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        max_age=TOKEN_TTL_SECONDS,
+        httponly=True,
+        samesite='lax',
+    )
+
+
+def _validate_token(token: Optional[str]) -> bool:
+    """Validate a bearer token and refresh its activity timestamp."""
     _cleanup_tokens()
-    token = _extract_token()
     if not token:
-        response.status = 401
         return False
     with TOKENS_LOCK:
         if token not in TOKENS:
-            response.status = 401
             return False
         TOKENS[token] = time.time()
     return True
+
+
+def _require_auth(request_obj: Request, response_obj: Response) -> bool:
+    """Validate the request token and reject unauthorized calls."""
+    if not _validate_token(_extract_token(request_obj)):
+        response_obj.status_code = 401
+        return False
+    return True
+
+
+def _login_rate_limit_key(request_obj: Request) -> str:
+    """Return the client key used for login failure throttling."""
+    if request_obj.client and request_obj.client.host:
+        return request_obj.client.host
+    forwarded_for = request_obj.headers.get('X-Forwarded-For', '')
+    if forwarded_for:
+        return forwarded_for.split(',', 1)[0].strip() or 'unknown'
+    return 'unknown'
+
+
+def _prune_login_failures(key: str, now: Optional[float] = None) -> List[float]:
+    """Drop stale failed login attempts and return active failures."""
+    current_time = time.time() if now is None else now
+    with LOGIN_FAILURES_LOCK:
+        active = [
+            failed_at
+            for failed_at in LOGIN_FAILURES.get(key, [])
+            if current_time - failed_at <= LOGIN_FAILURE_WINDOW_SECONDS
+        ]
+        if active:
+            LOGIN_FAILURES[key] = active
+        else:
+            LOGIN_FAILURES.pop(key, None)
+        return active
+
+
+def _is_login_rate_limited(key: str, now: Optional[float] = None) -> bool:
+    """Return whether the client has too many recent failed logins."""
+    current_time = time.time() if now is None else now
+    failures = _prune_login_failures(key, current_time)
+    return (
+        len(failures) >= LOGIN_MAX_FAILURES
+        and current_time - failures[-1] <= LOGIN_LOCKOUT_SECONDS
+    )
+
+
+def _record_failed_login(key: str, now: Optional[float] = None) -> None:
+    """Record a failed login attempt for throttling."""
+    current_time = time.time() if now is None else now
+    with LOGIN_FAILURES_LOCK:
+        failures = [
+            failed_at
+            for failed_at in LOGIN_FAILURES.get(key, [])
+            if current_time - failed_at <= LOGIN_FAILURE_WINDOW_SECONDS
+        ]
+        failures.append(current_time)
+        LOGIN_FAILURES[key] = failures
+
+
+def _clear_login_failures(key: str) -> None:
+    """Clear failed login attempts after successful authentication."""
+    with LOGIN_FAILURES_LOCK:
+        LOGIN_FAILURES.pop(key, None)
 
 
 def _ext(path: str) -> str:
@@ -205,6 +392,7 @@ def _simplify_task_error(err: object) -> str:
         'face-source-not-found',
         'file-not-found',
         'file-too-large',
+        'upload-save-failed',
         'invalid-path',
         'unsupported-image-format',
         'unsupported-video-format',
@@ -243,43 +431,128 @@ def _sanitize_filename(name: str) -> str:
     return cleaned
 
 
+def _canonical_path(path: str) -> str:
+    """Return a normalized real path for path comparison."""
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _entry_path(path: str) -> str:
+    """Return a normalized path without following the final filesystem entry."""
+    return os.path.normcase(os.path.abspath(path))
+
+
 def _is_path_within(parent: str, child: str) -> bool:
     """Check child path is within parent directory (path traversal defense)."""
     try:
-        parent_real = os.path.normcase(os.path.realpath(os.path.abspath(parent)))
-        child_real = os.path.normcase(os.path.realpath(os.path.abspath(child)))
+        parent_real = _canonical_path(parent)
+        child_real = _canonical_path(child)
         return os.path.commonpath([parent_real, child_real]) == parent_real
     except (ValueError, OSError):
         return False
 
 
-def _check_upload_size(upload_file, max_bytes: int) -> bool:
-    """Check upload file size without reading entire content."""
-    raw = getattr(upload_file, 'file', None)
-    if raw is None:
-        return True
+def _is_immutable_web_asset(path: str) -> bool:
+    """Return whether a dist file is a Vite hashed asset."""
     try:
-        current = raw.tell()
-        raw.seek(0, 2)
-        size = raw.tell()
-        raw.seek(current)
-        return size <= max_bytes
-    except (OSError, AttributeError):
-        return True
+        relative_path = os.path.relpath(path, DIST_DIR).replace('\\', '/')
+    except ValueError:
+        return False
+    if not relative_path.startswith('assets/'):
+        return False
+    return bool(re.search(r'[-.][A-Za-z0-9_-]{8,}\.[^.]+$', os.path.basename(path)))
+
+
+def _web_dist_file_response(path: str):
+    """Serve a file from the web dist directory with appropriate caching."""
+    if _is_immutable_web_asset(path):
+        cache_control = 'public, max-age=31536000, immutable'
+    else:
+        cache_control = 'no-store'
+    return FileResponse(path, headers={'Cache-Control': cache_control})
+
+
+def _web_index_response():
+    """Return the SPA index response when the web dist is complete."""
+    index_path = os.path.abspath(os.path.join(DIST_DIR, 'index.html'))
+    if (
+        os.path.isdir(DIST_DIR)
+        and _is_path_within(DIST_DIR, index_path)
+        and os.path.isfile(index_path)
+    ):
+        return _web_dist_file_response(index_path)
+    return None
+
+
+def _is_managed_data_path(path: str) -> bool:
+    """Check whether a path is inside directories managed by the web server."""
+    if not path:
+        return False
+    managed_roots = {WEB_DATA_DIR, UPLOADS_DIR, LIBRARY_DIR}
+    return any(root and _is_path_within(root, path) for root in managed_roots)
+
+
+def _is_managed_entry_path(path: str) -> bool:
+    """Check whether the directory entry itself is under managed data roots."""
+    if not path:
+        return False
+    managed_roots = {WEB_DATA_DIR, UPLOADS_DIR, LIBRARY_DIR}
+    try:
+        child_path = _entry_path(path)
+        for root in managed_roots:
+            if not root:
+                continue
+            root_path = _entry_path(root)
+            if os.path.commonpath([root_path, child_path]) == root_path:
+                return True
+    except (ValueError, OSError):
+        return False
+    return False
 
 
 def _save_upload(upload_file, dest_dir: str, *, max_bytes: Optional[int] = None):
-    """Save an uploaded file to the destination directory."""
-    if max_bytes is not None and not _check_upload_size(upload_file, max_bytes):
-        raise RuntimeError('file-too-large')
-    filename = _sanitize_filename(upload_file.filename)
+    """Save an uploaded file to disk without loading it all into memory."""
+    raw = getattr(upload_file, 'file', None)
+    if raw is None:
+        raise RuntimeError('missing-params')
+
+    filename = _sanitize_filename(getattr(upload_file, 'filename', ''))
     ext = os.path.splitext(filename)[1].lower()
     file_id = uuid.uuid4().hex
     safe_name = f'{file_id}{ext}' if ext else file_id
     save_path = os.path.abspath(os.path.join(dest_dir, safe_name))
     if not _is_path_within(dest_dir, save_path):
         raise RuntimeError('invalid-path')
-    upload_file.save(save_path, overwrite=True)
+
+    os.makedirs(dest_dir, exist_ok=True)
+    bytes_written = 0
+    try:
+        with open(save_path, 'wb') as f:
+            try:
+                raw.seek(0)
+            except (OSError, AttributeError):
+                pass
+            while True:
+                chunk = raw.read(UPLOAD_COPY_CHUNK_BYTES)
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if max_bytes is not None and bytes_written > max_bytes:
+                    raise RuntimeError('file-too-large')
+                f.write(chunk)
+    except RuntimeError as error:
+        try:
+            os.remove(save_path)
+        except OSError:
+            pass
+        if 'file-too-large' in str(error):
+            raise
+        raise RuntimeError('upload-save-failed') from error
+    except Exception as error:
+        try:
+            os.remove(save_path)
+        except OSError:
+            pass
+        raise RuntimeError('upload-save-failed') from error
     return file_id, save_path, safe_name
 
 
@@ -320,13 +593,16 @@ def _register_result(result_path: str) -> str:
     result_id = uuid.uuid4().hex
     now = time.time()
     absolute_path = os.path.abspath(result_path)
-    ownership_key = os.path.normcase(os.path.realpath(absolute_path))
+    if not _is_managed_data_path(absolute_path):
+        raise RuntimeError('invalid-path')
+    ownership_key = _canonical_path(absolute_path)
     with RESULTS_LOCK:
         for entry in RESULTS.values():
             existing_path = entry.get('path')
-            if isinstance(existing_path, str) and os.path.normcase(
-                os.path.realpath(os.path.abspath(existing_path))
-            ) == ownership_key:
+            if (
+                isinstance(existing_path, str)
+                and _canonical_path(existing_path) == ownership_key
+            ):
                 raise RuntimeError('result-path-already-registered')
         RESULTS[result_id] = {
             'path': absolute_path,
@@ -414,10 +690,16 @@ def _get_result_info(file_id: str) -> Optional[Dict[str, object]]:
 
 
 def _safe_delete(path: str) -> None:
-    """Safely delete a file, ignoring errors."""
+    """Safely delete a managed data file, ignoring errors."""
     try:
-        if path and os.path.exists(path):
-            os.remove(path)
+        absolute_path = os.path.abspath(path)
+        if os.path.islink(absolute_path):
+            if not _is_managed_entry_path(absolute_path):
+                return
+            os.remove(absolute_path)
+            return
+        if _is_managed_data_path(absolute_path) and os.path.isfile(absolute_path):
+            os.remove(absolute_path)
     except Exception:
         pass
 
@@ -500,19 +782,20 @@ def _cleanup_orphan_upload_files() -> None:
     now = time.time()
     with UPLOADS_LOCK:
         known_paths = {
-            os.path.abspath(str(entry.get('path', '')))
+            _canonical_path(str(entry.get('path', '')))
             for entry in UPLOADS.values()
             if entry.get('path')
         }
     try:
         for name in os.listdir(UPLOADS_DIR):
             full = os.path.abspath(os.path.join(UPLOADS_DIR, name))
-            if not os.path.isfile(full):
+            is_link = os.path.islink(full)
+            if not os.path.isfile(full) and not is_link:
                 continue
-            if full in known_paths:
+            if _canonical_path(full) in known_paths:
                 continue
             try:
-                mtime = os.path.getmtime(full)
+                mtime = os.lstat(full).st_mtime if is_link else os.path.getmtime(full)
             except OSError:
                 continue
             if now - mtime > UPLOAD_TTL_SECONDS:
@@ -973,110 +1256,102 @@ def _cleanup_result(result_id: str, delete_paths: List[str]) -> None:
         _safe_delete(path)
 
 
-# Enable CORS
-@app.hook('after_request')
-def enable_cors():
-    """Configure CORS headers for all responses."""
-    response.set_header('Access-Control-Allow-Origin', '*')
-    response.set_header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
-    response.set_header(
-        'Access-Control-Allow-Headers', 'Authorization,Content-Type,X-Token'
-    )
-    response.set_header('Referrer-Policy', 'no-referrer')
-
-
-@app.hook('before_request')
-def _trigger_gc_hook():
-    """Throttled memory/disk cleanup, triggered by incoming requests."""
-    _maybe_run_gc()
-
-
-@app.route('/api/<path:path>', method=['OPTIONS'])
-def handle_options(path):
+@app.options('/api/{path:path}')
+def handle_options(path: str):
     """Handle CORS preflight OPTIONS requests."""
-    response.status = 200
     return {}
 
 
 @app.get('/api/status')
-def status():
+def status(response: Response, request: Request):
     """Return the server status."""
     return {'status': 'running'}
 
 
 @app.post('/api/prepare')
-def prepare():
+def prepare(response: Response, request: Request):
     """Prepare a file for face detection."""
-    if request.method == 'OPTIONS':
-        return {}
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
     return {'success': load_models()}
 
 
 @app.post('/api/login')
-def login():
+def login(
+    response: Response,
+    request: Request,
+    body: dict = Body(default_factory=dict),
+):
     """Authenticate and return a token."""
-    if request.method == 'OPTIONS':
-        return {}
-    body = request.json or {}
+    rate_limit_key = _login_rate_limit_key(request)
+    if _is_login_rate_limited(rate_limit_key):
+        response.status_code = 429
+        response.headers['Retry-After'] = str(LOGIN_LOCKOUT_SECONDS)
+        return {'error': 'too-many-login-attempts'}
+
     password = str(body.get('password', '')).strip()
     cfg = _load_config()
-    if password != cfg.get('password'):
-        response.status = 401
+    if not _verify_password(password, cfg):
+        _record_failed_login(rate_limit_key)
+        response.status_code = 401
         return {'error': 'invalid-credential'}
+    if 'password' in cfg:
+        _save_config(_build_password_config(password))
+    _clear_login_failures(rate_limit_key)
     token = _issue_token()
+    _set_auth_cookie(response, token)
     return {'token': token}
 
 
 @app.post('/api/credential')
-def update_credential():
+def update_credential(
+    response: Response,
+    request: Request,
+    body: dict = Body(default_factory=dict),
+):
     """Update the server password."""
-    if request.method == 'OPTIONS':
-        return {}
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
-    body = request.json or {}
+
     new_password = str(body.get('password', '')).strip()
     if not new_password:
-        response.status = 400
+        response.status_code = 400
         return {'error': 'missing-params'}
-    _save_config({'password': new_password})
+    _save_config(_build_password_config(new_password))
     with TOKENS_LOCK:
         TOKENS.clear()
     token = _issue_token()
+    _set_auth_cookie(response, token)
     return {'success': True, 'token': token}
 
 
 @app.get('/api/library')
-def list_library():
+def list_library(response: Response, request: Request):
     """List all items in the face library."""
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
     return {'items': _list_library_items()}
 
 
 @app.post('/api/library/upload')
-def upload_library():
+def upload_library(response: Response, request: Request, file: UploadFile = File(...)):
     """Upload a new face to the library."""
-    if request.method == 'OPTIONS':
-        return {}
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
-    upload_file = request.files.get('file')
+    upload_file = file
     if not upload_file:
-        response.status = 400
+        response.status_code = 400
         return {'error': 'missing-params'}
     ext = _ext(upload_file.filename or '')
     if ext not in ALLOWED_IMAGE_EXTS:
-        response.status = 400
+        response.status_code = 400
         return {'error': 'unsupported-image-format'}
     try:
         _, save_path, safe_name = _save_upload(
             upload_file, LIBRARY_DIR, max_bytes=MAX_UPLOAD_BYTES_IMAGE
         )
     except RuntimeError as e:
-        response.status = 400
+        response.status_code = 400
         return {'error': _simplify_task_error(e)}
     _invalidate_library_cache()
     return {
@@ -1086,32 +1361,30 @@ def upload_library():
     }
 
 
-@app.get('/api/library/<filename>')
-def get_library_file(filename):
+@app.get('/api/library/{filename}')
+def get_library_file(response: Response, request: Request, filename):
     """Retrieve a face library file."""
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
     safe_name = os.path.basename(filename or '')
     path = os.path.abspath(os.path.join(LIBRARY_DIR, safe_name))
     if not _is_path_within(LIBRARY_DIR, path) or not os.path.exists(path):
-        response.status = 404
+        response.status_code = 404
         return {'error': 'file-not-found'}
     if _ext(path) not in ALLOWED_IMAGE_EXTS:
-        response.status = 404
+        response.status_code = 404
         return {'error': 'file-not-found'}
-    return static_file(os.path.basename(path), root=os.path.dirname(path))
+    return FileResponse(path, headers={'Cache-Control': 'no-store'})
 
 
 @app.post('/api/upload')
-def upload_file():
+def upload_file(response: Response, request: Request, file: UploadFile = File(...)):
     """Upload a file for processing."""
-    if request.method == 'OPTIONS':
-        return {}
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
-    upload_file = request.files.get('file')
+    upload_file = file
     if not upload_file:
-        response.status = 400
+        response.status_code = 400
         return {'error': 'missing-params'}
     ext = _ext(upload_file.filename or '')
     if ext in ALLOWED_IMAGE_EXTS:
@@ -1121,14 +1394,14 @@ def upload_file():
         kind = 'video'
         max_bytes = MAX_UPLOAD_BYTES_VIDEO
     else:
-        response.status = 400
+        response.status_code = 400
         return {'error': 'unsupported-file-format'}
     try:
         file_id, save_path, _ = _save_upload(
             upload_file, UPLOADS_DIR, max_bytes=max_bytes
         )
     except RuntimeError as e:
-        response.status = 400
+        response.status_code = 400
         return {'error': _simplify_task_error(e)}
     _register_upload(file_id, save_path, kind)
     return {
@@ -1139,10 +1412,10 @@ def upload_file():
     }
 
 
-@app.get('/api/file/<file_id>')
-def get_file(file_id):
+@app.get('/api/file/{file_id}')
+def get_file(response: Response, request: Request, file_id):
     """Retrieve an uploaded file."""
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
     path = _get_upload_path(file_id)
     if not path:
@@ -1150,7 +1423,7 @@ def get_file(file_id):
         if info:
             path = info.get('path')
     if not path or not os.path.exists(path):
-        response.status = 404
+        response.status_code = 404
         return {'error': 'file-not-found'}
     abs_path = os.path.abspath(str(path))
     if not (
@@ -1158,50 +1431,51 @@ def get_file(file_id):
         or _is_path_within(LIBRARY_DIR, abs_path)
         or _is_path_within(WEB_DATA_DIR, abs_path)
     ):
-        response.status = 404
+        response.status_code = 404
         return {'error': 'file-not-found'}
-    response.set_header('Cache-Control', 'no-store')
-    return static_file(os.path.basename(abs_path), root=os.path.dirname(abs_path))
+    return FileResponse(abs_path, headers={'Cache-Control': 'no-store'})
 
 
-@app.get('/api/download/<file_id>')
-def download_file(file_id):
+@app.head('/api/download/{file_id}')
+@app.get('/api/download/{file_id}')
+def download_file(response: Response, request: Request, file_id):
     """Download a result file."""
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
     info = _get_result_info(file_id)
     if not info:
-        response.status = 404
+        response.status_code = 404
         return {'error': 'file-not-found'}
     path = info.get('path')
     if not path or not os.path.exists(path):
-        response.status = 404
+        response.status_code = 404
         return {'error': 'file-not-found'}
     filename = info.get('name') or os.path.basename(path)
-    response.set_header('Cache-Control', 'no-store')
-    return static_file(
-        os.path.basename(path),
-        root=os.path.dirname(path),
-        download=filename,
-        mimetype=mimetypes.guess_type(path)[0] or 'application/octet-stream',
+    return FileResponse(
+        path,
+        headers={'Cache-Control': 'no-store'},
+        media_type=mimetypes.guess_type(path)[0] or 'application/octet-stream',
+        filename=filename,
     )
 
 
-@app.route('/api/task/detect-faces', method=['POST', 'OPTIONS'])
-def detect_faces_for_image():
+@app.post('/api/task/detect-faces')
+def detect_faces_for_image(
+    response: Response,
+    request: Request,
+    body: dict = Body(default_factory=dict),
+):
     """Detect faces in an uploaded image."""
-    if request.method == 'OPTIONS':
-        return {}
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
     input_pin = None
     try:
-        body = request.json or {}
+
         input_id = body.get('inputFileId')
         regions = body.get('regions')
         input_pin = _pin_upload(str(input_id), expected_kind='image')
         if not input_pin:
-            response.status = 400
+            response.status_code = 400
             return {'error': 'file-not-found'}
         input_path = input_pin.path
         _validate_file(
@@ -1210,34 +1484,36 @@ def detect_faces_for_image():
             missing_code='unsupported-image-format',
         )
         if regions is not None and not isinstance(regions, list):
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
         result = detect_face_boxes_in_image(input_path, regions=regions)
         return {'regions': result}
     except Exception as e:
-        response.status = 500
+        response.status_code = 500
         return {'error': _simplify_task_error(e)}
     finally:
         if input_pin is not None:
             input_pin.release()
 
 
-@app.route('/api/task/video/detect-faces', method=['POST', 'OPTIONS'])
-def detect_faces_for_video():
+@app.post('/api/task/video/detect-faces')
+def detect_faces_for_video(
+    response: Response,
+    request: Request,
+    body: dict = Body(default_factory=dict),
+):
     """Detect faces in a video file."""
-    if request.method == 'OPTIONS':
-        return {}
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
     input_pin = None
     try:
-        body = request.json or {}
+
         input_id = body.get('inputFileId')
         key_frame_ms = body.get('keyFrameMs', 0)
         regions = body.get('regions')
         input_pin = _pin_upload(str(input_id), expected_kind='video')
         if not input_pin:
-            response.status = 400
+            response.status_code = 400
             return {'error': 'file-not-found'}
         input_path = input_pin.path
         _validate_file(
@@ -1246,7 +1522,7 @@ def detect_faces_for_video():
             missing_code='unsupported-video-format',
         )
         if regions is not None and not isinstance(regions, list):
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
         try:
             key_frame_ms = int(float(key_frame_ms or 0))
@@ -1259,23 +1535,25 @@ def detect_faces_for_video():
         )
         return result
     except Exception as e:
-        response.status = 500
+        response.status_code = 500
         return {'error': _simplify_task_error(e)}
     finally:
         if input_pin is not None:
             input_pin.release()
 
 
-@app.route('/api/task', method=['POST', 'OPTIONS'])
-def create_task():
+@app.post('/api/task')
+def create_task(
+    response: Response,
+    request: Request,
+    body: dict = Body(default_factory=dict),
+):
     """Create a new face swap task."""
-    if request.method == 'OPTIONS':
-        return {}
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
     input_pin = None
     try:
-        body = request.json or {}
+
         raw_task_id = body.get('id')
         task_id = str(raw_task_id).strip() if raw_task_id is not None else ''
         input_id = body.get('inputFileId')
@@ -1288,11 +1566,11 @@ def create_task():
         has_target_faces = 'targetFaces' in body or deep_swap_mode
 
         if not all([task_id, input_id]):
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
         input_pin = _pin_upload(str(input_id), expected_kind='image')
         if not input_pin:
-            response.status = 400
+            response.status_code = 400
             return {'error': 'file-not-found'}
         input_path = input_pin.path
         try:
@@ -1302,39 +1580,39 @@ def create_task():
                 missing_code='unsupported-image-format',
             )
         except (RuntimeError, FileNotFoundError) as e:
-            response.status = 400
+            response.status_code = 400
             return {'error': _simplify_task_error(e)}
 
         if has_face_sources and has_target_faces:
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
 
         if has_face_sources:
             if not isinstance(face_sources, list) or len(face_sources) == 0:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'missing-face-sources'}
             source_map = {}
             for source in face_sources:
                 if not isinstance(source, dict):
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'missing-face-sources'}
                 source_id = source.get('id')
                 source_path = _get_library_path(str(source_id))
                 if not source_id or not source_path:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'missing-face-sources'}
                 source_map[str(source_id)] = source_path
             if regions:
                 if not isinstance(regions, list):
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'invalid-face-source-binding'}
                 for region in regions:
                     if not isinstance(region, dict):
-                        response.status = 400
+                        response.status_code = 400
                         return {'error': 'invalid-face-source-binding'}
                     source_id = region.get('faceSourceId')
                     if not source_id or str(source_id) not in source_map:
-                        response.status = 400
+                        response.status_code = 400
                         return {'error': 'invalid-face-source-binding'}
                 res, err = _run_image_task_with_upload_pin(
                     input_id,
@@ -1354,7 +1632,7 @@ def create_task():
             try:
                 target_face_items = _resolve_target_face_items(target_faces)
             except (RuntimeError, FileNotFoundError) as e:
-                response.status = 400
+                response.status_code = 400
                 return {'error': _simplify_task_error(e)}
 
             res, err = _run_image_task_with_upload_pin(
@@ -1368,11 +1646,11 @@ def create_task():
             )
         else:
             if not target_face_id:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'missing-params'}
             target_face_path = _get_library_path(str(target_face_id))
             if not target_face_path:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'file-not-found'}
             try:
                 _validate_file(
@@ -1381,7 +1659,7 @@ def create_task():
                     missing_code='unsupported-image-format',
                 )
             except (RuntimeError, FileNotFoundError) as e:
-                response.status = 400
+                response.status_code = 400
                 return {'error': _simplify_task_error(e)}
             if regions:
                 res, err = _run_image_task_with_upload_pin(
@@ -1399,29 +1677,27 @@ def create_task():
             result_id = _register_result(res)
             return {'resultFileId': result_id, 'resultUrl': f'/api/file/{result_id}'}
         error_code = _simplify_task_error(err)
-        response.status = 409 if error_code == 'task-already-running' else 500
+        response.status_code = 409 if error_code == 'task-already-running' else 500
         return {'error': error_code}
     except Exception as e:
         print('[ERROR] create_task failed:', str(e), '\n', traceback.format_exc())
-        response.status = 500
+        response.status_code = 500
         return {'error': _simplify_task_error(e)}
     finally:
         if input_pin is not None:
             input_pin.release()
 
 
-@app.route('/api/task/video/gpu-modes', method=['GET', 'OPTIONS'])
-def get_video_gpu_modes():
+@app.get('/api/task/video/gpu-modes')
+def get_video_gpu_modes(response: Response, request: Request):
     """Return available GPU acceleration modes."""
-    if request.method == 'OPTIONS':
-        return {}
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
 
     try:
         return get_gpu_acceleration_modes()
     except Exception as e:
-        response.status = 500
+        response.status_code = 500
         return {
             'modes': [{'id': 'cpu', 'name': 'CPU'}],
             'availableProviders': [],
@@ -1429,17 +1705,19 @@ def get_video_gpu_modes():
         }
 
 
-@app.route('/api/task/video', method=['POST', 'OPTIONS'])
-def create_video_task():
+@app.post('/api/task/video')
+def create_video_task(
+    response: Response,
+    request: Request,
+    body: dict = Body(default_factory=dict),
+):
     """Create a new video face swap task."""
-    if request.method == 'OPTIONS':
-        return {}
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
     task_id = None
     input_pin = None
     try:
-        body = request.json or {}
+
         raw_task_id = body.get('id')
         task_id = str(raw_task_id).strip() if raw_task_id is not None else ''
         input_id = body.get('inputFileId')
@@ -1462,7 +1740,7 @@ def create_video_task():
         if config_id:
             stored_config = _get_video_task_config(str(config_id))
             if not isinstance(stored_config, dict):
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'config-not-found'}
 
             stored_target_face_path = _extract_stored_path(
@@ -1536,11 +1814,11 @@ def create_video_task():
         has_target_faces = (target_faces is not None) or deep_swap_mode
 
         if not all([task_id, input_id]):
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
         input_pin = _pin_upload(str(input_id), expected_kind='video')
         if not input_pin:
-            response.status = 400
+            response.status_code = 400
             return {'error': 'file-not-found'}
         input_path = input_pin.path
         try:
@@ -1550,7 +1828,7 @@ def create_video_task():
                 missing_code='unsupported-video-format',
             )
         except (RuntimeError, FileNotFoundError) as e:
-            response.status = 400
+            response.status_code = 400
             return {'error': _simplify_task_error(e)}
 
         source_map: Optional[Dict[str, str]] = None
@@ -1559,40 +1837,40 @@ def create_video_task():
         target_face_items: Optional[List[Dict[str, str]]] = None
 
         if has_face_sources and has_target_faces:
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
 
         if has_face_sources:
             if not isinstance(face_sources, list) or len(face_sources) == 0:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'missing-face-sources'}
             source_map = {}
             for source in face_sources:
                 if not isinstance(source, dict):
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'missing-face-sources'}
                 source_id = source.get('id')
                 source_path = _get_library_path(str(source_id))
                 if not source_id or not source_path:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'missing-face-sources'}
                 source_map[str(source_id)] = source_path
             if not isinstance(regions, list) or len(regions) == 0:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'invalid-face-source-binding'}
             for region in regions:
                 if not isinstance(region, dict):
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'invalid-face-source-binding'}
                 source_id = region.get('faceSourceId')
                 if not source_id or str(source_id) not in source_map:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'invalid-face-source-binding'}
         elif has_target_faces:
             try:
                 target_face_items = _resolve_target_face_items(target_faces)
             except (RuntimeError, FileNotFoundError) as e:
-                response.status = 400
+                response.status_code = 400
                 return {'error': _simplify_task_error(e)}
 
             target_face_map = {
@@ -1603,13 +1881,13 @@ def create_video_task():
             if target_face_id is not None:
                 target_face_path = _get_library_path(str(target_face_id))
                 if not target_face_path:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'file-not-found'}
             elif stored_target_face_path:
                 target_face_path = stored_target_face_path
 
             if not target_face_path:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'missing-params'}
 
             try:
@@ -1619,7 +1897,7 @@ def create_video_task():
                     missing_code='unsupported-image-format',
                 )
             except (RuntimeError, FileNotFoundError) as e:
-                response.status = 400
+                response.status_code = 400
                 return {'error': _simplify_task_error(e)}
 
         if config_id:
@@ -1632,7 +1910,7 @@ def create_video_task():
                     source_map=source_map,
                 )
             except RuntimeError as e:
-                response.status = 400
+                response.status_code = 400
                 return {'error': _simplify_task_error(e)}
 
         try:
@@ -1654,7 +1932,7 @@ def create_video_task():
                 gpu_provider=gpu_provider,
             )
         except (RuntimeError, FileNotFoundError) as e:
-            response.status = 400
+            response.status_code = 400
             return {'error': _simplify_task_error(e)}
 
         active_config_id: Optional[str] = None
@@ -1783,7 +2061,7 @@ def create_video_task():
                     or task_id in IMAGE_TASKS
                     or task_id in VIDEO_TASK_PROGRESS
                 ):
-                    response.status = 409
+                    response.status_code = 409
                     return {'error': 'task-already-running'}
                 _set_video_task_progress(
                     task_id,
@@ -1813,7 +2091,7 @@ def create_video_task():
                 error=_simplify_task_error(e),
                 etaSeconds=None,
             )
-            response.status = 500
+            response.status_code = 500
             return {'error': _simplify_task_error(e)}
         payload = {'task_id': task_id, 'status': 'queued'}
         if active_config_id:
@@ -1829,26 +2107,26 @@ def create_video_task():
                 error=_simplify_task_error(e),
                 etaSeconds=None,
             )
-        response.status = 500
+        response.status_code = 500
         return {'error': _simplify_task_error(e)}
     finally:
         if input_pin is not None:
             input_pin.release()
 
 
-@app.get('/api/task/video/progress/<task_id>')
-def get_video_task_progress(task_id):
+@app.get('/api/task/video/progress/{task_id}')
+def get_video_task_progress(response: Response, request: Request, task_id):
     """Return the progress of a video task."""
-    response.set_header('Cache-Control', 'no-store')
-    if not _require_auth():
+    response.headers.__setitem__('Cache-Control', 'no-store')
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
     return _get_video_task_progress(task_id)
 
 
-@app.delete('/api/task/<task_id>')
-def cancel_task(task_id):
+@app.delete('/api/task/{task_id}')
+def cancel_task(response: Response, request: Request, task_id):
     """Cancel a running task."""
-    if not _require_auth():
+    if not _require_auth(request, response):
         return {'error': 'unauthorized'}
     with VIDEO_TASK_START_LOCK:
         executor_cancelled = VIDEO_TASK_EXECUTOR.cancel(task_id)
@@ -1871,53 +2149,88 @@ def cancel_task(task_id):
     return {'success': True}
 
 
+@app.websocket('/api/task/video/ws/{task_id}')
+async def web_video_task_ws(websocket: WebSocket, task_id: str):
+    if not _validate_token(_extract_token(websocket)):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    try:
+        while True:
+            progress = _get_video_task_progress(task_id)
+            await websocket.send_json(progress)
+            if progress.get('status') in {'success', 'failed', 'cancelled'}:
+                break
+            await asyncio.sleep(0.5)
+    except WebSocketDisconnect:
+        pass
+
+
 @app.get('/')
-def web_index():
+def web_index(response: Response, request: Request):
     """Serve the main web page."""
-    if os.path.isdir(DIST_DIR):
-        return static_file('index.html', root=DIST_DIR)
-    response.status = 404
+    index_response = _web_index_response()
+    if index_response is not None:
+        return index_response
+    response.status_code = 404
     return 'web dist not found'
 
 
-@app.get('/<filepath:path>')
-def web_assets(filepath):
+@app.get('/{filepath:path}')
+def web_assets(response: Response, request: Request, filepath: str):
     """Serve static web assets."""
+    if filepath == 'api' or filepath.startswith('api/'):
+        response.status_code = 404
+        return {'error': 'not-found'}
     if os.path.isdir(DIST_DIR):
-        candidate = os.path.join(DIST_DIR, filepath)
-        if os.path.exists(candidate) and os.path.isfile(candidate):
-            return static_file(filepath, root=DIST_DIR)
-        return static_file('index.html', root=DIST_DIR)
-    response.status = 404
+        candidate = os.path.abspath(os.path.join(DIST_DIR, filepath))
+        if (
+            _is_path_within(DIST_DIR, candidate)
+            and os.path.exists(candidate)
+            and os.path.isfile(candidate)
+        ):
+            return _web_dist_file_response(candidate)
+        index_response = _web_index_response()
+        if index_response is not None:
+            return index_response
+    response.status_code = 404
     return 'web dist not found'
 
 
-class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
-    daemon_threads = True
+def _parse_env_port(env_name: str, default: int) -> int:
+    raw_value = os.environ.get(env_name, str(default))
+    try:
+        port = int(raw_value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f'{env_name} must be an integer, got {raw_value!r}'
+        ) from error
+    if not 1 <= port <= 65535:
+        raise ValueError(f'{env_name} must be between 1 and 65535, got {port}')
+    return port
 
 
-class _RedactingWSGIRequestHandler(WSGIRequestHandler):
-    """Prevent bearer query tokens from being written to access logs."""
+def main(argv: Optional[List[str]] = None) -> int:
+    args = sys.argv if argv is None else argv
+    if len(args) > 1 and args[1] == '--init-config':
+        return _init_config_from_environment()
+    try:
+        import uvicorn
 
-    def log_message(self, format, *args):
-        redacted_args = tuple(
-            re.sub(r'([?&]token=)[^&\s]+', r'\1***', value)
-            if isinstance(value, str)
-            else value
-            for value in args
-        )
-        super().log_message(format, *redacted_args)
+        host = os.environ.get('WEB_HOST', '0.0.0.0')
+        port = _parse_env_port('WEB_PORT', 8033)
+        if VIDEO_TASK_CONFIG_SECRET == DEFAULT_VIDEO_TASK_CONFIG_SECRET:
+            print(
+                '[WEB] warning: VIDEO_TASK_CONFIG_SECRET uses the development '
+                'default; set a random value for production deployments'
+            )
+        print(f'[WEB] starting server on {host}:{port}')
+        uvicorn.run(app, host=host, port=port, access_log=False)
+    except Exception as error:
+        print(f'[WEB] server failed: {error!r}')
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
-    host = os.environ.get('WEB_HOST', '0.0.0.0')
-    port = int(os.environ.get('WEB_PORT', '8033'))
-    print(f'[WEB] starting server on {host}:{port}')
-    httpd = make_server(
-        host,
-        port,
-        app,
-        server_class=_ThreadingWSGIServer,
-        handler_class=_RedactingWSGIRequestHandler,
-    )
-    httpd.serve_forever()
+    raise SystemExit(main())

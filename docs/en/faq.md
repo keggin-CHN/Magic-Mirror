@@ -22,4 +22,4 @@ Make sure ffmpeg is available, or try another source video encoding.
 
 ## What is the default login password?
 
-The default password is `123456`. You can change it after logging in.
+When running the Web server from source, the local development default is `123456`. The production Linux Web installer generates a one-time random initial password and prints it when installation completes.

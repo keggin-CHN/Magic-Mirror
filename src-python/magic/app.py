@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import threading
@@ -5,7 +6,8 @@ import time
 import traceback
 
 from async_tasks import AsyncTask
-from bottle import Bottle, request, response
+from fastapi import Body, FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 
 from .face import (
     detect_face_boxes_in_image,
@@ -32,7 +34,15 @@ from .task_config import (
 )
 from .video_task_executor import VideoTaskExecutor
 
-app = Bottle()
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 ALLOWED_IMAGE_EXTS = {
     '.jpg',
@@ -472,26 +482,8 @@ def _validate_file(path: str, allowed_exts: set[str], *, missing_code: str):
         raise RuntimeError(missing_code)
 
 
-# https://github.com/bottlepy/bottle/issues/881#issuecomment-244024649
-app.plugins[0].json_dumps = lambda *args, **kwargs: json.dumps(
-    *args, ensure_ascii=False, **kwargs
-).encode('utf8')
 
 
-# Enable CORS
-@app.hook('after_request')
-def enable_cors():
-    """Configure CORS headers for all responses."""
-    response.set_header('Access-Control-Allow-Origin', '*')
-    response.set_header('Access-Control-Allow-Methods', '*')
-    response.set_header('Access-Control-Allow-Headers', '*')
-
-
-@app.route('<path:path>', method=['OPTIONS'])
-def handle_options(path):
-    """Handle CORS preflight OPTIONS requests."""
-    response.status = 200
-    return 'MagicMirror ✨'
 
 
 @app.get('/status')
@@ -500,25 +492,16 @@ def status():
     return {'status': 'running'}
 
 
-@app.route('/prepare', method=['POST', 'OPTIONS'])
-def prepare():
+@app.post('/prepare')
+def prepare(response: Response):
     """Prepare a file for face detection."""
-    # 处理 OPTIONS 预检请求
-    if request.method == 'OPTIONS':
-        return {}
-
     return {'success': load_models()}
 
 
-@app.route('/task', method=['POST', 'OPTIONS'])
-def create_task():
+@app.post('/task')
+def create_task(response: Response, body: dict = Body(default_factory=dict)):
     """Create a new face swap task."""
-    # 处理 OPTIONS 预检请求
-    if request.method == 'OPTIONS':
-        return {}
-
     try:
-        body = request.json or {}
         raw_task_id = body.get('id')
         task_id = str(raw_task_id).strip() if raw_task_id is not None else ''
         input_image = body.get('inputImage')
@@ -531,7 +514,7 @@ def create_task():
         has_target_faces = 'targetFaces' in body or deep_swap_mode
 
         if not all([task_id, input_image]):
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
 
         try:
@@ -541,23 +524,23 @@ def create_task():
                 missing_code='unsupported-image-format',
             )
         except (RuntimeError, FileNotFoundError) as e:
-            response.status = 400
+            response.status_code = 400
             return {'error': _simplify_task_error(e)}
 
         if has_face_sources:
             if not isinstance(face_sources, list) or len(face_sources) == 0:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'missing-face-sources'}
 
             source_map = {}
             for source in face_sources:
                 if not isinstance(source, dict):
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'missing-face-sources'}
                 source_id = source.get('id')
                 source_path = source.get('path')
                 if not source_id or not source_path:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'missing-face-sources'}
                 try:
                     _validate_file(
@@ -566,22 +549,22 @@ def create_task():
                         missing_code='unsupported-image-format',
                     )
                 except (RuntimeError, FileNotFoundError) as e:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': _simplify_task_error(e)}
                 source_map[str(source_id)] = source_path
 
             if regions:
                 if not isinstance(regions, list):
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'invalid-face-source-binding'}
 
                 for region in regions:
                     if not isinstance(region, dict):
-                        response.status = 400
+                        response.status_code = 400
                         return {'error': 'invalid-face-source-binding'}
                     source_id = region.get('faceSourceId')
                     if not source_id or str(source_id) not in source_map:
-                        response.status = 400
+                        response.status_code = 400
                         return {'error': 'invalid-face-source-binding'}
 
                 res, err = _run_image_task_once(
@@ -598,7 +581,7 @@ def create_task():
                 )
         elif has_target_faces:
             if not isinstance(target_faces, list) or len(target_faces) == 0:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'missing-params'}
 
             target_face_paths = []
@@ -610,7 +593,7 @@ def create_task():
                 else:
                     target_path = None
                 if not target_path:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'missing-params'}
                 try:
                     _validate_file(
@@ -619,7 +602,7 @@ def create_task():
                         missing_code='unsupported-image-format',
                     )
                 except (RuntimeError, FileNotFoundError) as e:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': _simplify_task_error(e)}
                 target_face_paths.append(target_path)
 
@@ -629,7 +612,7 @@ def create_task():
             )
         else:
             if not target_face:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'missing-params'}
 
             try:
@@ -639,7 +622,7 @@ def create_task():
                     missing_code='unsupported-image-format',
                 )
             except (RuntimeError, FileNotFoundError) as e:
-                response.status = 400
+                response.status_code = 400
                 return {'error': _simplify_task_error(e)}
 
             if regions:
@@ -657,28 +640,27 @@ def create_task():
             return {'result': res}
 
         error_code = _simplify_task_error(err)
-        response.status = 409 if error_code == 'task-already-running' else 500
+        response.status_code = 409 if error_code == 'task-already-running' else 500
         return {'error': error_code}
 
     except Exception as e:
         print('[ERROR] create_task failed:', str(e), '\n', traceback.format_exc())
-        response.status = 500
+        response.status_code = 500
         return {'error': _simplify_task_error(e)}
 
 
-@app.route('/task/detect-faces', method=['POST', 'OPTIONS'])
-def detect_faces_for_image():
+@app.post('/task/detect-faces')
+def detect_faces_for_image(
+    response: Response,
+    body: dict = Body(default_factory=dict),
+):
     """Detect faces in an uploaded image."""
-    if request.method == 'OPTIONS':
-        return {}
-
     try:
-        body = request.json or {}
         input_image = body.get('inputImage')
         regions = body.get('regions')
 
         if not input_image:
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
 
         try:
@@ -688,34 +670,33 @@ def detect_faces_for_image():
                 missing_code='unsupported-image-format',
             )
         except (RuntimeError, FileNotFoundError) as e:
-            response.status = 400
+            response.status_code = 400
             return {'error': _simplify_task_error(e)}
 
         if regions is not None and not isinstance(regions, list):
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
 
         result = detect_face_boxes_in_image(input_image, regions=regions)
         return {'regions': result}
     except Exception as e:
-        response.status = 500
+        response.status_code = 500
         return {'error': _simplify_task_error(e)}
 
 
-@app.route('/task/video/detect-faces', method=['POST', 'OPTIONS'])
-def detect_faces_for_video():
+@app.post('/task/video/detect-faces')
+def detect_faces_for_video(
+    response: Response,
+    body: dict = Body(default_factory=dict),
+):
     """Detect faces in a video file."""
-    if request.method == 'OPTIONS':
-        return {}
-
     try:
-        body = request.json or {}
         input_video = body.get('inputVideo')
         key_frame_ms = body.get('keyFrameMs', 0)
         regions = body.get('regions')
 
         if not input_video:
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
 
         try:
@@ -725,11 +706,11 @@ def detect_faces_for_video():
                 missing_code='unsupported-video-format',
             )
         except (RuntimeError, FileNotFoundError) as e:
-            response.status = 400
+            response.status_code = 400
             return {'error': _simplify_task_error(e)}
 
         if regions is not None and not isinstance(regions, list):
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
 
         try:
@@ -744,20 +725,17 @@ def detect_faces_for_video():
         )
         return result
     except Exception as e:
-        response.status = 500
+        response.status_code = 500
         return {'error': _simplify_task_error(e)}
 
 
-@app.route('/task/video/gpu-modes', method=['GET', 'OPTIONS'])
-def get_video_gpu_modes():
+@app.get('/task/video/gpu-modes')
+def get_video_gpu_modes(response: Response):
     """Return available GPU acceleration modes."""
-    if request.method == 'OPTIONS':
-        return {}
-
     try:
         return get_gpu_acceleration_modes()
     except Exception as e:
-        response.status = 500
+        response.status_code = 500
         return {
             'modes': [{'id': 'cpu', 'name': 'CPU'}],
             'availableProviders': [],
@@ -765,16 +743,11 @@ def get_video_gpu_modes():
         }
 
 
-@app.route('/task/video', method=['POST', 'OPTIONS'])
-def create_video_task():
+@app.post('/task/video')
+def create_video_task(response: Response, body: dict = Body(default_factory=dict)):
     """Create a new video face swap task."""
-    # 处理 OPTIONS 预检请求
-    if request.method == 'OPTIONS':
-        return {}
-
     task_id = None
     try:
-        body = request.json or {}
         raw_task_id = body.get('id')
         task_id = str(raw_task_id).strip() if raw_task_id is not None else ''
         input_video = body.get('inputVideo')
@@ -796,7 +769,7 @@ def create_video_task():
         if config_id:
             stored_config = _get_video_task_config(str(config_id))
             if not isinstance(stored_config, dict):
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'config-not-found'}
 
             if target_face is None:
@@ -868,7 +841,7 @@ def create_video_task():
         has_target_faces = (target_faces is not None) or deep_swap_mode
 
         if not all([task_id, input_video]):
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
 
         try:
@@ -878,7 +851,7 @@ def create_video_task():
                 missing_code='unsupported-video-format',
             )
         except (RuntimeError, FileNotFoundError) as e:
-            response.status = 400
+            response.status_code = 400
             return {'error': _simplify_task_error(e)}
 
         source_map = None
@@ -887,23 +860,23 @@ def create_video_task():
         target_face_items = None
 
         if has_face_sources and has_target_faces:
-            response.status = 400
+            response.status_code = 400
             return {'error': 'missing-params'}
 
         if has_face_sources:
             if not isinstance(face_sources, list) or len(face_sources) == 0:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'missing-face-sources'}
 
             source_map = {}
             for source in face_sources:
                 if not isinstance(source, dict):
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'missing-face-sources'}
                 source_id = source.get('id')
                 source_path = source.get('path')
                 if not source_id or not source_path:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'missing-face-sources'}
                 try:
                     _validate_file(
@@ -912,25 +885,25 @@ def create_video_task():
                         missing_code='unsupported-image-format',
                     )
                 except (RuntimeError, FileNotFoundError) as e:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': _simplify_task_error(e)}
                 source_map[str(source_id)] = source_path
 
             if not isinstance(regions, list) or len(regions) == 0:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'invalid-face-source-binding'}
 
             for region in regions:
                 if not isinstance(region, dict):
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'invalid-face-source-binding'}
                 source_id = region.get('faceSourceId')
                 if not source_id or str(source_id) not in source_map:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'invalid-face-source-binding'}
         elif has_target_faces:
             if not isinstance(target_faces, list) or len(target_faces) == 0:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'missing-params'}
 
             target_face_items = []
@@ -947,7 +920,7 @@ def create_video_task():
                     target_path = None
 
                 if not target_id or not target_path:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': 'missing-params'}
 
                 try:
@@ -957,14 +930,14 @@ def create_video_task():
                         missing_code='unsupported-image-format',
                     )
                 except (RuntimeError, FileNotFoundError) as e:
-                    response.status = 400
+                    response.status_code = 400
                     return {'error': _simplify_task_error(e)}
 
                 target_face_items.append({'id': str(target_id), 'path': target_path})
                 target_face_map[str(target_id)] = target_path
         else:
             if not target_face:
-                response.status = 400
+                response.status_code = 400
                 return {'error': 'missing-params'}
 
             target_face_path = target_face
@@ -975,7 +948,7 @@ def create_video_task():
                     missing_code='unsupported-image-format',
                 )
             except (RuntimeError, FileNotFoundError) as e:
-                response.status = 400
+                response.status_code = 400
                 return {'error': _simplify_task_error(e)}
 
         if config_id:
@@ -988,7 +961,7 @@ def create_video_task():
                     source_map=source_map,
                 )
             except RuntimeError as e:
-                response.status = 400
+                response.status_code = 400
                 return {'error': _simplify_task_error(e)}
 
         try:
@@ -1006,7 +979,7 @@ def create_video_task():
                 gpu_provider=gpu_provider,
             )
         except (RuntimeError, FileNotFoundError) as e:
-            response.status = 400
+            response.status_code = 400
             return {'error': _simplify_task_error(e)}
 
         active_config_id = None
@@ -1138,7 +1111,7 @@ def create_video_task():
                     or task_id in IMAGE_TASKS
                     or task_id in VIDEO_TASK_PROGRESS
                 ):
-                    response.status = 409
+                    response.status_code = 409
                     return {'error': 'task-already-running'}
                 _set_video_task_progress(
                     task_id,
@@ -1161,7 +1134,7 @@ def create_video_task():
                 error=_simplify_task_error(e),
                 etaSeconds=None,
             )
-            response.status = 500
+            response.status_code = 500
             return {'error': _simplify_task_error(e)}
 
         payload = {'task_id': task_id, 'status': 'queued'}
@@ -1179,19 +1152,19 @@ def create_video_task():
                 error=_simplify_task_error(e),
                 etaSeconds=None,
             )
-        response.status = 500
+        response.status_code = 500
         return {'error': _simplify_task_error(e)}
 
 
-@app.get('/task/video/progress/<task_id>')
-def get_video_task_progress(task_id):
+@app.get('/task/video/progress/{task_id}')
+def get_video_task_progress(task_id: str, response: Response):
     """Return the progress of a video task."""
-    response.set_header('Cache-Control', 'no-store')
+    response.headers['Cache-Control'] = 'no-store'
     return _get_video_task_progress(task_id)
 
 
-@app.delete('/task/<task_id>')
-def cancel_task(task_id):
+@app.delete('/task/{task_id}')
+def cancel_task(task_id: str):
     """Cancel a running task."""
     with VIDEO_TASK_START_LOCK:
         executor_cancelled = VIDEO_TASK_EXECUTOR.cancel(task_id)
@@ -1212,3 +1185,16 @@ def cancel_task(task_id):
                 error='cancelled',
             )
     return {'success': True}
+
+@app.websocket('/task/video/ws/{task_id}')
+async def video_task_ws(websocket: WebSocket, task_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            progress = _get_video_task_progress(task_id)
+            await websocket.send_json(progress)
+            if progress.get('status') in {'success', 'failed', 'cancelled'}:
+                break
+            await asyncio.sleep(0.5)
+    except WebSocketDisconnect:
+        pass

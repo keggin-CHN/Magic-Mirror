@@ -22,4 +22,4 @@ https://github.com/keggin-CHN/Magic-Mirror/releases
 
 ## 默认登录密码是什么？
 
-默认密码为 `123456`，登录后可以修改。
+源码本地运行 Web 服务时默认密码为 `123456`，登录后可以修改。生产 Linux Web 安装脚本会生成一次性随机初始密码，并在安装完成时打印。

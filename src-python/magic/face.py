@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from functools import lru_cache
 
+import av
 import cv2
 import numpy as np
 from tinyface import TinyFace
@@ -22,15 +23,89 @@ from tinyface import TinyFace
 _tf = TinyFace()
 _tf_lock = threading.RLock()
 
-# GPU 加速的 TinyFace 实例池缓存（按 Provider 复用）
-# 结构: {
-#   provider: {
-#     "instances": [TinyFace, ...],
-#     "locks": [RLock, ...],
-#   }
-# }
+
 _tf_gpu_instances = {}
 _tf_gpu_lock = threading.RLock()
+
+
+class PyAVReader:
+    """Small OpenCV-like video reader backed by PyAV."""
+
+    def __init__(self, path):
+        self.container = av.open(path)
+        self.video_stream = self.container.streams.video[0]
+        self.video_stream.thread_type = 'AUTO'
+        self.frame_iter = self.container.decode(video=0)
+        self.fps = (
+            float(self.video_stream.average_rate)
+            if self.video_stream.average_rate
+            else 25.0
+        )
+        self.width = int(self.video_stream.width or 0)
+        self.height = int(self.video_stream.height or 0)
+        self.frames_count = int(self.video_stream.frames or 0)
+
+    def isOpened(self):
+        return self.container is not None
+
+    def read(self):
+        try:
+            av_frame = next(self.frame_iter)
+            frame = av_frame.to_ndarray(format='bgr24')
+            return True, frame
+        except StopIteration:
+            return False, None
+        except Exception:
+            return False, None
+
+    def get(self, prop_id):
+        if prop_id == cv2.CAP_PROP_FPS:
+            return self.fps
+        if prop_id == cv2.CAP_PROP_FRAME_WIDTH:
+            return self.width
+        if prop_id == cv2.CAP_PROP_FRAME_HEIGHT:
+            return self.height
+        if prop_id == cv2.CAP_PROP_FRAME_COUNT:
+            return self.frames_count
+        return 0
+
+    def set(self, _prop_id, _value):
+        return False
+
+    def release(self):
+        if self.container is not None:
+            self.container.close()
+            self.container = None
+
+
+class PyAVWriter:
+    """Small OpenCV-like H.264 writer backed by PyAV."""
+
+    def __init__(self, path, fps, size):
+        normalized_fps = max(1, int(round(float(fps or 25.0))))
+        self.container = av.open(path, mode='w')
+        self.stream = self.container.add_stream('h264', rate=normalized_fps)
+        self.stream.width = int(size[0])
+        self.stream.height = int(size[1])
+        self.stream.pix_fmt = 'yuv420p'
+        self.stream.options = {'preset': 'fast', 'crf': '18'}
+
+    def isOpened(self):
+        return self.container is not None
+
+    def write(self, frame):
+        av_frame = av.VideoFrame.from_ndarray(frame, format='bgr24')
+        for packet in self.stream.encode(av_frame):
+            self.container.mux(packet)
+
+    def release(self):
+        if self.container is not None:
+            try:
+                for packet in self.stream.encode():
+                    self.container.mux(packet)
+            finally:
+                self.container.close()
+                self.container = None
 
 
 _VERBOSE_LOGS = os.environ.get('MAGIC_VERBOSE_LOGS', '').strip().lower() in {
@@ -773,7 +848,7 @@ def _swap_face_video(
         _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'opening-video')
         print(f'[INFO] 打开视频文件: {input_path}')
-        cap = cv2.VideoCapture(input_path)
+        cap = PyAVReader(input_path)
         if not cap.isOpened():
             raise RuntimeError('video-open-failed')
 
@@ -810,8 +885,7 @@ def _swap_face_video(
             print(f'[INFO] 单人视频换脸启用区域限制: {len(normalized_regions)} 个选区')
 
         print(f'[INFO] 创建输出视频: {save_path}')
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
+        writer = PyAVWriter(save_path, fps, (width, height))
         if not writer.isOpened():
             raise RuntimeError('video-write-failed')
 
@@ -1883,7 +1957,7 @@ def detect_face_boxes_in_video(input_path, key_frame_ms=0, regions=None):
     """Detect face bounding boxes in video frames."""
     cap = None
     try:
-        cap = cv2.VideoCapture(input_path)
+        cap = PyAVReader(input_path)
         if not cap.isOpened():
             raise RuntimeError('video-open-failed')
 
@@ -2057,7 +2131,7 @@ def _swap_face_video_by_sources(
     try:
         _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'opening-video')
-        cap = cv2.VideoCapture(input_path)
+        cap = PyAVReader(input_path)
         if not cap.isOpened():
             raise RuntimeError('video-open-failed')
 
@@ -2116,8 +2190,7 @@ def _swap_face_video_by_sources(
                 raise RuntimeError('no-face-detected')
             destination_faces[str(source_id)] = destination_face
 
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
+        writer = PyAVWriter(save_path, fps, (width, height))
         if not writer.isOpened():
             raise RuntimeError('video-write-failed')
 
@@ -2941,7 +3014,7 @@ def _swap_face_video_deep(
     try:
         _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'opening-video')
-        cap = cv2.VideoCapture(input_path)
+        cap = PyAVReader(input_path)
         if not cap.isOpened():
             raise RuntimeError('video-open-failed')
 
@@ -3234,13 +3307,12 @@ def _process_deep_video_segment(
         read_end = int(segment['readEnd'])
 
         temp_output_path = os.path.join(temp_dir, f'segment_{segment_index:04d}.mp4')
-        cap = cv2.VideoCapture(input_path)
+        cap = PyAVReader(input_path)
         if not cap.isOpened():
             raise RuntimeError('video-open-failed')
         cap.set(cv2.CAP_PROP_POS_FRAMES, read_start)
 
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
+        writer = PyAVWriter(temp_output_path, fps, (width, height))
         if not writer.isOpened():
             raise RuntimeError('video-write-failed')
 
@@ -3367,14 +3439,13 @@ def _concat_video_segments(
     caps = []
     try:
         _raise_if_cancelled(cancel_event)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        writer = PyAVWriter(output_path, fps, (width, height))
         if not writer.isOpened():
             raise RuntimeError('video-write-failed')
 
         for segment_path in segment_paths:
             _raise_if_cancelled(cancel_event)
-            cap = cv2.VideoCapture(segment_path)
+            cap = PyAVReader(segment_path)
             caps.append(cap)
             if not cap.isOpened():
                 raise RuntimeError('video-open-failed')

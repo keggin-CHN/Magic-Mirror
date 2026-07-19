@@ -5,18 +5,20 @@ on:
     paths:
       - "Dockerfile"
       - ".dockerignore"
+      - "src-python/**"
       - "src-python/requirements-docker.txt"
       - ".github/workflows/docker-build.yml"
   pull_request:
     paths:
       - "Dockerfile"
       - ".dockerignore"
+      - "src-python/**"
       - "src-python/requirements-docker.txt"
       - ".github/workflows/docker-build.yml"
   workflow_dispatch:
 
 jobs:
-  docker-lint:
+  docker-build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,3 +30,5 @@ jobs:
           dockerfile: Dockerfile
           failure-threshold: warning
           ignore: DL3008
+      - name: Build Docker image
+        run: docker build --build-arg SKIP_MODEL_DOWNLOAD=1 --pull -t magic-mirror:test .

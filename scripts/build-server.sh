@@ -1,7 +1,23 @@
-#!/bin/bash
-set -e  # 遇到错误立即退出
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "🔨 开始构建服务器..."
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+OUT_DIR="${OUT_DIR:-out}"
+DIST_DIR="${OUT_DIR}/server.dist"
+ARCHIVE_PATH="${OUT_DIR}/server.zip"
+
+log() {
+  echo "[INFO] $*"
+}
+
+die() {
+  echo "[ERROR] $*" >&2
+  exit 1
+}
+
+log "Building server..."
 
 python -m nuitka --standalone --unstripped --assume-yes-for-downloads \
   --include-package=onnx \
@@ -12,38 +28,33 @@ python -m nuitka --standalone --unstripped --assume-yes-for-downloads \
   --include-package=cv2 \
   --include-package=numpy \
   --include-package=tinyface \
-  --include-package=bottle \
+  --include-package=fastapi \
+  --include-package=uvicorn \
+  --include-package=multipart \
+  --include-package=av \
   --include-package-data=onnx \
   --include-data-files="src-python/models/*.onnx=models/" \
-  --output-dir=out src-python/server.py
+  --output-dir="$OUT_DIR" \
+  src-python/server.py
 
-if [ ! -d "out/server.dist" ]; then
-    echo "❌ 构建失败：out/server.dist 目录不存在"
-    exit 1
-fi
+[ -d "$DIST_DIR" ] || die "Nuitka output directory not found: $DIST_DIR"
 
-echo "📦 打包服务器..."
-cd out/server.dist && zip -r ../server.zip .
+log "Copying GPU diagnostic scripts..."
+for file in check_gpu_support.bat check_gpu_support.py; do
+  if [ -f "$file" ]; then
+    cp "$file" "$DIST_DIR/"
+  else
+    echo "[WARN] Optional file not found: $file" >&2
+  fi
+done
 
-if [ ! -f "../server.zip" ]; then
-    echo "❌ 打包失败：server.zip 文件不存在"
-    exit 1
-fi
+log "Packaging server archive..."
+rm -f "$ARCHIVE_PATH"
+(
+  cd "$DIST_DIR"
+  zip -r "../server.zip" .
+)
 
-cd ../..
+[ -f "$ARCHIVE_PATH" ] || die "Package was not created: $ARCHIVE_PATH"
 
-# 复制 GPU 检测脚本到输出目录
-echo "📋 复制 GPU 检测脚本..."
-if [ ! -f "check_gpu_support.bat" ]; then
-    echo "⚠️  警告：check_gpu_support.bat 不存在"
-else
-    cp check_gpu_support.bat out/server.dist/
-fi
-
-if [ ! -f "check_gpu_support.py" ]; then
-    echo "⚠️  警告：check_gpu_support.py 不存在"
-else
-    cp check_gpu_support.py out/server.dist/
-fi
-
-echo "✅ Done"
+log "Created $ARCHIVE_PATH"

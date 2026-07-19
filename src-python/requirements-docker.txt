@@ -1,5 +1,9 @@
 tinyface >= 1.0.1
-bottle >= 0.13.2
+fastapi >= 0.110.0
+uvicorn >= 0.29.0
+python-multipart >= 0.0.9
+av >= 12.0.0
+packaging >= 24.0
 async-tasks-python >= 1.0.0
 opencv-python >= 4.12.0.88, < 5.0.0
 numpy >= 2.1.2, < 3.0.0

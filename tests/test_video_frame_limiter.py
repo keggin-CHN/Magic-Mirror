@@ -91,9 +91,8 @@ def test_slow_first_frame_bounds_the_entire_video_pipeline(monkeypatch, tmp_path
     errors = []
 
     monkeypatch.setattr(face.multiprocessing, 'cpu_count', lambda: cpu_count)
-    monkeypatch.setattr(face.cv2, 'VideoCapture', lambda _path: capture)
-    monkeypatch.setattr(face.cv2, 'VideoWriter', lambda *_args: writer)
-    monkeypatch.setattr(face.cv2, 'VideoWriter_fourcc', lambda *_args: 0)
+    monkeypatch.setattr(face, 'PyAVReader', lambda _path: capture)
+    monkeypatch.setattr(face, 'PyAVWriter', lambda *_args: writer)
     monkeypatch.setattr(face, '_resolve_total_frames', lambda _path, _fps, total: total)
     monkeypatch.setattr(face, '_read_image', lambda _path: frames[0])
     monkeypatch.setattr(
@@ -149,9 +148,8 @@ def test_writer_failure_stops_pipeline_without_deadlock(monkeypatch, tmp_path):
     errors = []
 
     monkeypatch.setattr(face.multiprocessing, 'cpu_count', lambda: 3)
-    monkeypatch.setattr(face.cv2, 'VideoCapture', lambda _path: capture)
-    monkeypatch.setattr(face.cv2, 'VideoWriter', lambda *_args: writer)
-    monkeypatch.setattr(face.cv2, 'VideoWriter_fourcc', lambda *_args: 0)
+    monkeypatch.setattr(face, 'PyAVReader', lambda _path: capture)
+    monkeypatch.setattr(face, 'PyAVWriter', lambda *_args: writer)
     monkeypatch.setattr(face, '_resolve_total_frames', lambda _path, _fps, total: total)
     monkeypatch.setattr(face, '_read_image', lambda _path: frames[0])
     monkeypatch.setattr(

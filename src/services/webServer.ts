@@ -547,26 +547,16 @@ class WebServer {
     }
   }
 
-  _withTokenQuery(url: string) {
-    if (!this._token) {
-      return url;
-    }
-    const separator = url.includes("?") ? "&" : "?";
-    return `${url}${separator}token=${encodeURIComponent(this._token)}`;
-  }
-
   buildFileUrl(fileId: string) {
-    return this._withTokenQuery(`${this._baseURL}/file/${encodeURIComponent(fileId)}`);
+    return `${this._baseURL}/file/${encodeURIComponent(fileId)}`;
   }
 
   buildLibraryUrl(fileName: string) {
-    return this._withTokenQuery(
-      `${this._baseURL}/library/${encodeURIComponent(fileName)}`
-    );
+    return `${this._baseURL}/library/${encodeURIComponent(fileName)}`;
   }
 
   buildDownloadUrl(fileId: string) {
-    return this._withTokenQuery(`${this._baseURL}/download/${encodeURIComponent(fileId)}`);
+    return `${this._baseURL}/download/${encodeURIComponent(fileId)}`;
   }
 
   async downloadResult(fileId: string, filename?: string) {

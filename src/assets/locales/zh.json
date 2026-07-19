@@ -24,7 +24,7 @@
   "Password updated.": "密码已更新。",
   "Update failed. Please try again.": "更新失败，请重试。",
   "Login": "登录",
-  "Default password is 123456.": "默认密码为 123456。",
+  "Default password is 123456.": "源码默认密码为 123456；生产安装会打印初始密码。",
   "Password": "密码",
   "Enter password": "输入密码",
   "Please enter password.": "请输入密码。",

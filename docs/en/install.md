@@ -3,6 +3,7 @@
 ## Requirements
 
 - Node.js 18+
+- pnpm 8+
 - Python 3.10+
 - Rust and Tauri prerequisites for desktop builds
 - Android Studio for Android builds
@@ -10,8 +11,8 @@
 ## Frontend
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 ## Python Server
@@ -22,10 +23,22 @@ pip install -r requirements.txt
 python web_server.py
 ```
 
+When running from source, the Web server keeps `123456` as the local development default if no config exists. The production Linux Web installer generates a one-time random initial password instead.
+
+## Linux Web Production Install
+
+Use the installer from the official Web bundle:
+
+```bash
+sudo ./install-web.sh
+```
+
+The installer generates a random `VIDEO_TASK_CONFIG_SECRET` unless one is provided, creates the initial credential hash when no config exists, and does not store the plaintext initial password in systemd.
+
 ## Desktop App
 
 ```bash
-npm run tauri dev
+pnpm tauri dev
 ```
 
 ## Android App

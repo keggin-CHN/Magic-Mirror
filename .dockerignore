@@ -1,9 +1,16 @@
 .git/
 .github/
 node_modules/
+package-lock.json
 dist/
+dist-web/
 src-tauri/target/
 android-app/.gradle/
 android-app/app/build/
+android-app/local.properties
+data/
+.cache/
+.pytest_cache/
+*.log
 docs/assets/
 *.md

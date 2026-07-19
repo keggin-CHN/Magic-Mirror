@@ -20,10 +20,13 @@ TERMINAL_ONLY_MODE="${TERMINAL_ONLY_MODE:-0}"
 WEB_HOST="${WEB_HOST:-}"
 SERVICE_NAME="${SERVICE_NAME:-magic-mirror-web}"
 SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-root}}"
+SERVICE_GROUP="${SERVICE_GROUP:-}"
 WEB_SERVER_DIR="${WEB_SERVER_DIR:-$INSTALL_DIR/web_server.dist}"
 USE_ALIYUN_MIRROR="${USE_ALIYUN_MIRROR:-0}"
 SKIP_NGINX="${SKIP_NGINX:-}"
-VIDEO_TASK_CONFIG_SECRET="${VIDEO_TASK_CONFIG_SECRET:-magic-mirror-config-secret}"
+VIDEO_TASK_CONFIG_SECRET="${VIDEO_TASK_CONFIG_SECRET:-}"
+WEB_INITIAL_PASSWORD="${WEB_INITIAL_PASSWORD:-}"
+GENERATED_WEB_INITIAL_PASSWORD=""
 
 if [ "$TERMINAL_ONLY_MODE" = "1" ]; then
   WEB_HOST="${WEB_HOST:-127.0.0.1}"
@@ -38,6 +41,16 @@ PKG_MANAGER=""
 log() { echo "[INFO] $*"; }
 warn() { echo "[WARN] $*" >&2; }
 err() { echo "[ERROR] $*" >&2; }
+
+random_hex() {
+  od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+ensure_generated_secrets() {
+  if [ -z "$VIDEO_TASK_CONFIG_SECRET" ]; then
+    VIDEO_TASK_CONFIG_SECRET="$(random_hex)"
+  fi
+}
 
 detect_pkg_manager() {
   if command -v apt-get >/dev/null 2>&1; then
@@ -60,6 +73,16 @@ ensure_service_user() {
   if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
     warn "Service user '$SERVICE_USER' does not exist. Fallback to root."
     SERVICE_USER="root"
+  fi
+  if [ -z "$SERVICE_GROUP" ]; then
+    SERVICE_GROUP="$(id -gn "$SERVICE_USER" 2>/dev/null || true)"
+  fi
+  if [ -z "$SERVICE_GROUP" ]; then
+    SERVICE_GROUP="$SERVICE_USER"
+  fi
+  if ! getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
+    warn "Service group '$SERVICE_GROUP' does not exist. Fallback to root."
+    SERVICE_GROUP="root"
   fi
 }
 
@@ -207,8 +230,13 @@ extract_bundle_if_needed() {
     unzip -o "${PROJECT_ROOT}/web_linux_x86_64.zip" -d "$PROJECT_ROOT"
   fi
 
-  TARBALL="$(find "$PROJECT_ROOT" -maxdepth 1 -name "magicmirror_web_*.tar.gz" | head -n 1 || true)"
-  if [ -n "$TARBALL" ]; then
+  mapfile -t TARBALLS < <(find "$PROJECT_ROOT" -maxdepth 1 -name "magicmirror_web_*.tar.gz" | sort)
+  if [ "${#TARBALLS[@]}" -gt 1 ]; then
+    err "Multiple magicmirror_web_*.tar.gz bundles found. Keep only the intended version in $PROJECT_ROOT."
+    exit 1
+  fi
+  if [ "${#TARBALLS[@]}" -eq 1 ]; then
+    TARBALL="${TARBALLS[0]}"
     if [ ! -d "$PROJECT_ROOT/web_server.dist" ] || [ ! -d "$PROJECT_ROOT/dist-web" ]; then
       log "Extracting tarball: $TARBALL"
       tar -xzf "$TARBALL" -C "$PROJECT_ROOT"
@@ -232,7 +260,7 @@ sync_install_dir() {
 
 ensure_runtime_layout() {
   mkdir -p "$INSTALL_DIR/data/web/uploads" "$INSTALL_DIR/data/web/library"
-  chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/data" || true
+  chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/data" || true
 }
 
 resolve_web_server_bin() {
@@ -245,6 +273,26 @@ resolve_web_server_bin() {
     exit 1
   fi
   chmod +x "$WEB_SERVER_BIN"
+}
+
+initialize_web_config() {
+  CONFIG_FILE="$INSTALL_DIR/data/web/config.json"
+  if [ -f "$CONFIG_FILE" ]; then
+    log "Existing web credential config detected: $CONFIG_FILE"
+    return
+  fi
+
+  if [ -z "$WEB_INITIAL_PASSWORD" ]; then
+    WEB_INITIAL_PASSWORD="$(random_hex)"
+    GENERATED_WEB_INITIAL_PASSWORD="$WEB_INITIAL_PASSWORD"
+  fi
+
+  log "Initializing web credential config."
+  WEB_DATA_DIR="$INSTALL_DIR/data/web" \
+    WEB_INITIAL_PASSWORD="$WEB_INITIAL_PASSWORD" \
+    "$WEB_SERVER_BIN" --init-config
+  chown "$SERVICE_USER:$SERVICE_GROUP" "$CONFIG_FILE" || true
+  chmod 600 "$CONFIG_FILE" || true
 }
 
 configure_nginx_site() {
@@ -270,6 +318,7 @@ server {
   client_max_body_size 2g;
 
   location /api/ {
+    access_log off;
     proxy_pass http://127.0.0.1:${WEB_PORT};
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
@@ -299,6 +348,7 @@ server {
   client_max_body_size 2g;
 
   location /api/ {
+    access_log off;
     proxy_pass http://127.0.0.1:${WEB_PORT};
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
@@ -334,11 +384,13 @@ Type=simple
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${WEB_SERVER_BIN}
 Restart=on-failure
-Environment=WEB_HOST=${WEB_HOST}
-Environment=WEB_PORT=${WEB_PORT}
-Environment=VIDEO_TASK_CONFIG_SECRET=${VIDEO_TASK_CONFIG_SECRET}
+Environment="WEB_HOST=${WEB_HOST}"
+Environment="WEB_PORT=${WEB_PORT}"
+Environment="WEB_DATA_DIR=${INSTALL_DIR}/data/web"
+Environment="WEB_DIST_DIR=${INSTALL_DIR}/dist-web"
+Environment="VIDEO_TASK_CONFIG_SECRET=${VIDEO_TASK_CONFIG_SECRET}"
 User=${SERVICE_USER}
-Group=${SERVICE_USER}
+Group=${SERVICE_GROUP}
 
 [Install]
 WantedBy=multi-user.target
@@ -378,6 +430,8 @@ EOF
   nohup env \
     WEB_HOST="$WEB_HOST" \
     WEB_PORT="$WEB_PORT" \
+    WEB_DATA_DIR="$INSTALL_DIR/data/web" \
+    WEB_DIST_DIR="$INSTALL_DIR/dist-web" \
     VIDEO_TASK_CONFIG_SECRET="$VIDEO_TASK_CONFIG_SECRET" \
     "$WEB_SERVER_BIN" >> "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
@@ -396,9 +450,14 @@ print_summary() {
   fi
   log "Service name: ${SERVICE_NAME}"
   log "Install dir: ${INSTALL_DIR}"
+  if [ -n "$GENERATED_WEB_INITIAL_PASSWORD" ]; then
+    log "Initial web password: ${GENERATED_WEB_INITIAL_PASSWORD}"
+    log "Change this password after first login."
+  fi
 }
 
 main() {
+  ensure_generated_secrets
   detect_pkg_manager
   ensure_service_user
   configure_apt_mirror_if_needed
@@ -427,6 +486,7 @@ main() {
 
   ensure_runtime_layout
   resolve_web_server_bin
+  initialize_web_config
   configure_nginx_site
   install_or_start_services
   print_summary
