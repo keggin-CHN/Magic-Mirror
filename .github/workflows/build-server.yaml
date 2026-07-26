@@ -40,7 +40,7 @@ jobs:
           VERSION=$(awk -F ' = "' '/version =/ {print $2}' src-python/pyproject.toml | tr -d '"')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           mkdir -p src-python/models && cd src-python/models
-          BASE_URL="https://github.com/idootop/TinyFace/releases/download/models-1.0.0"
+          BASE_URL="https://github.com/keggin-CHN/Magic-Mirror/releases/download/models-1.0.0"
           for model in arcface_w600k_r50.onnx gfpgan_1.4.onnx inswapper_128_fp16.onnx scrfd_2.5g.onnx; do
             echo "Downloading $model..."
             curl --fail --location --retry 5 --retry-delay 10 --retry-max-time 60 --progress-bar -O "${BASE_URL}/${model}"

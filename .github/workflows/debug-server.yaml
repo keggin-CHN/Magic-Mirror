@@ -16,7 +16,7 @@ jobs:
           VERSION=$(awk -F ' = "' '/version =/ {print $2}' src-python/pyproject.toml | tr -d '"')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           mkdir -p src-python/models && cd src-python/models
-          BASE_URL="https://github.com/idootop/TinyFace/releases/download/models-1.0.0"
+          BASE_URL="https://github.com/keggin-CHN/Magic-Mirror/releases/download/models-1.0.0"
           curl -# -O -L "${BASE_URL}/arcface_w600k_r50.onnx"
           curl -# -O -L "${BASE_URL}/gfpgan_1.4.onnx"
           curl -# -O -L "${BASE_URL}/inswapper_128_fp16.onnx"
