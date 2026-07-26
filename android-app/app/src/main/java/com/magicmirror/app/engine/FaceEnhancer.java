@@ -12,6 +12,7 @@ import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtSession;
 
 import java.io.File;
+import java.nio.FloatBuffer;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -64,25 +65,27 @@ public class FaceEnhancer {
             throw new IllegalStateException("模型未加载");
 
         // 预处理: BGR 通道，归一化到 [-1, 1]
-        float[][][][] inputData = ModelUtils.bitmapToBgrNormalized(
+        float[] inputData = ModelUtils.bitmapToBgrNormalizedFlat(
                 faceBitmap, INPUT_SIZE,
                 new float[] { 127.5f, 127.5f, 127.5f },
                 new float[] { 127.5f, 127.5f, 127.5f });
+        long[] shape = { 1, 3, INPUT_SIZE, INPUT_SIZE };
 
-        OnnxTensor inputTensor = OnnxTensor.createTensor(env, inputData);
-        Map<String, OnnxTensor> inputs = new HashMap<>();
-        inputs.put(session.getInputNames().iterator().next(), inputTensor);
+        try (OnnxTensor inputTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(inputData), shape)) {
+            Map<String, OnnxTensor> inputs = new HashMap<>();
+            inputs.put(session.getInputNames().iterator().next(), inputTensor);
 
-        OrtSession.Result result = session.run(inputs);
+            try (OrtSession.Result result = session.run(inputs)) {
+                // 输出: [1, 3, 512, 512]，BGR 通道，范围 [-1, 1]
+                OnnxTensor outTensor = (OnnxTensor) result.get(0);
+                FloatBuffer fb = outTensor.getFloatBuffer();
+                float[] output = new float[fb.remaining()];
+                fb.get(output);
 
-        // 输出: [1, 3, 512, 512]，BGR 通道，范围 [-1, 1]
-        float[][][][] output = (float[][][][]) result.get(0).getValue();
-
-        inputTensor.close();
-        result.close();
-
-        // 反归一化: [-1, 1] -> [0, 255]
-        return ModelUtils.bgrNormalizedToBitmap(output, INPUT_SIZE, INPUT_SIZE);
+                // 反归一化: [-1, 1] -> [0, 255]
+                return ModelUtils.bgrNormalizedFlatToBitmap(output, INPUT_SIZE, INPUT_SIZE);
+            }
+        }
     }
 
     /**

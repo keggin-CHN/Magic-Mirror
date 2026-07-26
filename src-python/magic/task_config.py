@@ -34,8 +34,17 @@ def sign_video_task_config_payload(payload_b64: str, secret: str) -> str:
     ).hexdigest()
 
 
-def compute_file_sha256(path: str, chunk_size: int = 1024 * 1024) -> str:
-    """Compute SHA256 hash of a file."""
+def compute_file_sha256(
+    path: str,
+    chunk_size: int = 1024 * 1024,
+    cache: Optional[Dict[str, str]] = None,
+) -> str:
+    """Compute SHA256 hash of a file, optionally memoized in `cache`."""
+    cache_key = os.path.abspath(path) if cache is not None else None
+    if cache is not None:
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
     sha256 = hashlib.sha256()
     with open(path, 'rb') as f:
         while True:
@@ -43,15 +52,22 @@ def compute_file_sha256(path: str, chunk_size: int = 1024 * 1024) -> str:
             if not chunk:
                 break
             sha256.update(chunk)
-    return sha256.hexdigest()
+    digest = sha256.hexdigest()
+    if cache is not None:
+        cache[cache_key] = digest
+    return digest
 
 
-def verify_file_sha256(path: str, expected_sha256: Optional[str]) -> bool:
+def verify_file_sha256(
+    path: str,
+    expected_sha256: Optional[str],
+    cache: Optional[Dict[str, str]] = None,
+) -> bool:
     """Verify a file matches its expected SHA256 hash."""
     normalized = _normalize_sha256(expected_sha256)
     if not normalized:
         return True
-    return compute_file_sha256(path) == normalized
+    return compute_file_sha256(path, cache=cache) == normalized
 
 
 def canonicalize_video_task_config(payload: Dict[str, Any]) -> Dict[str, Any]:

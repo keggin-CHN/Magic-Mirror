@@ -75,13 +75,14 @@ public class VideoProcessor {
         int vw = info.width, vh = info.height;
         float fps = info.fps;
         int estFrames = info.estFrameCount;
+        int rotation = getVideoRotation(ctx, uri);
 
         // 确保宽高为偶数（编码器要求）
         int ew = (vw + 1) & ~1, eh = (vh + 1) & ~1;
 
         int queueSize = Math.max(5, nWorkers * 3);
         BlockingQueue<FrameItem> readQueue = new ArrayBlockingQueue<>(queueSize);
-        TreeMap<Integer, Bitmap> writeBuffer = new TreeMap<>();
+        TreeMap<Integer, ProcessedFrame> writeBuffer = new TreeMap<>();
         Object writeLock = new Object();
         AtomicBoolean stopFlag = new AtomicBoolean(false);
         AtomicReference<Exception> error = new AtomicReference<>(null);
@@ -109,6 +110,8 @@ public class VideoProcessor {
 
                 decoder = MediaCodec.createDecoderByType(mime);
                 // 请求输出 COLOR_FormatYUV420Flexible 以便转换为 Bitmap
+                inputFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
                 decoder.configure(inputFormat, null, null, 0);
                 decoder.start();
 
@@ -116,6 +119,7 @@ public class VideoProcessor {
                 boolean inputDone = false;
                 boolean outputDone = false;
                 int frameIdx = 0;
+                YuvConvertBuffers convertBuffers = new YuvConvertBuffers();
 
                 while (!outputDone && !stopFlag.get()) {
                     // 送入压缩数据
@@ -143,11 +147,11 @@ public class VideoProcessor {
                             outputDone = true;
                         } else {
                             // 从解码器输出缓冲区获取 YUV 数据并转为 Bitmap
-                            Bitmap frame = yuvBufferToBitmap(decoder, outIdx, vw, vh);
+                            Bitmap frame = yuvBufferToBitmap(decoder, outIdx, vw, vh, convertBuffers);
                             decoder.releaseOutputBuffer(outIdx, false);
 
                             if (frame != null) {
-                                readQueue.put(new FrameItem(frameIdx, frame));
+                                readQueue.put(new FrameItem(frameIdx, frame, bufInfo.presentationTimeUs));
                                 frameIdx++;
                             }
                         }
@@ -175,8 +179,8 @@ public class VideoProcessor {
         Thread writerThread = new Thread(() -> {
             MediaCodec encoder = null;
             MediaMuxer muxer = null;
-            int muxerTrackIndex = -1;
-            boolean muxerStarted = false;
+            int[] muxerTrackIndexRef = { -1 };
+            boolean[] muxerStartedRef = { false };
             int nextWrite = 0;
 
             try {
@@ -184,7 +188,7 @@ public class VideoProcessor {
                 MediaFormat encFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, ew, eh);
                 encFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
                 encFormat.setInteger(MediaFormat.KEY_BIT_RATE, calcBitrate(ew, eh, fps));
-                encFormat.setFloat(MediaFormat.KEY_FRAME_RATE, fps);
+                encFormat.setInteger(MediaFormat.KEY_FRAME_RATE, Math.max(1, Math.round(fps)));
                 encFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
 
                 encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
@@ -192,29 +196,47 @@ public class VideoProcessor {
                 encoder.start();
 
                 muxer = new MediaMuxer(outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+                if (rotation != 0) {
+                    muxer.setOrientationHint(rotation);
+                }
 
                 MediaCodec.BufferInfo encInfo = new MediaCodec.BufferInfo();
                 boolean encodingDone = false;
+                NvConvertBuffers nvBuffers = new NvConvertBuffers();
 
                 while (!encodingDone && !stopFlag.get()) {
                     // 检查是否有下一帧可写
-                    Bitmap nextFrame = null;
+                    ProcessedFrame nextFrame = null;
                     synchronized (writeLock) {
                         nextFrame = writeBuffer.remove(nextWrite);
                     }
 
                     if (nextFrame != null) {
                         // Bitmap → NV12 → 送入编码器
-                        byte[] nv12 = bitmapToNv12(nextFrame, ew, eh);
-                        nextFrame.recycle();
+                        byte[] nv12 = bitmapToNv12(nextFrame.bitmap, ew, eh, nvBuffers);
+                        nextFrame.bitmap.recycle();
 
-                        int inIdx = encoder.dequeueInputBuffer(10000);
-                        if (inIdx >= 0) {
-                            ByteBuffer inBuf = encoder.getInputBuffer(inIdx);
-                            inBuf.clear();
-                            inBuf.put(nv12);
-                            long pts = (long) (nextWrite * 1000000.0 / fps);
-                            encoder.queueInputBuffer(inIdx, 0, nv12.length, pts, 0);
+                        // 编码器输入缓冲区暂不可用时，先 drain 输出释放空间再重试，
+                        // 避免静默丢帧（A3）
+                        boolean queued = false;
+                        while (!queued && !stopFlag.get()) {
+                            int inIdx = encoder.dequeueInputBuffer(10000);
+                            if (inIdx >= 0) {
+                                ByteBuffer inBuf = encoder.getInputBuffer(inIdx);
+                                inBuf.clear();
+                                inBuf.put(nv12);
+                                long pts = nextFrame.presentationTimeUs > 0
+                                        ? nextFrame.presentationTimeUs
+                                        : (long) (nextWrite * 1000000.0 / fps);
+                                encoder.queueInputBuffer(inIdx, 0, nv12.length, pts, 0);
+                                queued = true;
+                            } else {
+                                // drain encoder 输出，释放输入缓冲
+                                drainEncoder(encoder, muxer, encInfo, muxerTrackIndexRef, muxerStartedRef, false);
+                            }
+                        }
+                        if (!queued) {
+                            break;
                         }
                         nextWrite++;
                         writtenCount.incrementAndGet();
@@ -238,30 +260,7 @@ public class VideoProcessor {
                     }
 
                     // 从编码器取出编码数据
-                    while (true) {
-                        int outIdx = encoder.dequeueOutputBuffer(encInfo, 0);
-                        if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                            if (!muxerStarted) {
-                                muxerTrackIndex = muxer.addTrack(encoder.getOutputFormat());
-                                muxer.start();
-                                muxerStarted = true;
-                            }
-                        } else if (outIdx >= 0) {
-                            ByteBuffer outBuf = encoder.getOutputBuffer(outIdx);
-                            if (muxerStarted && encInfo.size > 0) {
-                                outBuf.position(encInfo.offset);
-                                outBuf.limit(encInfo.offset + encInfo.size);
-                                muxer.writeSampleData(muxerTrackIndex, outBuf, encInfo);
-                            }
-                            encoder.releaseOutputBuffer(outIdx, false);
-                            if ((encInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                                encodingDone = true;
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
+                    encodingDone = drainEncoder(encoder, muxer, encInfo, muxerTrackIndexRef, muxerStartedRef, true);
                 }
             } catch (Exception e) {
                 if (!stopFlag.get()) {
@@ -293,9 +292,13 @@ public class VideoProcessor {
                             Log.w(TAG, "帧 " + item.index + " 处理失败，使用原帧", e);
                             processed = item.frame;
                         }
+                        // 处理结果为新 Bitmap 时回收原始解码帧（A6 同类逐帧泄漏）
+                        if (processed != item.frame) {
+                            item.frame.recycle();
+                        }
 
                         synchronized (writeLock) {
-                            writeBuffer.put(item.index, processed);
+                            writeBuffer.put(item.index, new ProcessedFrame(processed, item.presentationTimeUs));
                             writeLock.notifyAll();
                         }
                         int done = processedCount.incrementAndGet();
@@ -356,7 +359,18 @@ public class VideoProcessor {
         videoExtractor.setDataSource(videoOnly.getAbsolutePath());
         int vidTrack = findVideoTrack(videoExtractor);
         videoExtractor.selectTrack(vidTrack);
-        int muxVideoTrack = muxer.addTrack(videoExtractor.getTrackFormat(vidTrack));
+        MediaFormat vidFormat = videoExtractor.getTrackFormat(vidTrack);
+        // 保留 process() 阶段写入的旋转信息（A4）
+        try {
+            if (vidFormat.containsKey(MediaFormat.KEY_ROTATION)) {
+                int rot = vidFormat.getInteger(MediaFormat.KEY_ROTATION);
+                if (rot != 0) {
+                    muxer.setOrientationHint(rot);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        int muxVideoTrack = muxer.addTrack(vidFormat);
 
         // 添加音频轨道
         extractor.selectTrack(audioTrack);
@@ -400,6 +414,81 @@ public class VideoProcessor {
 
     // ========== 工具方法 ==========
 
+    /**
+     * 从编码器取出已编码数据写入 muxer。
+     *
+     * @param waitIfEmpty false 时用短超时等待（用于输入缓冲耗尽时释放空间），
+     *                    true 时非阻塞循环取空为止
+     * @return 是否收到 EOS（编码结束）
+     */
+    private static boolean drainEncoder(MediaCodec encoder, MediaMuxer muxer, MediaCodec.BufferInfo encInfo,
+            int[] muxerTrackIndexRef, boolean[] muxerStartedRef, boolean nonBlocking) {
+        while (true) {
+            int outIdx = encoder.dequeueOutputBuffer(encInfo, nonBlocking ? 0 : 10000);
+            if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                if (!muxerStartedRef[0]) {
+                    muxerTrackIndexRef[0] = muxer.addTrack(encoder.getOutputFormat());
+                    muxer.start();
+                    muxerStartedRef[0] = true;
+                }
+            } else if (outIdx >= 0) {
+                ByteBuffer outBuf = encoder.getOutputBuffer(outIdx);
+                if (muxerStartedRef[0] && encInfo.size > 0) {
+                    outBuf.position(encInfo.offset);
+                    outBuf.limit(encInfo.offset + encInfo.size);
+                    muxer.writeSampleData(muxerTrackIndexRef[0], outBuf, encInfo);
+                }
+                encoder.releaseOutputBuffer(outIdx, false);
+                if ((encInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                    return true;
+                }
+                if (!nonBlocking) {
+                    // 已释放至少一个输出缓冲，返回让调用方重试输入
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+    }
+
+    /**
+     * 读取视频旋转角度。优先 MediaFormat.KEY_ROTATION，回退 MediaMetadataRetriever。
+     */
+    static int getVideoRotation(Context ctx, Uri uri) {
+        MediaExtractor extractor = null;
+        try {
+            extractor = new MediaExtractor();
+            extractor.setDataSource(ctx, uri, null);
+            int track = findVideoTrack(extractor);
+            if (track >= 0) {
+                MediaFormat fmt = extractor.getTrackFormat(track);
+                if (fmt.containsKey(MediaFormat.KEY_ROTATION)) {
+                    return fmt.getInteger(MediaFormat.KEY_ROTATION);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "读取 KEY_ROTATION 失败: " + e.getMessage());
+        } finally {
+            if (extractor != null) {
+                try { extractor.release(); } catch (Exception ignored) {}
+            }
+        }
+
+        MediaMetadataRetriever ret = null;
+        try {
+            ret = new MediaMetadataRetriever();
+            ret.setDataSource(ctx, uri);
+            return getIntMeta(ret, MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION, 0);
+        } catch (Exception e) {
+            return 0;
+        } finally {
+            if (ret != null) {
+                try { ret.release(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
     public static VideoInfo getVideoInfo(Context ctx, Uri uri) throws Exception {
         MediaMetadataRetriever ret = new MediaMetadataRetriever();
         ret.setDataSource(ctx, uri);
@@ -433,11 +522,12 @@ public class VideoProcessor {
     /**
      * 从 MediaCodec 解码器输出缓冲区提取 YUV 数据并转为 ARGB_8888 Bitmap
      */
-    static Bitmap yuvBufferToBitmap(MediaCodec decoder, int outputIndex, int width, int height) {
+    static Bitmap yuvBufferToBitmap(MediaCodec decoder, int outputIndex, int width, int height,
+            YuvConvertBuffers buffers) {
         try {
             android.media.Image image = decoder.getOutputImage(outputIndex);
             if (image == null) return null;
-            return imageToBitmap(image, width, height);
+            return imageToBitmap(image, width, height, buffers);
         } catch (Exception e) {
             Log.w(TAG, "YUV→Bitmap 转换失败", e);
             return null;
@@ -447,7 +537,8 @@ public class VideoProcessor {
     /**
      * 将 android.media.Image (YUV_420_888) 转为 ARGB_8888 Bitmap
      */
-    static Bitmap imageToBitmap(android.media.Image image, int width, int height) {
+    static Bitmap imageToBitmap(android.media.Image image, int width, int height,
+            YuvConvertBuffers buffers) {
         try {
             if (image.getFormat() != android.graphics.ImageFormat.YUV_420_888) {
                 return null;
@@ -462,15 +553,27 @@ public class VideoProcessor {
             int uvRowStride = planes[1].getRowStride();
             int uvPixelStride = planes[1].getPixelStride();
 
-            // 性能优化：一次性 bulk-copy 到 byte[]，避免逐像素 ByteBuffer.get() JNI 开销
-            byte[] yBytes = new byte[yBuf.remaining()];
-            byte[] uBytes = new byte[uBuf.remaining()];
-            byte[] vBytes = new byte[vBuf.remaining()];
-            yBuf.get(yBytes);
-            uBuf.get(uBytes);
-            vBuf.get(vBytes);
+            // 性能优化：一次性 bulk-copy 到 byte[]，避免逐像素 ByteBuffer.get() JNI 开销。
+            // 缓冲区在单线程内复用（A11），尺寸不足时重新分配。
+            int yLen = yBuf.remaining();
+            int uLen = uBuf.remaining();
+            int vLen = vBuf.remaining();
+            if (buffers.yBytes == null || buffers.yBytes.length < yLen)
+                buffers.yBytes = new byte[yLen];
+            if (buffers.uBytes == null || buffers.uBytes.length < uLen)
+                buffers.uBytes = new byte[uLen];
+            if (buffers.vBytes == null || buffers.vBytes.length < vLen)
+                buffers.vBytes = new byte[vLen];
+            byte[] yBytes = buffers.yBytes;
+            byte[] uBytes = buffers.uBytes;
+            byte[] vBytes = buffers.vBytes;
+            yBuf.get(yBytes, 0, yLen);
+            uBuf.get(uBytes, 0, uLen);
+            vBuf.get(vBytes, 0, vLen);
 
-            int[] argb = new int[width * height];
+            if (buffers.argb == null || buffers.argb.length < width * height)
+                buffers.argb = new int[width * height];
+            int[] argb = buffers.argb;
 
             // BT.601 定点整数系数（x1024）: 1.164->1192, 1.596->1634, 0.813->833, 0.391->400, 2.018->2066
             for (int row = 0; row < height; row++) {
@@ -512,8 +615,9 @@ public class VideoProcessor {
     /**
      * Bitmap (ARGB_8888) -> NV12 字节数组。
      * 性能优化：使用定点整数（x1024）替代浮点运算，1080p 帧约 3-8x 加速。
+     * 缓冲区在 writer 单线程内复用（A11）。
      */
-    static byte[] bitmapToNv12(Bitmap bmp, int encWidth, int encHeight) {
+    static byte[] bitmapToNv12(Bitmap bmp, int encWidth, int encHeight, NvConvertBuffers buffers) {
         Bitmap working = bmp;
         boolean createdScaled = false;
         int w = bmp.getWidth(), h = bmp.getHeight();
@@ -527,12 +631,17 @@ public class VideoProcessor {
             h = encHeight;
         }
 
-        int[] pixels = new int[w * h];
+        if (buffers.pixels == null || buffers.pixels.length < w * h)
+            buffers.pixels = new int[w * h];
+        int[] pixels = buffers.pixels;
         working.getPixels(pixels, 0, w, 0, 0, w, h);
 
         int ySize = w * h;
         int uvSize = w * h / 2;
-        byte[] nv12 = new byte[ySize + uvSize];
+        int nvLen = ySize + uvSize;
+        if (buffers.nv12 == null || buffers.nv12.length != nvLen)
+            buffers.nv12 = new byte[nvLen];
+        byte[] nv12 = buffers.nv12;
 
         // BT.601 定点系数（x1024）:
         // Y:  0.257->263, 0.504->516, 0.098->100
@@ -602,7 +711,30 @@ public class VideoProcessor {
         int index;
         Bitmap frame;
         boolean isEnd;
-        FrameItem(int i, Bitmap f) { index = i; frame = f; isEnd = false; }
+        long presentationTimeUs;
+        FrameItem(int i, Bitmap f) { this(i, f, -1L); }
+        FrameItem(int i, Bitmap f, long ptsUs) { index = i; frame = f; isEnd = false; presentationTimeUs = ptsUs; }
         static FrameItem end() { FrameItem d = new FrameItem(-1, null); d.isEnd = true; return d; }
+    }
+
+    // 处理完成待编码的帧（携带解码时间戳）
+    static class ProcessedFrame {
+        final Bitmap bitmap;
+        final long presentationTimeUs;
+        ProcessedFrame(Bitmap b, long ptsUs) { bitmap = b; presentationTimeUs = ptsUs; }
+    }
+
+    // reader 线程内复用的 YUV→ARGB 转换缓冲
+    static class YuvConvertBuffers {
+        byte[] yBytes;
+        byte[] uBytes;
+        byte[] vBytes;
+        int[] argb;
+    }
+
+    // writer 线程内复用的 ARGB→NV12 转换缓冲
+    static class NvConvertBuffers {
+        int[] pixels;
+        byte[] nv12;
     }
 }

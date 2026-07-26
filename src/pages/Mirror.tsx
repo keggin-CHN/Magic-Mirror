@@ -830,31 +830,6 @@ export function MirrorPage() {
     video.pause();
   }, [isVideoInput, showSelection, videoKeyFrameMs, kMirrorStates.input?.path]);
 
-  // const remapRegionsForZoom = useCallback(
-  //   (currentRegions: Region[], oldZoom: number, newZoom: number) => {
-  //     if (!previewRef.current) return currentRegions;
-  //     const rect = previewRef.current.getBoundingClientRect();
-  //     const cx = rect.width / 2;
-  //     const cy = rect.height / 2;
-  //     const factor = newZoom / oldZoom;
-
-  //     return currentRegions.map((r) => {
-  //       const x = cx + (r.x - cx) * factor;
-  //       const y = cy + (r.y - cy) * factor;
-  //       const width = r.width * factor;
-  //       const height = r.height * factor;
-  //       return {
-  //         ...r,
-  //         x,
-  //         y,
-  //         width,
-  //         height,
-  //       };
-  //     });
-  //   },
-  //   []
-  // );
-
   const handleWheelZoom = useCallback(
     (event: WheelEvent<HTMLDivElement>) => {
       if (
@@ -1299,7 +1274,7 @@ export function MirrorPage() {
       return [...updated, ...additionsByPath.values()];
     });
     setNotice(null);
-  }, [isStartingSwap]);
+  }, []);
 
   const handleOpenFaceSourcePicker = useCallback(async () => {
     if (isWeb) {

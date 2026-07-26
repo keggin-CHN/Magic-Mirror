@@ -695,24 +695,50 @@ public class MainActivity extends AppCompatActivity {
                     conn.setReadTimeout(60000);
                     conn.connect();
 
+                    int responseCode = conn.getResponseCode();
+                    if (responseCode != 200) {
+                        conn.disconnect();
+                        throw new RuntimeException("下载失败 HTTP " + responseCode + ": " + name);
+                    }
+
                     int total = conn.getContentLength();
                     File outFile = new File(dir, name);
+                    File tmpFile = new File(dir, name + ".tmp");
+                    if (tmpFile.exists() && !tmpFile.delete()) {
+                        conn.disconnect();
+                        throw new RuntimeException("无法删除临时文件: " + tmpFile.getAbsolutePath());
+                    }
                     try (InputStream in = conn.getInputStream();
-                            FileOutputStream fos = new FileOutputStream(outFile)) {
+                            FileOutputStream fos = new FileOutputStream(tmpFile)) {
                         byte[] buf = new byte[8192];
                         int read, downloaded = 0;
+                        int lastPct = -1;
+                        long lastPostMs = 0;
                         while ((read = in.read(buf)) != -1) {
                             fos.write(buf, 0, read);
                             downloaded += read;
                             int pct = total > 0 ? (int) (100L * downloaded / total) : 0;
-                            int overallPct = (int) ((fi * 100f + pct) / models.size());
-                            mainHandler.post(() -> {
-                                setStatus(getString(R.string.model_download_progress, name, pct));
-                                progressBar.setProgress(overallPct);
-                            });
+                            long now = android.os.SystemClock.elapsedRealtime();
+                            if (pct != lastPct && now - lastPostMs >= 100) {
+                                lastPct = pct;
+                                lastPostMs = now;
+                                int overallPct = (int) ((fi * 100f + pct) / models.size());
+                                mainHandler.post(() -> {
+                                    setStatus(getString(R.string.model_download_progress, name, pct));
+                                    progressBar.setProgress(overallPct);
+                                });
+                            }
                         }
+                        fos.getFD().sync();
                     }
                     conn.disconnect();
+
+                    if (outFile.exists() && !outFile.delete()) {
+                        throw new RuntimeException("无法覆盖模型文件: " + outFile.getAbsolutePath());
+                    }
+                    if (!tmpFile.renameTo(outFile)) {
+                        throw new RuntimeException("模型文件落盘失败: " + outFile.getAbsolutePath());
+                    }
                 }
 
                 mainHandler.post(() -> {
@@ -803,8 +829,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void autoDetectFaces() {
-        if (sourceBitmap == null || !engineInitialized)
+        if (sourceBitmap == null || !engineInitialized || isProcessing)
             return;
+        setProcessing(true);
         setStatus(getString(R.string.status_detecting_faces));
         executor.execute(() -> {
             try {
@@ -821,11 +848,14 @@ public class MainActivity extends AppCompatActivity {
                     } else {
                         setStatus(getString(R.string.status_faces_detected, faces.size()));
                     }
-                    updateButtons();
+                    setProcessing(false);
                 });
             } catch (Exception e) {
                 Log.w(TAG, "自动检测失败: " + e.getMessage());
-                mainHandler.post(() -> setStatus(getString(R.string.status_no_faces)));
+                mainHandler.post(() -> {
+                    setStatus(getString(R.string.status_no_faces));
+                    setProcessing(false);
+                });
             }
         });
     }
@@ -1621,10 +1651,16 @@ public class MainActivity extends AppCompatActivity {
 
             Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
             if (uri != null) {
-                OutputStream os = getContentResolver().openOutputStream(uri);
-                if (os != null) {
-                    resultBitmap.compress(Bitmap.CompressFormat.PNG, 100, os);
-                    os.close();
+                try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                    if (os != null) {
+                        resultBitmap.compress(Bitmap.CompressFormat.PNG, 100, os);
+                    }
+                } catch (Exception e) {
+                    try {
+                        getContentResolver().delete(uri, null, null);
+                    } catch (Exception ignored) {
+                    }
+                    throw e;
                 }
                 Toast.makeText(this, R.string.save_success, Toast.LENGTH_SHORT).show();
                 setStatus(getString(R.string.save_success));

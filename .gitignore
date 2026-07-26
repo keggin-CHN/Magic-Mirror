@@ -20,6 +20,7 @@ test.*
 # IDE metadata
 .idea/
 .vscode/
+.claude/
 android-app/.idea/
 android-app/local.properties
 

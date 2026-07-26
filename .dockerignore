@@ -11,6 +11,9 @@ android-app/local.properties
 data/
 .cache/
 .pytest_cache/
+__pycache__/
+*.pyc
 *.log
 docs/assets/
 *.md
+.claude

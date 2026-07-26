@@ -31,6 +31,13 @@ pub async fn download_file(
         }
     };
 
+    if !response.status().is_success() {
+        return Err(format!(
+            "Failed to download file: server returned {}",
+            response.status()
+        ));
+    }
+
     let total_size = response.content_length().unwrap_or(0);
     let mut downloaded = 0u64;
     let mut file = match File::create(&temp_path) {
@@ -41,21 +48,30 @@ pub async fn download_file(
     };
 
     let mut stream = response.bytes_stream();
+    let mut last_emitted_percent = -1i64;
 
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
+                let _ = fs::remove_file(&temp_path);
                 return Err(format!("Failed to read chunk: {}", e));
             }
         };
         if let Err(e) = file.write_all(&chunk) {
+            let _ = fs::remove_file(&temp_path);
             return Err(format!("Failed to write chunk to file: {}", e));
         }
         downloaded += chunk.len() as u64;
         if total_size > 0 {
             let progress = (downloaded as f64 / total_size as f64 * 100.0).min(100.0);
-            app.emit("download-progress", progress).unwrap_or_default();
+            // Only emit when the integer percentage changes to avoid
+            // flooding the IPC channel with per-chunk events.
+            let percent = progress as i64;
+            if percent != last_emitted_percent {
+                last_emitted_percent = percent;
+                app.emit("download-progress", progress).unwrap_or_default();
+            }
         }
     }
 
@@ -67,6 +83,16 @@ pub async fn unzip_file(
     file_path: &String,
     target_dir: &String,
 ) -> Result<(), String> {
+    // Zip extraction is heavy blocking I/O; keep it off the async runtime.
+    let app = app.clone();
+    let file_path = file_path.clone();
+    let target_dir = target_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || unzip_file_sync(&app, &file_path, &target_dir))
+        .await
+        .map_err(|e| format!("Unzip task failed: {}", e))?
+}
+
+fn unzip_file_sync(app: &AppHandle, file_path: &str, target_dir: &str) -> Result<(), String> {
     let file = match File::open(file_path) {
         Ok(f) => f,
         Err(e) => {
@@ -92,6 +118,7 @@ pub async fn unzip_file(
     };
 
     let total_files = archive.len();
+    let mut last_emitted_percent = -1i64;
     for i in 0..total_files {
         let mut file = match archive.by_index(i) {
             Ok(f) => f,
@@ -132,7 +159,11 @@ pub async fn unzip_file(
 
         let progress = i as f64 / total_files as f64 * 100.0;
         let progress = progress.min(100.0);
-        app.emit("unzip-progress", progress).unwrap_or_default();
+        let percent = progress as i64;
+        if percent != last_emitted_percent {
+            last_emitted_percent = percent;
+            app.emit("unzip-progress", progress).unwrap_or_default();
+        }
     }
 
     Ok(())

@@ -32,6 +32,14 @@ export async function exitAppSafe() {
   if (!isTauri()) {
     return;
   }
+  // Kill the sidecar server first: `exit(0)` terminates the app immediately,
+  // so React effect cleanups never run and the server process would be orphaned.
+  try {
+    const { Server } = await import("./server");
+    await Server.kill();
+  } catch {
+    // ignore, still exit
+  }
   const { exit } = await import("@tauri-apps/plugin-process");
   exit(0);
 }

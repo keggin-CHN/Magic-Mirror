@@ -12,6 +12,7 @@ import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from fractions import Fraction
 from functools import lru_cache
 
 import av
@@ -44,19 +45,29 @@ class PyAVReader:
         self.width = int(self.video_stream.width or 0)
         self.height = int(self.video_stream.height or 0)
         self.frames_count = int(self.video_stream.frames or 0)
+        self._pending_frame = None
+        self._next_frame_idx = 0
 
     def isOpened(self):
         return self.container is not None
 
     def read(self):
         try:
-            av_frame = next(self.frame_iter)
+            if self._pending_frame is not None:
+                av_frame = self._pending_frame
+                self._pending_frame = None
+            else:
+                av_frame = next(self.frame_iter)
             frame = av_frame.to_ndarray(format='bgr24')
-            return True, frame
         except StopIteration:
             return False, None
-        except Exception:
+        except Exception as e:
+            print(
+                f'[WARN] PyAV 解码异常(帧 {self._next_frame_idx}): {e!r}'
+            )
             return False, None
+        self._next_frame_idx += 1
+        return True, frame
 
     def get(self, prop_id):
         if prop_id == cv2.CAP_PROP_FPS:
@@ -69,8 +80,52 @@ class PyAVReader:
             return self.frames_count
         return 0
 
-    def set(self, _prop_id, _value):
+    def set(self, prop_id, value):
+        if prop_id == cv2.CAP_PROP_POS_FRAMES:
+            return self._seek_frame(int(value))
+        if prop_id == cv2.CAP_PROP_POS_MSEC:
+            fps = self.fps if self.fps > 0 else 25.0
+            return self._seek_frame(
+                int(round(max(0.0, float(value)) / 1000.0 * fps))
+            )
         return False
+
+    def _seek_frame(self, target_frame):
+        """Seek 到指定帧：先按时间戳 seek 到关键帧，再解码丢弃至目标帧。"""
+        if self.container is None:
+            return False
+        target_frame = max(0, int(target_frame))
+        fps = self.fps if self.fps > 0 else 25.0
+        target_seconds = target_frame / fps
+        try:
+            time_base = self.video_stream.time_base
+            if time_base:
+                self.container.seek(
+                    int(round(target_seconds / time_base)),
+                    stream=self.video_stream,
+                    backward=True,
+                    any_frame=False,
+                )
+            else:
+                self.container.seek(int(round(target_seconds / av.time_base)))
+            self.frame_iter = self.container.decode(video=0)
+            self._pending_frame = None
+            # seek 落在目标帧之前的关键帧上，需要继续解码丢弃早于目标的帧
+            epsilon = 0.5 / fps
+            while True:
+                try:
+                    av_frame = next(self.frame_iter)
+                except StopIteration:
+                    self._next_frame_idx = target_frame
+                    return False
+                frame_time = av_frame.time
+                if frame_time is None or frame_time >= target_seconds - epsilon:
+                    self._pending_frame = av_frame
+                    self._next_frame_idx = target_frame
+                    return True
+        except Exception as e:
+            print(f'[WARN] PyAVReader seek 失败(frame={target_frame}): {e!r}')
+            return False
 
     def release(self):
         if self.container is not None:
@@ -82,7 +137,9 @@ class PyAVWriter:
     """Small OpenCV-like H.264 writer backed by PyAV."""
 
     def __init__(self, path, fps, size):
-        normalized_fps = max(1, int(round(float(fps or 25.0))))
+        normalized_fps = Fraction(float(fps or 25.0)).limit_denominator(65535)
+        if normalized_fps <= 0:
+            normalized_fps = Fraction(25)
         self.container = av.open(path, mode='w')
         self.stream = self.container.add_stream('h264', rate=normalized_fps)
         self.stream.width = int(size[0])
@@ -174,7 +231,8 @@ def load_models():
         _tf.config.face_enhancer_model = _get_model_path('gfpgan_1.4.onnx')
         _tf.prepare()
         return True
-    except BaseException as _:
+    except Exception as e:
+        _log_error('load_models', e)
         return False
 
 
@@ -690,6 +748,7 @@ def swap_face_video(
     Detects faces in the input video and replaces them with the specified face image.
     Supports GPU acceleration, custom regions, and progress callbacks.
     """
+    save_path = None
     try:
         _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'validating-input')
@@ -734,7 +793,7 @@ def swap_face_video(
         return output_path
 
     except Exception as e:
-        _remove_file_quietly(locals().get('save_path'))
+        _remove_file_quietly(save_path)
         _log_error('swap_face_video', e)
         raise
 
@@ -766,7 +825,8 @@ def _swap_face_video(
         num_workers = max(2, min(cpu_count, 6))
         queue_size = max(8, num_workers * 3)
     else:
-        num_workers = max(1, min(cpu_count - 1, 8))
+        # CPU 模式共享单个 TinyFace 实例锁，推理实际串行，多 worker 无意义
+        num_workers = min(2, max(1, cpu_count - 1))
         queue_size = max(5, num_workers * 2)
 
     print(f'[INFO] 使用 {num_workers} 个处理线程，队列大小: {queue_size}')
@@ -994,14 +1054,13 @@ def _swap_face_video(
 
                     if progress_callback and current_frame % 5 == 0:
                         try:
-                            with stats_lock:
-                                progress_callback(
-                                    frame_count=current_frame,
-                                    total_frames=total_frames,
-                                    elapsed_seconds=max(
-                                        0.0, time.time() - stats['start_time']
-                                    ),
-                                )
+                            progress_callback(
+                                frame_count=current_frame,
+                                total_frames=total_frames,
+                                elapsed_seconds=max(
+                                    0.0, time.time() - stats['start_time']
+                                ),
+                            )
                         except Exception as e:
                             print(f'[WARN] progress_callback failed: {str(e)}')
 
@@ -1238,9 +1297,6 @@ def _swap_face(input_path, face_path):
 def _get_one_face(face_path: str):
     """Detect and return the first face in an image or load from json."""
     if face_path.endswith('.json'):
-        import json
-
-        import numpy as np
         with open(face_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
@@ -1453,6 +1509,7 @@ def _enhanced_face_config(tf_instance, tf_lock, face=None, force=False):
         return
 
     _debug_log('[ENHANCE] 检测到侧脸/强制增强模式，临时增大 mask 参数')
+    # 全程持锁（RLock 可重入），保证改配置 + swap + 恢复对其他线程原子可见
     with tf_lock:
         original_blur = tf_instance.config.face_mask_blur
         original_padding = tf_instance.config.face_mask_padding
@@ -1460,10 +1517,9 @@ def _enhanced_face_config(tf_instance, tf_lock, face=None, force=False):
         tf_instance.config.face_mask_padding = tuple(
             max(p, 8) for p in original_padding
         )
-    try:
-        yield
-    finally:
-        with tf_lock:
+        try:
+            yield
+        finally:
             tf_instance.config.face_mask_blur = original_blur
             tf_instance.config.face_mask_padding = original_padding
 
@@ -2022,6 +2078,7 @@ def swap_face_video_by_sources(
     Each region can use a different face source for replacement.
     Supports GPU acceleration and progress callbacks.
     """
+    save_path = None
     try:
         _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'validating-input')
@@ -2054,7 +2111,7 @@ def swap_face_video_by_sources(
         _emit_stage(stage_callback, 'finalizing')
         return output_path
     except Exception as e:
-        _remove_file_quietly(locals().get('save_path'))
+        _remove_file_quietly(save_path)
         _log_error('swap_face_video_by_sources', e)
         raise
 
@@ -2271,14 +2328,13 @@ def _swap_face_video_by_sources(
                     # 进度回调
                     if progress_callback and current_frame % 5 == 0:
                         try:
-                            with stats_lock:
-                                progress_callback(
-                                    frame_count=current_frame,
-                                    total_frames=total_frames,
-                                    elapsed_seconds=max(
-                                        0.0, time.time() - stats['start_time']
-                                    ),
-                                )
+                            progress_callback(
+                                frame_count=current_frame,
+                                total_frames=total_frames,
+                                elapsed_seconds=max(
+                                    0.0, time.time() - stats['start_time']
+                                ),
+                            )
                         except Exception as e:
                             print(f'[WARN] progress_callback failed: {str(e)}')
 
@@ -2949,6 +3005,7 @@ def swap_face_video_deep(
     Uses temporal tracking and face re-identification for consistent results
     across video segments. Supports multiple face sources.
     """
+    save_path = None
     try:
         _raise_if_cancelled(cancel_event)
         _emit_stage(stage_callback, 'validating-input')
@@ -2989,7 +3046,7 @@ def swap_face_video_deep(
         _emit_stage(stage_callback, 'finalizing')
         return output_path
     except Exception as e:
-        _remove_file_quietly(locals().get('save_path'))
+        _remove_file_quietly(save_path)
         _log_error('swap_face_video_deep', e)
         raise
 

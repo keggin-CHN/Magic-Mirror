@@ -86,10 +86,9 @@ public class FaceSwapEngine {
         Bitmap det = limitForDetection(image);
         float scale = (float) image.getWidth() / det.getWidth();
         List<FaceDetector.DetectedFace> faces = detector.detect(det);
-        if (scale > 1.01f) {
+        if (det != image) {
             scaleFaces(faces, scale);
-            if (det != image)
-                det.recycle();
+            det.recycle();
         }
         return faces;
     }
@@ -208,6 +207,8 @@ public class FaceSwapEngine {
         for (RectF region : regions) {
             Bitmap swapped = swapInRegion(result, region, emb);
             if (swapped != null) {
+                if (swapped != result)
+                    result.recycle();
                 result = swapped;
                 cnt++;
             }
@@ -238,6 +239,8 @@ public class FaceSwapEngine {
                 continue;
             Bitmap swapped = swapInRegion(result, b.region, emb);
             if (swapped != null) {
+                if (swapped != result)
+                    result.recycle();
                 result = swapped;
                 swappedCount++;
             }
@@ -279,7 +282,10 @@ public class FaceSwapEngine {
                 Log.w(TAG, "多人全局模式：未找到可用目标脸，跳过 sourceId=" + b.sourceId);
                 continue;
             }
-            result = swapper.swapFace(result, matched, emb);
+            Bitmap nr = swapper.swapFace(result, matched, emb);
+            if (nr != result)
+                result.recycle();
+            result = nr;
             swappedCount++;
             allFaces = safeDetectFaces(result);
         }
@@ -508,6 +514,16 @@ public class FaceSwapEngine {
 
         File outDir = new File(ctx.getCacheDir(), "swap_output");
         outDir.mkdirs();
+        // 清理上次处理遗留的旧输出文件，避免缓存目录膨胀
+        File[] oldFiles = outDir.listFiles();
+        if (oldFiles != null) {
+            for (File f : oldFiles) {
+                try {
+                    f.delete();
+                } catch (Exception ignored) {
+                }
+            }
+        }
         File videoOnly = new File(outDir, "swap_v_" + System.currentTimeMillis() + ".mp4");
         File finalOut = new File(outDir, "swap_" + System.currentTimeMillis() + ".mp4");
 
@@ -600,7 +616,10 @@ public class FaceSwapEngine {
                     continue;
                 }
 
-                result = swapper.swapFace(result, matched, emb);
+                Bitmap nr = swapper.swapFace(result, matched, emb);
+                if (nr != result && result != frame)
+                    result.recycle();
+                result = nr;
             }
 
             // 清理过期追踪（与桌面版 missed > 300 对齐）
@@ -621,7 +640,10 @@ public class FaceSwapEngine {
             if (face == null || face.landmarks == null || face.landmarks.length < 5) {
                 continue;
             }
-            result = swapper.swapFace(result, face, emb);
+            Bitmap nr = swapper.swapFace(result, face, emb);
+            if (nr != result && result != frame)
+                result.recycle();
+            result = nr;
             // 换脸后人脸位置可能变化，需要重新检测
             faces = safeDetectFaces(result);
         }
@@ -825,10 +847,9 @@ public class FaceSwapEngine {
         Bitmap det = limitForDetection(image);
         float scale = (float) image.getWidth() / det.getWidth();
         List<FaceDetector.DetectedFace> faces = detector.detect(det);
-        if (scale > 1.01f) {
+        if (det != image) {
             scaleFaces(faces, scale);
-            if (det != image)
-                det.recycle();
+            det.recycle();
         }
         return faces;
     }

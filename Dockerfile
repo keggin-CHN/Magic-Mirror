@@ -15,7 +15,7 @@ RUN mkdir -p models && \
     if [ "${SKIP_MODEL_DOWNLOAD}" != "1" ]; then \
       BASE_URL="https://github.com/idootop/TinyFace/releases/download/models-1.0.0" && \
       for model in arcface_w600k_r50.onnx gfpgan_1.4.onnx inswapper_128_fp16.onnx scrfd_2.5g.onnx; do \
-        wget -q --tries=3 --timeout=60 -O "models/${model}" "${BASE_URL}/${model}"; \
+        wget -q --tries=3 --timeout=60 -O "models/${model}" "${BASE_URL}/${model}" || exit 1; \
       done; \
     fi
 

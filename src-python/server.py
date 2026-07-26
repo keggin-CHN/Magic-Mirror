@@ -119,7 +119,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     _append_boot_log(f'pid={os.getpid()}')
 
     try:
-        host = os.environ.get('MIRROR_HOST', '0.0.0.0')
+        # 桌面端仅需与本机 Tauri 通信；局域网访问需显式设置 MIRROR_HOST
+        host = os.environ.get('MIRROR_HOST', '127.0.0.1')
         port = _parse_port('MIRROR_PORT', 8023)
 
         import uvicorn

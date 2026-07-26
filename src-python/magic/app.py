@@ -82,10 +82,15 @@ _PROGRESS_GC_INTERVAL = 5 * 60
 VIDEO_TASK_CONFIGS = {}
 VIDEO_TASK_CONFIGS_LOCK = threading.RLock()
 VIDEO_TASK_CONFIG_TTL_SECONDS = 7 * 24 * 3600
-VIDEO_TASK_CONFIG_TOKEN_PREFIX = 'cfg1'
+DEFAULT_VIDEO_TASK_CONFIG_SECRET = 'magic-mirror-config-secret'
 VIDEO_TASK_CONFIG_SECRET = os.environ.get(
-    'VIDEO_TASK_CONFIG_SECRET', 'magic-mirror-config-secret'
+    'VIDEO_TASK_CONFIG_SECRET', DEFAULT_VIDEO_TASK_CONFIG_SECRET
 )
+if VIDEO_TASK_CONFIG_SECRET == DEFAULT_VIDEO_TASK_CONFIG_SECRET:
+    print(
+        '[WARN] VIDEO_TASK_CONFIG_SECRET uses the built-in development default; '
+        'set a random value via the environment for production deployments'
+    )
 
 
 def _cleanup_expired_progress() -> None:
@@ -281,7 +286,7 @@ def _get_video_task_config(config_id: str):
     with VIDEO_TASK_CONFIGS_LOCK:
         item = VIDEO_TASK_CONFIGS.get(str(config_id))
         if item:
-            item['createdAt'] = time.time()
+            item['lastUsedAt'] = time.time()
             config = item.get('config')
             if isinstance(config, dict):
                 return _clone_json_payload(config)
@@ -331,12 +336,13 @@ def _build_video_task_config_payload(
     key_frame_ms: int = 0,
     use_gpu: bool = False,
     gpu_provider: str = 'auto',
+    hash_cache: dict | None = None,
 ):
     """Build the config payload for a video task."""
     payload = {
         'inputVideo': {
             'path': input_video,
-            'sha256': compute_file_sha256(input_video),
+            'sha256': compute_file_sha256(input_video, cache=hash_cache),
         },
         'regions': regions if isinstance(regions, list) else None,
         'keyFrameMs': max(0, int(key_frame_ms or 0)),
@@ -357,7 +363,7 @@ def _build_video_task_config_payload(
                 {
                     'id': str(source_id),
                     'path': source_path,
-                    'sha256': compute_file_sha256(source_path),
+                    'sha256': compute_file_sha256(source_path, cache=hash_cache),
                 }
             )
         payload['faceSources'] = normalized_sources
@@ -374,7 +380,7 @@ def _build_video_task_config_payload(
                 {
                     'id': str(target_id or f'target-{idx + 1}'),
                     'path': target_path,
-                    'sha256': compute_file_sha256(target_path),
+                    'sha256': compute_file_sha256(target_path, cache=hash_cache),
                 }
             )
         payload['targetFaces'] = normalized_targets
@@ -386,7 +392,7 @@ def _build_video_task_config_payload(
             raise RuntimeError('missing-params')
         payload['targetFace'] = {
             'path': target_face,
-            'sha256': compute_file_sha256(target_face),
+            'sha256': compute_file_sha256(target_face, cache=hash_cache),
         }
 
     return payload
@@ -399,18 +405,19 @@ def _ensure_video_task_config_matches(
     target_face: str | None = None,
     target_face_map: dict[str, str] | None = None,
     source_map: dict[str, str] | None = None,
+    hash_cache: dict | None = None,
 ):
     """Ensure a video task config matches expectations."""
     expected_input_sha256 = get_expected_input_video_sha256(config)
     if expected_input_sha256 and not verify_file_sha256(
-        input_video, expected_input_sha256
+        input_video, expected_input_sha256, cache=hash_cache
     ):
         raise RuntimeError('config-mismatch')
 
     expected_target_sha256 = get_expected_target_face_sha256(config)
     if expected_target_sha256:
         if not target_face or not verify_file_sha256(
-            target_face, expected_target_sha256
+            target_face, expected_target_sha256, cache=hash_cache
         ):
             raise RuntimeError('config-mismatch')
 
@@ -420,7 +427,9 @@ def _ensure_video_task_config_matches(
             raise RuntimeError('config-mismatch')
         for target_id, expected_sha256 in expected_target_face_sha256_map.items():
             target_path = target_face_map.get(str(target_id))
-            if not target_path or not verify_file_sha256(target_path, expected_sha256):
+            if not target_path or not verify_file_sha256(
+                target_path, expected_sha256, cache=hash_cache
+            ):
                 raise RuntimeError('config-mismatch')
 
     expected_source_sha256_map = get_expected_face_source_sha256_map(config)
@@ -429,7 +438,9 @@ def _ensure_video_task_config_matches(
             raise RuntimeError('config-mismatch')
         for source_id, expected_sha256 in expected_source_sha256_map.items():
             source_path = source_map.get(str(source_id))
-            if not source_path or not verify_file_sha256(source_path, expected_sha256):
+            if not source_path or not verify_file_sha256(
+                source_path, expected_sha256, cache=hash_cache
+            ):
                 raise RuntimeError('config-mismatch')
 
 
@@ -951,6 +962,7 @@ def create_video_task(response: Response, body: dict = Body(default_factory=dict
                 response.status_code = 400
                 return {'error': _simplify_task_error(e)}
 
+        hash_cache: dict = {}
         if config_id:
             try:
                 _ensure_video_task_config_matches(
@@ -959,28 +971,36 @@ def create_video_task(response: Response, body: dict = Body(default_factory=dict
                     target_face=target_face_path,
                     target_face_map=target_face_map,
                     source_map=source_map,
+                    hash_cache=hash_cache,
                 )
             except RuntimeError as e:
                 response.status_code = 400
                 return {'error': _simplify_task_error(e)}
 
-        try:
-            config_payload = _build_video_task_config_payload(
-                input_video=input_video,
-                target_face=target_face_path,
-                target_faces=target_face_items if has_target_faces else None,
-                deep_swap_mode=deep_swap_mode,
-                segment_duration_sec=segment_duration_sec,
-                segment_overlap_frames=segment_overlap_frames,
-                face_sources=face_sources if has_face_sources else None,
-                regions=regions,
-                key_frame_ms=key_frame_ms,
-                use_gpu=use_gpu,
-                gpu_provider=gpu_provider,
-            )
-        except (RuntimeError, FileNotFoundError) as e:
-            response.status_code = 400
-            return {'error': _simplify_task_error(e)}
+        # 仅在需要持久化/返回 configId 时才计算文件哈希（大视频哈希开销大）
+        needs_config_payload = bool(
+            config_id or generate_config_id or dry_run_config_only
+        )
+        config_payload = None
+        if needs_config_payload:
+            try:
+                config_payload = _build_video_task_config_payload(
+                    input_video=input_video,
+                    target_face=target_face_path,
+                    target_faces=target_face_items if has_target_faces else None,
+                    deep_swap_mode=deep_swap_mode,
+                    segment_duration_sec=segment_duration_sec,
+                    segment_overlap_frames=segment_overlap_frames,
+                    face_sources=face_sources if has_face_sources else None,
+                    regions=regions,
+                    key_frame_ms=key_frame_ms,
+                    use_gpu=use_gpu,
+                    gpu_provider=gpu_provider,
+                    hash_cache=hash_cache,
+                )
+            except (RuntimeError, FileNotFoundError) as e:
+                response.status_code = 400
+                return {'error': _simplify_task_error(e)}
 
         active_config_id = None
         if config_id:

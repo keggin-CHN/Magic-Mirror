@@ -9,6 +9,7 @@ import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtSession;
 
 import java.io.File;
+import java.nio.FloatBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -50,26 +51,26 @@ public class FaceEmbedder {
         // ArcFace 预处理（与 insightface 对齐）:
         // RGB 通道，(pixel/255 - 0.5) / 0.5 = pixel/127.5 - 1
         // 等价于归一化到 [-1, 1]
-        float[][][][] inputData = ModelUtils.bitmapToRgbNormalized(
+        float[] inputData = ModelUtils.bitmapToRgbNormalizedFlat(
                 alignedFace, INPUT_SIZE,
                 new float[] { 127.5f, 127.5f, 127.5f }, // mean (RGB)
                 new float[] { 127.5f, 127.5f, 127.5f } // std (RGB)
         );
+        long[] shape = { 1, 3, INPUT_SIZE, INPUT_SIZE };
 
-        OnnxTensor inputTensor = OnnxTensor.createTensor(env, inputData);
-        Map<String, OnnxTensor> inputs = new HashMap<>();
-        inputs.put(session.getInputNames().iterator().next(), inputTensor);
+        try (OnnxTensor inputTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(inputData), shape)) {
+            Map<String, OnnxTensor> inputs = new HashMap<>();
+            inputs.put(session.getInputNames().iterator().next(), inputTensor);
 
-        OrtSession.Result result = session.run(inputs);
-
-        // 输出: [1, 512]
-        float[][] output = (float[][]) result.get(0).getValue();
-        float[] embedding = output[0];
-
-        inputTensor.close();
-        result.close();
-
-        return ModelUtils.l2Normalize(embedding);
+            try (OrtSession.Result result = session.run(inputs)) {
+                // 输出: [1, 512]
+                OnnxTensor outTensor = (OnnxTensor) result.get(0);
+                FloatBuffer fb = outTensor.getFloatBuffer();
+                float[] embedding = new float[fb.remaining()];
+                fb.get(embedding);
+                return ModelUtils.l2Normalize(embedding);
+            }
+        }
     }
 
     /**

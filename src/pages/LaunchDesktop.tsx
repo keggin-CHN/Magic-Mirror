@@ -22,24 +22,21 @@ export default function LaunchDesktop() {
   }, [download]);
 
   useEffect(() => {
-    if (downloadStatus === "success") {
-      launch();
-      Promise.all([
-        new Promise((resolve) => {
-          setTimeout(resolve, 3000);
-        }),
-        new Promise((resolve) => {
-          const checkInterval = setInterval(() => {
-            if (launchingStatusRef.current === "running") {
-              clearInterval(checkInterval);
-              resolve(true);
-            }
-          }, 100);
-        }),
-      ]).then(() => {
-        navigate("/mirror");
-      });
+    if (downloadStatus !== "success") {
+      return;
     }
+    launch();
+    const startedAt = Date.now();
+    const checkInterval = window.setInterval(() => {
+      if (
+        launchingStatusRef.current === "running" &&
+        Date.now() - startedAt >= 3000
+      ) {
+        window.clearInterval(checkInterval);
+        navigate("/mirror");
+      }
+    }, 100);
+    return () => window.clearInterval(checkInterval);
   }, [downloadStatus, launch, navigate]);
 
   const launching =

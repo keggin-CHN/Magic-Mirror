@@ -9,7 +9,9 @@ import android.graphics.RectF;
 import android.util.Log;
 
 import ai.onnxruntime.NodeInfo;
+import ai.onnxruntime.OnnxJavaType;
 import ai.onnxruntime.OnnxTensor;
+import ai.onnxruntime.OnnxValue;
 import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtSession;
 import ai.onnxruntime.TensorInfo;
@@ -662,7 +664,7 @@ public class FaceSwapper {
 
         // 3. 运行推理（桌面对齐：固定 [0,1] 输入，不做动态输入尺度切换）
         InferenceResult infer = runInferenceDesktopLike(alignedTarget, embeddingData);
-        float[][][][] output = infer.output;
+        SwapOutput output = infer.output;
         OutputStats stats = infer.stats;
 
         // 4. 转换为 Bitmap
@@ -898,8 +900,23 @@ public class FaceSwapper {
         int count = 0;
     }
 
+    /** 扁平化的 InSwapper 输出（NCHW，batch=1） */
+    private static class SwapOutput {
+        final float[] data;
+        final int channels;
+        final int height;
+        final int width;
+
+        SwapOutput(float[] data, int channels, int height, int width) {
+            this.data = data;
+            this.channels = channels;
+            this.height = height;
+            this.width = width;
+        }
+    }
+
     private static class InferenceResult {
-        float[][][][] output;
+        SwapOutput output;
         OutputStats stats;
     }
 
@@ -963,15 +980,16 @@ public class FaceSwapper {
         }
     }
 
-    private float[][][][] runSwapInference(Bitmap alignedTarget, float[][] embeddingData, boolean normalizedInput)
+    private SwapOutput runSwapInference(Bitmap alignedTarget, float[][] embeddingData, boolean normalizedInput)
             throws Exception {
         // InSwapper 与 insightface 对齐：RGB 输入，默认归一化到 [0,1]
-        float[][][][] faceData = normalizedInput
-                ? ModelUtils.bitmapToRgbNormalized(alignedTarget, INPUT_SIZE,
+        float[] faceData = normalizedInput
+                ? ModelUtils.bitmapToRgbNormalizedFlat(alignedTarget, INPUT_SIZE,
                         new float[] { 0f, 0f, 0f }, new float[] { 255f, 255f, 255f })
-                : ModelUtils.bitmapToRgbFloat(alignedTarget, INPUT_SIZE);
+                : ModelUtils.bitmapToRgbFloatFlat(alignedTarget, INPUT_SIZE);
+        long[] faceShape = { 1, 3, INPUT_SIZE, INPUT_SIZE };
 
-        try (OnnxTensor faceTensor = OnnxTensor.createTensor(env, faceData);
+        try (OnnxTensor faceTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(faceData), faceShape);
                 OnnxTensor embTensor = OnnxTensor.createTensor(env, embeddingData)) {
 
             Map<String, OnnxTensor> inputs = new HashMap<>();
@@ -1080,42 +1098,38 @@ public class FaceSwapper {
         }
     }
 
-    private float[][][][] selectSwapOutput(OrtSession.Result result) throws Exception {
+    private SwapOutput selectSwapOutput(OrtSession.Result result) throws Exception {
         if (result == null || result.size() <= 0) {
             throw new IllegalStateException("InSwapper 无输出");
         }
 
         if (outputImageIndex >= 0 && outputImageIndex < result.size()) {
             try {
-                Object v = result.get(outputImageIndex).getValue();
-                if (v instanceof float[][][][]) {
-                    return (float[][][][]) v;
+                SwapOutput out = toSwapOutput(result.get(outputImageIndex));
+                if (out != null) {
+                    return out;
                 }
             } catch (Exception ignored) {
             }
         }
 
-        float[][][][] best = null;
+        SwapOutput best = null;
         int bestScore = Integer.MIN_VALUE;
 
         for (int i = 0; i < result.size(); i++) {
-            Object v;
+            SwapOutput candidate;
             try {
-                v = result.get(i).getValue();
+                candidate = toSwapOutput(result.get(i));
             } catch (Exception e) {
                 continue;
             }
-            if (!(v instanceof float[][][][])) {
-                continue;
-            }
-            float[][][][] arr = (float[][][][]) v;
-            if (arr.length == 0 || arr[0] == null) {
+            if (candidate == null) {
                 continue;
             }
 
-            int c = arr[0].length;
-            int h = (c > 0 && arr[0][0] != null) ? arr[0][0].length : 0;
-            int w = (h > 0 && arr[0][0][0] != null) ? arr[0][0][0].length : 0;
+            int c = candidate.channels;
+            int h = candidate.height;
+            int w = candidate.width;
 
             int score = 0;
             if (c == 3) {
@@ -1133,7 +1147,7 @@ public class FaceSwapper {
 
             if (score > bestScore) {
                 bestScore = score;
-                best = arr;
+                best = candidate;
             }
         }
 
@@ -1141,19 +1155,45 @@ public class FaceSwapper {
             return best;
         }
 
-        Object first = result.get(0).getValue();
-        if (first instanceof float[][][][]) {
-            return (float[][][][]) first;
-        }
-
         throw new IllegalStateException("无法从 InSwapper 输出中解析图像张量，outputCount=" + result.size());
+    }
+
+    /**
+     * 将 ORT 输出转为扁平 SwapOutput。仅接受 float 类型、4 维 [1,C,H,W] 张量。
+     */
+    private SwapOutput toSwapOutput(OnnxValue value) throws Exception {
+        if (!(value instanceof OnnxTensor)) {
+            return null;
+        }
+        OnnxTensor tensor = (OnnxTensor) value;
+        TensorInfo info = tensor.getInfo();
+        if (info.type != OnnxJavaType.FLOAT) {
+            return null;
+        }
+        long[] shape = info.getShape();
+        if (shape == null || shape.length != 4 || shape[0] != 1) {
+            return null;
+        }
+        int c = (int) shape[1];
+        int h = (int) shape[2];
+        int w = (int) shape[3];
+        if (c <= 0 || h <= 0 || w <= 0) {
+            return null;
+        }
+        FloatBuffer fb = tensor.getFloatBuffer();
+        if (fb == null || fb.remaining() < c * h * w) {
+            return null;
+        }
+        float[] data = new float[c * h * w];
+        fb.get(data);
+        return new SwapOutput(data, c, h, w);
     }
 
     private InferenceResult runInferenceDesktopLike(Bitmap alignedTarget, float[][] embeddingData)
             throws Exception {
         InferenceResult out = new InferenceResult();
 
-        float[][][][] output = runSwapInference(alignedTarget, embeddingData, true);
+        SwapOutput output = runSwapInference(alignedTarget, embeddingData, true);
         OutputStats stats = analyzeOutput(output);
 
         out.output = output;
@@ -1161,9 +1201,9 @@ public class FaceSwapper {
         return out;
     }
 
-    private OutputStats analyzeOutput(float[][][][] output) {
+    private OutputStats analyzeOutput(SwapOutput output) {
         OutputStats s = new OutputStats();
-        if (output == null || output.length == 0 || output[0] == null || output[0].length < 3) {
+        if (output == null || output.data == null || output.channels < 3) {
             s.min = 0f;
             s.max = 0f;
             s.range = 0f;
@@ -1173,29 +1213,22 @@ public class FaceSwapper {
         double sum = 0.0;
         double sumSq = 0.0;
 
-        for (int c = 0; c < Math.min(3, output[0].length); c++) {
-            float[][] plane = output[0][c];
-            if (plane == null) {
-                continue;
-            }
-            for (int y = 0; y < plane.length; y++) {
-                float[] row = plane[y];
-                if (row == null) {
+        int hw = output.height * output.width;
+        int planes = Math.min(3, output.channels);
+        for (int c = 0; c < planes; c++) {
+            int base = c * hw;
+            for (int i = 0; i < hw; i++) {
+                float v = output.data[base + i];
+                if (Float.isNaN(v) || Float.isInfinite(v)) {
                     continue;
                 }
-                for (int x = 0; x < row.length; x++) {
-                    float v = row[x];
-                    if (Float.isNaN(v) || Float.isInfinite(v)) {
-                        continue;
-                    }
-                    if (v < s.min)
-                        s.min = v;
-                    if (v > s.max)
-                        s.max = v;
-                    sum += v;
-                    sumSq += (double) v * (double) v;
-                    s.count++;
-                }
+                if (v < s.min)
+                    s.min = v;
+                if (v > s.max)
+                    s.max = v;
+                sum += v;
+                sumSq += (double) v * (double) v;
+                s.count++;
             }
         }
 
@@ -1265,7 +1298,7 @@ public class FaceSwapper {
         }
     }
 
-    private Bitmap decodeSwapOutput(float[][][][] output, OutputStats stats) {
+    private Bitmap decodeSwapOutput(SwapOutput output, OutputStats stats) {
         boolean unitScale = stats.max <= 1.25f && stats.min >= -1.25f;
         boolean byteScale = stats.max <= 255.5f && stats.min >= -0.5f;
         boolean lowVariance = (unitScale
@@ -1306,15 +1339,15 @@ public class FaceSwapper {
             // 常见情况：输出在 [-1,1] 或 [0,1]
             if (stats.min < -0.05f) {
                 logSwapOutputDecision(stats, unitScale, byteScale, "decode_unit_minus1_1", false);
-                return ModelUtils.rgbNormalizedToBitmap(output, INPUT_SIZE, INPUT_SIZE);
+                return ModelUtils.rgbNormalizedFlatToBitmap(output.data, INPUT_SIZE, INPUT_SIZE);
             }
             logSwapOutputDecision(stats, unitScale, byteScale, "decode_unit_0_1", false);
-            return rgbUnitToBitmap(output, INPUT_SIZE, INPUT_SIZE);
+            return rgbUnitToBitmap(output.data, INPUT_SIZE, INPUT_SIZE);
         }
 
         if (byteScale) {
             logSwapOutputDecision(stats, unitScale, byteScale, "decode_byte_0_255", false);
-            return ModelUtils.rgbFloatToBitmap(output, INPUT_SIZE, INPUT_SIZE);
+            return ModelUtils.rgbFloatFlatToBitmap(output.data, INPUT_SIZE, INPUT_SIZE);
         }
 
         logSwapOutputDecision(stats, unitScale, byteScale, "reject_invalid_distribution_fallback", true);
@@ -1322,16 +1355,15 @@ public class FaceSwapper {
         return null;
     }
 
-    private Bitmap rgbUnitToBitmap(float[][][][] data, int width, int height) {
+    private Bitmap rgbUnitToBitmap(float[] data, int width, int height) {
         Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-        int[] pixels = new int[width * height];
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                int r = clamp(Math.round(data[0][0][y][x] * 255f), 0, 255);
-                int g = clamp(Math.round(data[0][1][y][x] * 255f), 0, 255);
-                int b = clamp(Math.round(data[0][2][y][x] * 255f), 0, 255);
-                pixels[y * width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
-            }
+        int hw = width * height;
+        int[] pixels = new int[hw];
+        for (int i = 0; i < hw; i++) {
+            int r = clamp(Math.round(data[i] * 255f), 0, 255);
+            int g = clamp(Math.round(data[hw + i] * 255f), 0, 255);
+            int b = clamp(Math.round(data[2 * hw + i] * 255f), 0, 255);
+            pixels[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
         }
         bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
         return bitmap;

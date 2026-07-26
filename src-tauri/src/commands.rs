@@ -4,8 +4,20 @@ use tauri::AppHandle;
 use crate::utils::{download_file, unzip_file};
 
 #[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Build a `Command` that will not flash a console window in a GUI app.
+#[cfg(target_os = "windows")]
+fn hidden_command(program: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(target_os = "windows")]
 fn has_command_in_path(command: &str) -> bool {
-    std::process::Command::new("where")
+    hidden_command("where")
         .arg(command)
         .output()
         .map(|output| output.status.success())
@@ -14,7 +26,7 @@ fn has_command_in_path(command: &str) -> bool {
 
 #[cfg(target_os = "windows")]
 fn find_binary_from_where(command: &str) -> Option<PathBuf> {
-    let output = std::process::Command::new("where")
+    let output = hidden_command("where")
         .arg(command)
         .output()
         .ok()?;
@@ -146,7 +158,7 @@ fn ensure_ffmpeg_available() -> Result<bool, String> {
     let mut last_error = String::new();
 
     for package_id in package_ids {
-        let status = std::process::Command::new("winget")
+        let status = hidden_command("winget")
             .args([
                 "install",
                 "--id",
@@ -188,16 +200,20 @@ pub async fn download_and_unzip(
 
     let temp_path = download_file(&app, &url, &temp_dir).await?;
 
-    unzip_file(&app, &temp_path, &target_dir).await?;
+    let result = unzip_file(&app, &temp_path, &target_dir).await;
 
+    // Best-effort cleanup: do not fail the whole operation (or leak the
+    // temp archive) just because the temp file could not be removed.
     if let Err(e) = std::fs::remove_file(&temp_path) {
-        return Err(format!("Failed to remove temp file: {}", e));
+        eprintln!("Failed to remove temp file {}: {}", temp_path, e);
     }
 
-    Ok(())
+    result
 }
 
-#[tauri::command]
+// `async` so this heavy work (file copies, potential `winget install` taking
+// minutes) runs on a background thread instead of blocking the main thread.
+#[tauri::command(async)]
 pub fn repair_server_runtime(target_dir: String) -> Result<Vec<String>, String> {
     #[cfg(target_os = "windows")]
     {

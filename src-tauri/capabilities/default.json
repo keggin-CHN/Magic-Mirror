@@ -13,7 +13,6 @@
     "process:default",
     "process:allow-exit",
     "shell:allow-open",
-    "shell:allow-spawn",
     "shell:default",
     {
       "identifier": "shell:allow-execute",

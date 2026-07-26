@@ -751,6 +751,132 @@ public class ModelUtils {
         return bitmap;
     }
 
+    // ==================== 扁平 float[] (NCHW) ↔ Bitmap 转换 ====================
+    // 与上面嵌套数组版本数值行为一致，但避免 OnnxTensor 对嵌套数组的逐维反射拷贝。
+    // 布局: data[c * H * W + y * W + x]
+
+    /**
+     * Bitmap → 扁平 float[3*size*size]，RGB 顺序，带均值/标准差归一化。
+     */
+    public static float[] bitmapToRgbNormalizedFlat(Bitmap bitmap, int size,
+            float[] mean, float[] std) {
+        Bitmap scaled = ensureSize(bitmap, size);
+        int hw = size * size;
+        float[] data = new float[3 * hw];
+        int[] pixels = new int[hw];
+        scaled.getPixels(pixels, 0, size, 0, 0, size, size);
+
+        for (int i = 0; i < hw; i++) {
+            int pixel = pixels[i];
+            int r = (pixel >> 16) & 0xFF;
+            int g = (pixel >> 8) & 0xFF;
+            int b = pixel & 0xFF;
+            data[i] = (r - mean[0]) / std[0];
+            data[hw + i] = (g - mean[1]) / std[1];
+            data[2 * hw + i] = (b - mean[2]) / std[2];
+        }
+        if (scaled != bitmap)
+            scaled.recycle();
+        return data;
+    }
+
+    /**
+     * Bitmap → 扁平 float[3*size*size]，RGB 顺序，像素值范围 [0, 255]（不归一化）。
+     */
+    public static float[] bitmapToRgbFloatFlat(Bitmap bitmap, int size) {
+        Bitmap scaled = ensureSize(bitmap, size);
+        int hw = size * size;
+        float[] data = new float[3 * hw];
+        int[] pixels = new int[hw];
+        scaled.getPixels(pixels, 0, size, 0, 0, size, size);
+
+        for (int i = 0; i < hw; i++) {
+            int pixel = pixels[i];
+            data[i] = (pixel >> 16) & 0xFF;
+            data[hw + i] = (pixel >> 8) & 0xFF;
+            data[2 * hw + i] = pixel & 0xFF;
+        }
+        if (scaled != bitmap)
+            scaled.recycle();
+        return data;
+    }
+
+    /**
+     * Bitmap → 扁平 float[3*size*size]，BGR 顺序，带均值/标准差归一化。
+     */
+    public static float[] bitmapToBgrNormalizedFlat(Bitmap bitmap, int size,
+            float[] mean, float[] std) {
+        Bitmap scaled = ensureSize(bitmap, size);
+        int hw = size * size;
+        float[] data = new float[3 * hw];
+        int[] pixels = new int[hw];
+        scaled.getPixels(pixels, 0, size, 0, 0, size, size);
+
+        for (int i = 0; i < hw; i++) {
+            int pixel = pixels[i];
+            int r = (pixel >> 16) & 0xFF;
+            int g = (pixel >> 8) & 0xFF;
+            int b = pixel & 0xFF;
+            data[i] = (b - mean[0]) / std[0];
+            data[hw + i] = (g - mean[1]) / std[1];
+            data[2 * hw + i] = (r - mean[2]) / std[2];
+        }
+        if (scaled != bitmap)
+            scaled.recycle();
+        return data;
+    }
+
+    /**
+     * 扁平 float[3*H*W] (RGB, [0,255]) → Bitmap。
+     */
+    public static Bitmap rgbFloatFlatToBitmap(float[] data, int width, int height) {
+        int hw = width * height;
+        int[] pixels = new int[hw];
+        for (int i = 0; i < hw; i++) {
+            int r = clamp((int) data[i], 0, 255);
+            int g = clamp((int) data[hw + i], 0, 255);
+            int b = clamp((int) data[2 * hw + i], 0, 255);
+            pixels[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
+        return bitmap;
+    }
+
+    /**
+     * 扁平 float[3*H*W] (RGB, [-1,1]) → Bitmap。反归一化: pixel = (value*0.5+0.5)*255
+     */
+    public static Bitmap rgbNormalizedFlatToBitmap(float[] data, int width, int height) {
+        int hw = width * height;
+        int[] pixels = new int[hw];
+        for (int i = 0; i < hw; i++) {
+            int r = clamp((int) ((data[i] * 0.5f + 0.5f) * 255), 0, 255);
+            int g = clamp((int) ((data[hw + i] * 0.5f + 0.5f) * 255), 0, 255);
+            int b = clamp((int) ((data[2 * hw + i] * 0.5f + 0.5f) * 255), 0, 255);
+            pixels[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
+        return bitmap;
+    }
+
+    /**
+     * 扁平 float[3*H*W] (BGR, [-1,1]) → Bitmap。反归一化: pixel = (value*0.5+0.5)*255
+     */
+    public static Bitmap bgrNormalizedFlatToBitmap(float[] data, int width, int height) {
+        int hw = width * height;
+        int[] pixels = new int[hw];
+        for (int i = 0; i < hw; i++) {
+            int b = clamp((int) ((data[i] * 0.5f + 0.5f) * 255), 0, 255);
+            int g = clamp((int) ((data[hw + i] * 0.5f + 0.5f) * 255), 0, 255);
+            int r = clamp((int) ((data[2 * hw + i] * 0.5f + 0.5f) * 255), 0, 255);
+            pixels[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
+        return bitmap;
+    }
+
     // ==================== 保留旧接口（兼容） ====================
 
     /** @deprecated 使用 bitmapToBgrFloat 或 bitmapToBgrNormalized */

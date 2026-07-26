@@ -30,5 +30,16 @@ jobs:
           dockerfile: Dockerfile
           failure-threshold: warning
           ignore: DL3008
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
       - name: Build Docker image
-        run: docker build --build-arg SKIP_MODEL_DOWNLOAD=1 --pull -t magic-mirror:test .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          pull: true
+          tags: magic-mirror:test
+          build-args: |
+            SKIP_MODEL_DOWNLOAD=1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
