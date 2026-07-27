@@ -15,6 +15,8 @@ const SERVER_PACKAGE_VERSION = "2.0.0";
 export type ServerStatus = "idle" | "launching" | "running";
 
 export interface Region {
+  /** Stable client-side identifier used as the React list key. */
+  id?: string;
   x: number;
   y: number;
   width: number;

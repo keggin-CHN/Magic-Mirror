@@ -9,6 +9,7 @@
     "email": "zhou239829001@gmail.com"
   },
   "license": "MIT",
+  "packageManager": "pnpm@8.5.1",
   "homepage": "https://github.com/keggin-CHN",
   "repository": "https://github.com/keggin-CHN/Magic-Mirror",
   "scripts": {

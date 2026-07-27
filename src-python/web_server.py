@@ -53,13 +53,22 @@ from magic.video_task_executor import VideoTaskExecutor
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# The web UI is served same-origin from DIST_DIR, so no cross-origin access is
+# needed by default. Operators embedding the API elsewhere can whitelist
+# origins explicitly via WEB_CORS_ALLOW_ORIGINS (comma separated).
+_cors_origins = [
+    origin.strip()
+    for origin in os.environ.get('WEB_CORS_ALLOW_ORIGINS', '').split(',')
+    if origin.strip()
+]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 @app.middleware('http')
 async def _request_context_middleware(request_obj: Request, call_next):
@@ -141,10 +150,14 @@ IMAGE_TASKS: Dict[str, threading.Event] = {}
 VIDEO_TASK_CONFIGS: Dict[str, Dict[str, object]] = {}
 VIDEO_TASK_CONFIGS_LOCK = threading.RLock()
 VIDEO_TASK_CONFIG_TTL_SECONDS = 7 * 24 * 3600
-DEFAULT_VIDEO_TASK_CONFIG_SECRET = 'magic-mirror-config-secret'
-VIDEO_TASK_CONFIG_SECRET = os.environ.get(
-    'VIDEO_TASK_CONFIG_SECRET', DEFAULT_VIDEO_TASK_CONFIG_SECRET
-)
+VIDEO_TASK_CONFIG_SECRET = os.environ.get('VIDEO_TASK_CONFIG_SECRET') or ''
+_GENERATED_CONFIG_SECRET = False
+if not VIDEO_TASK_CONFIG_SECRET:
+    # Never fall back to a well-known constant: a guessable secret lets anyone
+    # forge signed config tokens (including legacy cfg1 tokens). Generate a
+    # per-process random secret; tokens then only stay valid until restart.
+    VIDEO_TASK_CONFIG_SECRET = secrets.token_hex(32)
+    _GENERATED_CONFIG_SECRET = True
 
 _LIBRARY_CACHE_LOCK = threading.RLock()
 _LIBRARY_CACHE_MTIME: Optional[int] = None
@@ -273,11 +286,15 @@ def _extract_token(request_obj: Request | WebSocket) -> Optional[str]:
     if auth.lower().startswith('bearer '):
         return auth[7:].strip()
     cookie_token = getattr(request_obj, 'cookies', {}).get(AUTH_COOKIE_NAME)
-    return (
-        cookie_token
-        or request_obj.headers.get('X-Token')
-        or request_obj.query_params.get('token')
-    )
+    token = cookie_token or request_obj.headers.get('X-Token')
+    if token:
+        return token
+    # Query-string tokens leak into access logs, proxy logs and browser
+    # history, so they are only accepted for WebSocket handshakes (where
+    # custom headers cannot be set from the browser).
+    if isinstance(request_obj, WebSocket):
+        return request_obj.query_params.get('token')
+    return None
 
 
 def _set_auth_cookie(response_obj: Response, token: str) -> None:
@@ -312,12 +329,22 @@ def _require_auth(request_obj: Request, response_obj: Response) -> bool:
 
 
 def _login_rate_limit_key(request_obj: Request) -> str:
-    """Return the client key used for login failure throttling."""
+    """Return the client key used for login failure throttling.
+
+    By default the direct peer address is used. Behind a reverse proxy that
+    address is the proxy itself (all users would share one key), so operators
+    can set WEB_TRUST_PROXY=1 to key on the last X-Forwarded-For entry — the
+    one appended by the trusted proxy, which the client cannot forge.
+    """
+    trust_proxy = os.environ.get('WEB_TRUST_PROXY', '') in {'1', 'true', 'yes'}
+    if trust_proxy:
+        forwarded_for = request_obj.headers.get('X-Forwarded-For', '')
+        if forwarded_for:
+            last_hop = forwarded_for.rsplit(',', 1)[-1].strip()
+            if last_hop:
+                return last_hop
     if request_obj.client and request_obj.client.host:
         return request_obj.client.host
-    forwarded_for = request_obj.headers.get('X-Forwarded-For', '')
-    if forwarded_for:
-        return forwarded_for.split(',', 1)[0].strip() or 'unknown'
     return 'unknown'
 
 
@@ -2258,10 +2285,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         host = os.environ.get('WEB_HOST', '0.0.0.0')
         port = _parse_env_port('WEB_PORT', 8033)
-        if VIDEO_TASK_CONFIG_SECRET == DEFAULT_VIDEO_TASK_CONFIG_SECRET:
+        if _GENERATED_CONFIG_SECRET:
             print(
-                '[WEB] warning: VIDEO_TASK_CONFIG_SECRET uses the development '
-                'default; set a random value for production deployments'
+                '[WEB] warning: VIDEO_TASK_CONFIG_SECRET not set; a random '
+                'per-process secret was generated. Config tokens will not '
+                'survive a restart — set VIDEO_TASK_CONFIG_SECRET to make '
+                'them durable.'
             )
         print(f'[WEB] starting server on {host}:{port}')
         uvicorn.run(app, host=host, port=port, access_log=False)

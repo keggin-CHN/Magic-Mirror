@@ -32,6 +32,10 @@ on:
       - "!scripts/install-web.sh"
       - "!scripts/install-server-linux.sh"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-for-windows:
     name: Windows
@@ -59,6 +63,8 @@ jobs:
           node-version: 20
           cache: "pnpm"
           cache-dependency-path: "pnpm-lock.yaml"
+      - name: Check Server Version Sync
+        run: node scripts/check-version-sync.mjs
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:

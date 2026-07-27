@@ -3,14 +3,18 @@ import { ProgressBar } from "@/components/ProgressBar";
 import { useDownload } from "@/hooks/useDownload";
 import { useServer } from "@/hooks/useServer";
 import { openExternalSafe } from "@/services/tauriBridge";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
+
+const kLaunchTimeoutMs = 60000;
 
 export default function LaunchDesktop() {
   const { t } = useTranslation();
   const { progress, download, status: downloadStatus } = useDownload();
   const { launch, status: launchingStatus } = useServer();
+  const [launchFailed, setLaunchFailed] = useState(false);
+  const [launchAttempt, setLaunchAttempt] = useState(0);
 
   const launchingStatusRef = useRef(launchingStatus);
   launchingStatusRef.current = launchingStatus;
@@ -25,23 +29,53 @@ export default function LaunchDesktop() {
     if (downloadStatus !== "success") {
       return;
     }
-    launch();
+    let cancelled = false;
+    setLaunchFailed(false);
+    launch().then((launched) => {
+      if (!cancelled && !launched) {
+        setLaunchFailed(true);
+      }
+    });
     const startedAt = Date.now();
     const checkInterval = window.setInterval(() => {
+      if (cancelled) {
+        return;
+      }
       if (
         launchingStatusRef.current === "running" &&
         Date.now() - startedAt >= 3000
       ) {
         window.clearInterval(checkInterval);
         navigate("/mirror");
+        return;
+      }
+      if (Date.now() - startedAt > kLaunchTimeoutMs) {
+        window.clearInterval(checkInterval);
+        setLaunchFailed(true);
       }
     }, 100);
-    return () => window.clearInterval(checkInterval);
-  }, [downloadStatus, launch, navigate]);
+    return () => {
+      cancelled = true;
+      window.clearInterval(checkInterval);
+    };
+  }, [downloadStatus, launch, navigate, launchAttempt]);
+
+  const failed = launchFailed ? (
+    <>
+      <p className="c-#ff6b6b">{t("Failed to start the server. Please retry.")}</p>
+      <button
+        className="cursor-pointer bg-transparent c-blue border-none text-14px"
+        onClick={() => setLaunchAttempt((attempt) => attempt + 1)}
+      >
+        {t("Retry")}
+      </button>
+    </>
+  ) : null;
 
   const launching =
-    ["idle", "success"].includes(downloadStatus) ||
-      ["launching", "running"].includes(launchingStatus) ? (
+    !launchFailed &&
+      (["idle", "success"].includes(downloadStatus) ||
+        ["launching", "running"].includes(launchingStatus)) ? (
       <>
         <p>{t("Starting... First load may take longer, please wait.")}</p>
       </>
@@ -85,6 +119,7 @@ export default function LaunchDesktop() {
         src={banner}
         className="w-80% object-cover cursor-default pointer-events-none select-none"
       />
+      {failed}
       {launching}
       {downloading}
     </div>

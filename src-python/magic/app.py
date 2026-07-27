@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import secrets
 import threading
 import time
 import traceback
@@ -36,9 +37,24 @@ from .video_task_executor import VideoTaskExecutor
 
 app = FastAPI()
 
+# Only the Tauri webview (and the Vite dev server) may call this API from a
+# browser context. A wildcard here would let any web page drive the local
+# server (drive-by requests against 127.0.0.1).
+_DEFAULT_ALLOWED_ORIGINS = [
+    'tauri://localhost',
+    'http://tauri.localhost',
+    'https://tauri.localhost',
+    'http://localhost:1420',
+]
+_extra_origins = [
+    origin.strip()
+    for origin in os.environ.get('MIRROR_CORS_ALLOW_ORIGINS', '').split(',')
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_DEFAULT_ALLOWED_ORIGINS + _extra_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -82,14 +98,17 @@ _PROGRESS_GC_INTERVAL = 5 * 60
 VIDEO_TASK_CONFIGS = {}
 VIDEO_TASK_CONFIGS_LOCK = threading.RLock()
 VIDEO_TASK_CONFIG_TTL_SECONDS = 7 * 24 * 3600
-DEFAULT_VIDEO_TASK_CONFIG_SECRET = 'magic-mirror-config-secret'
-VIDEO_TASK_CONFIG_SECRET = os.environ.get(
-    'VIDEO_TASK_CONFIG_SECRET', DEFAULT_VIDEO_TASK_CONFIG_SECRET
-)
-if VIDEO_TASK_CONFIG_SECRET == DEFAULT_VIDEO_TASK_CONFIG_SECRET:
+VIDEO_TASK_CONFIG_SECRET = os.environ.get('VIDEO_TASK_CONFIG_SECRET') or ''
+if not VIDEO_TASK_CONFIG_SECRET:
+    # Never fall back to a well-known constant: a guessable secret lets anyone
+    # forge signed config tokens. Generate a per-process random secret instead;
+    # tokens then only stay valid for the lifetime of this process, which is
+    # fine for the desktop app (configs are also cached in memory).
+    VIDEO_TASK_CONFIG_SECRET = secrets.token_hex(32)
     print(
-        '[WARN] VIDEO_TASK_CONFIG_SECRET uses the built-in development default; '
-        'set a random value via the environment for production deployments'
+        '[WARN] VIDEO_TASK_CONFIG_SECRET not set; generated a random '
+        'per-process secret. Config tokens will not survive a restart. '
+        'Set VIDEO_TASK_CONFIG_SECRET to make them durable.'
     )
 
 

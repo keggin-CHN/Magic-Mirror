@@ -4,6 +4,8 @@
   "*If the download is stuck or fails, please download and initialize manually. ": "*If the download is stuck or fails, please download and initialize manually. ",
   "View tutorial": "View tutorial",
   "Starting... First load may take longer, please wait.": "Starting... First load may take longer, please wait.",
+  "Failed to start the server. Please retry.": "Failed to start the server. Please retry.",
+  "Retry": "Retry",
   "Face swapping... This may take a few seconds, please wait.": "Face swapping... This may take a few seconds, please wait.",
   "Video swapping... This may take a while, please wait.": "Video swapping... This may take a while, please wait.",
   "Reload/Reset": "Reload/Reset",

@@ -32,9 +32,7 @@ ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 VIDEO_TASK_CONFIG_TTL_SECONDS = int(
     os.environ.get("VIDEO_TASK_CONFIG_TTL_SECONDS", str(7 * 24 * 3600))
 )
-VIDEO_TASK_CONFIG_SECRET = os.environ.get(
-    "VIDEO_TASK_CONFIG_SECRET", "magic-mirror-config-secret"
-)
+VIDEO_TASK_CONFIG_SECRET = os.environ.get("VIDEO_TASK_CONFIG_SECRET", "")
 
 
 def _parse_video_task_config_token(config_id: str):
@@ -400,6 +398,17 @@ def _parse_args():
 
 def main():
     args = _parse_args()
+
+    if not VIDEO_TASK_CONFIG_SECRET:
+        _print_json(
+            {
+                "status": "failed",
+                "error": "missing-params",
+                "detail": "VIDEO_TASK_CONFIG_SECRET environment variable is required "
+                "and must match the secret used by the server that issued the token",
+            }
+        )
+        return 2
 
     if args.use_gpu and args.no_gpu:
         _print_json({"status": "failed", "error": "missing-params", "detail": "gpu-conflict"})

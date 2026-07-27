@@ -21,11 +21,21 @@ RUN mkdir -p models && \
 
 COPY src-python/ .
 
+# Run as a non-root user; it needs write access to the data dir (WEB_DATA_DIR).
+RUN useradd --create-home --shell /usr/sbin/nologin appuser \
+    && mkdir -p /app/data/web \
+    && chown -R appuser:appuser /app/data
+
+USER appuser
+
 EXPOSE 8023
 
 ENV MIRROR_HOST=0.0.0.0
 ENV MIRROR_PORT=8023
 ENV WEB_DATA_DIR=/app/data/web
 ENV WEB_DIST_DIR=/app/dist-web
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD wget -q -O /dev/null http://127.0.0.1:8023/status || exit 1
 
 CMD ["python", "server.py"]

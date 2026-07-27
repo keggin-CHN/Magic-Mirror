@@ -34,6 +34,10 @@ on:
       - "!src-python/server.py"
       - "!src-tauri/**"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-web:
     name: Ubuntu 22.04 (Debian/Ubuntu)

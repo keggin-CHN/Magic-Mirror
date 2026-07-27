@@ -167,14 +167,17 @@ Magic-Mirror/
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `MIRROR_HOST` | `0.0.0.0` | 监听地址 |
+| `MIRROR_HOST` | `127.0.0.1` | 监听地址（局域网访问需显式设置） |
 | `MIRROR_PORT` | `8023` | 桌面后端端口 |
+| `MIRROR_CORS_ALLOW_ORIGINS` | 无 | 桌面后端额外允许的 CORS 来源（逗号分隔） |
 | `WEB_HOST` | `0.0.0.0` | Web 后端监听地址 |
 | `WEB_PORT` | `8033` | Web 后端端口 |
+| `WEB_CORS_ALLOW_ORIGINS` | 无 | Web 后端允许的 CORS 来源（逗号分隔，默认同源无需配置） |
+| `WEB_TRUST_PROXY` | 无 | 置 `1` 时登录限流按 `X-Forwarded-For` 最后一跳区分客户端（仅反向代理后设置） |
 | `WEB_DATA_DIR` | `data/web` | Web 上传、素材库和配置目录 |
 | `WEB_DIST_DIR` | `dist-web` | Web 前端静态资源目录 |
 | `WEB_INITIAL_PASSWORD` | 无 | `web_server.py --init-config` 首次初始化密码 |
-| `VIDEO_TASK_CONFIG_SECRET` | 开发默认值 | 生产环境应使用随机值 |
+| `VIDEO_TASK_CONFIG_SECRET` | 随机生成 | 未设置时每次启动随机生成（token 重启后失效），生产环境应显式设置 |
 
 ---
 

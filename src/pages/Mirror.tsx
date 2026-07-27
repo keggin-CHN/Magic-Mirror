@@ -57,6 +57,8 @@ const kDefaultFaceSourceId = "default-me";
 const kMinSelectionZoom = 0.5;
 const kMaxSelectionZoom = 4;
 let kPreviewRevision = 0;
+let kRegionIdCounter = 0;
+const nextRegionId = () => `region-${++kRegionIdCounter}`;
 
 const kMirrorStates: {
   isMe: boolean;
@@ -781,6 +783,7 @@ export function MirrorPage() {
         mediaSize.height,
         1
       ).map((region: Region) => ({
+        id: nextRegionId(),
         x: region.x,
         y: region.y,
         width: region.width,
@@ -1077,7 +1080,10 @@ export function MirrorPage() {
       }
       selectingRef.current = false;
       if (draftRegion && draftRegion.width > 4 && draftRegion.height > 4) {
-        setRegions((prev: Region[]) => [...prev, { ...draftRegion }]);
+        setRegions((prev: Region[]) => [
+          ...prev,
+          { ...draftRegion, id: nextRegionId() },
+        ]);
         setSelectedRegionIndex(regions.length);
       }
       setDraftRegion(null);
@@ -1208,6 +1214,7 @@ export function MirrorPage() {
         setFaceSources([]);
         setRegions((prevRegions: Region[]) =>
           prevRegions.map((region: Region) => ({
+            id: region.id,
             x: region.x,
             y: region.y,
             width: region.width,
@@ -1453,6 +1460,7 @@ export function MirrorPage() {
         frameHeight,
         1
       ).map((region: Region) => ({
+        id: nextRegionId(),
         x: region.x,
         y: region.y,
         width: region.width,
@@ -2432,7 +2440,7 @@ export function MirrorPage() {
                   <div className="selection-layer">
                     {regions.map((region: Region, index: number) => (
                       <div
-                        key={`region-${index}`}
+                        key={region.id ?? `region-${index}`}
                         className={`selection-rect ${!isDeepSwapMode && region.faceSourceId ? "assigned" : ""} ${selectedRegionIndex === index ? "selected" : ""}`}
                         style={{
                           left: region.x,

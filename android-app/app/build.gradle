@@ -20,8 +20,8 @@ android {
     }
 
     signingConfigs {
-        // 通过环境变量配置签名（CI 中自动设置）
-        // 本地开发不设环境变量时，release 构建会使用 debug 签名
+        // 通过环境变量配置签名（CI 中自动设置，无 secrets 时 CI 会生成临时 keystore）
+        // 无签名配置时执行 release 构建会直接失败，绝不回退 debug 签名
         release {
             def ksPath = System.getenv("KEYSTORE_FILE")
             if (ksPath != null) {
@@ -37,10 +37,12 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            // 有签名配置时使用，否则 Gradle 默认用 debug 签名
             def ksPath = System.getenv("KEYSTORE_FILE")
             if (ksPath != null) {
                 signingConfig signingConfigs.release
+            } else {
+                // 显式置空，防止 Gradle 默认回退 debug 签名
+                signingConfig null
             }
         }
     }
@@ -59,6 +61,26 @@ android {
     // This also speeds up packaging and avoids runtime extraction overhead.
     androidResources {
         noCompress += ["onnx", "ort", "bin", "dat", "tflite", "pt", "model"]
+    }
+}
+
+// 无签名配置时禁止 release 构建（不静默回退 debug 签名）。
+// CI（.github/workflows/build-android.yaml）总是会设置 KEYSTORE_FILE，不受影响。
+gradle.taskGraph.whenReady { graph ->
+    if (System.getenv("KEYSTORE_FILE") == null) {
+        def releaseRequested = graph.allTasks.any { task ->
+            task.project == project && task.name.toLowerCase().contains("release")
+        }
+        if (releaseRequested) {
+            throw new GradleException(
+                "Release 构建缺少签名配置，已中止（不会回退到 debug 签名）。\n" +
+                "请设置以下环境变量后重试：\n" +
+                "  KEYSTORE_FILE      keystore 文件路径\n" +
+                "  KEYSTORE_PASSWORD  keystore 密码\n" +
+                "  KEY_ALIAS          密钥别名\n" +
+                "  KEY_PASSWORD       密钥密码\n" +
+                "本地调试请使用 assembleDebug。")
+        }
     }
 }
 

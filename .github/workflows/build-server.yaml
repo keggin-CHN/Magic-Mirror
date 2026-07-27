@@ -18,6 +18,10 @@ on:
       - ".github/workflows/build-server.yaml"
       - "!src-python/web_server.py"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   models:
     name: Download Model Files

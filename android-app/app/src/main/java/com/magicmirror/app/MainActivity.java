@@ -110,6 +110,19 @@ public class MainActivity extends AppCompatActivity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private boolean engineInitialized = false;
     private boolean isProcessing = false;
+    // Activity 已销毁标志：后台任务回调 UI 前检查，避免与 engine.release() 竞态
+    private volatile boolean destroyed = false;
+
+    /** 后台线程向 UI 投递回调的统一入口：Activity 已销毁/正在结束时丢弃 */
+    private void postToUi(Runnable action) {
+        if (destroyed)
+            return;
+        mainHandler.post(() -> {
+            if (destroyed || isFinishing())
+                return;
+            action.run();
+        });
+    }
 
     // 多人脸源条目
     private static class FaceSourceEntry {
@@ -687,7 +700,7 @@ public class MainActivity extends AppCompatActivity {
                 for (int i = 0; i < models.size(); i++) {
                     String name = models.get(i);
                     int fi = i;
-                    mainHandler.post(() -> setStatus(getString(R.string.model_download_progress, name, 0)));
+                    postToUi(() -> setStatus(getString(R.string.model_download_progress, name, 0)));
 
                     URL url = new URL(MODEL_BASE_URL + name);
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -723,7 +736,7 @@ public class MainActivity extends AppCompatActivity {
                                 lastPct = pct;
                                 lastPostMs = now;
                                 int overallPct = (int) ((fi * 100f + pct) / models.size());
-                                mainHandler.post(() -> {
+                                postToUi(() -> {
                                     setStatus(getString(R.string.model_download_progress, name, pct));
                                     progressBar.setProgress(overallPct);
                                 });
@@ -741,13 +754,13 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
 
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     setStatus(getString(R.string.model_download_done));
                     initEngine();
                 });
             } catch (Exception e) {
                 Log.e(TAG, "模型下载失败", e);
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     progressBar.setVisibility(View.GONE);
                     setStatus(getString(R.string.model_download_failed, e.getMessage()));
                     // 仍然尝试初始化
@@ -765,12 +778,12 @@ public class MainActivity extends AppCompatActivity {
         executor.execute(() -> {
             try {
                 engine.initialize(this, switchGpu.isChecked(), switchEnhancer.isChecked(),
-                        (stage, progress) -> mainHandler.post(() -> {
+                        (stage, progress) -> postToUi(() -> {
                             setStatus(stage);
                             progressBar.setProgress(progress);
                         }));
 
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     engineInitialized = true;
                     progressBar.setVisibility(View.GONE);
                     setStatus(getString(R.string.status_models_ready));
@@ -778,7 +791,7 @@ public class MainActivity extends AppCompatActivity {
                 });
             } catch (Exception e) {
                 Log.e(TAG, "引擎初始化失败", e);
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     progressBar.setVisibility(View.GONE);
                     setStatus(getString(R.string.status_models_failed, e.getMessage()));
                     Toast.makeText(this, R.string.model_check_assets, Toast.LENGTH_LONG).show();
@@ -836,7 +849,7 @@ public class MainActivity extends AppCompatActivity {
         executor.execute(() -> {
             try {
                 List<FaceDetector.DetectedFace> faces = engine.detectFaces(sourceBitmap);
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     detectedFaces = faces;
                     refreshImageFaceBoxes();
                     updateOverlayFaceBoxVisibility();
@@ -852,7 +865,7 @@ public class MainActivity extends AppCompatActivity {
                 });
             } catch (Exception e) {
                 Log.w(TAG, "自动检测失败: " + e.getMessage());
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     setStatus(getString(R.string.status_no_faces));
                     setProcessing(false);
                 });
@@ -941,7 +954,7 @@ public class MainActivity extends AppCompatActivity {
                 ret.setDataSource(this, selectedVideoUri);
                 Bitmap frame = ret.getFrameAtTime(videoKeyFrameMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST);
                 if (frame != null) {
-                    mainHandler.post(() -> ivKeyFrameThumb.setImageBitmap(frame));
+                    postToUi(() -> ivKeyFrameThumb.setImageBitmap(frame));
                 }
             } catch (Exception e) {
                 Log.w(TAG, "获取关键帧缩略图失败", e);
@@ -963,7 +976,7 @@ public class MainActivity extends AppCompatActivity {
             try {
                 FaceSwapEngine.VideoFaceDetectionResult result = engine.detectFaceBoxesInVideo(this, selectedVideoUri,
                         videoKeyFrameMs);
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     videoDetectedBoxes = result.regions;
                     videoFaceOverlay.setImageSize(result.frameWidth, result.frameHeight);
                     videoFaceOverlay.setFaceBoxes(result.regions);
@@ -976,7 +989,7 @@ public class MainActivity extends AppCompatActivity {
                 });
             } catch (Exception e) {
                 Log.e(TAG, "视频人脸检测失败", e);
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     setStatus(getString(R.string.video_swap_failed, e.getMessage()));
                     setProcessing(false);
                 });
@@ -1387,25 +1400,25 @@ public class MainActivity extends AppCompatActivity {
                 Bitmap result;
                 if (finalUseMultiSource) {
                     result = engine.swapFaceMultiSource(sourceBitmap, finalBindings, useEnhancer,
-                            (stage, progress) -> mainHandler.post(() -> {
+                            (stage, progress) -> postToUi(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
                             }));
                 } else if (finalUseRegionMode) {
                     result = engine.swapFaceInRegions(sourceBitmap, targetBitmap, finalSelectedRegions, useEnhancer,
-                            (stage, progress) -> mainHandler.post(() -> {
+                            (stage, progress) -> postToUi(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
                             }));
                 } else {
                     result = engine.swapFace(sourceBitmap, targetBitmap, useEnhancer, false,
-                            (stage, progress) -> mainHandler.post(() -> {
+                            (stage, progress) -> postToUi(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
                             }));
                 }
 
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     if (result != null) {
                         if (resultBitmap != null && !resultBitmap.isRecycled())
                             resultBitmap.recycle();
@@ -1429,7 +1442,7 @@ public class MainActivity extends AppCompatActivity {
                 });
             } catch (Exception e) {
                 Log.e(TAG, "换脸失败", e);
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     setStatus(getString(R.string.swap_failed, e.getMessage()));
                     setProcessing(false);
                     progressBar.setVisibility(View.GONE);
@@ -1477,20 +1490,20 @@ public class MainActivity extends AppCompatActivity {
                 if (finalUseMultiSource) {
                     vr = engine.processVideoMultiSource(
                             this, selectedVideoUri, finalBindings, useEnhancer, videoKeyFrameMs,
-                            (stage, progress) -> mainHandler.post(() -> {
+                            (stage, progress) -> postToUi(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
                             }));
                 } else {
                     vr = engine.processVideo(
                             this, selectedVideoUri, videoTargetBitmap, useEnhancer, multiMode, videoKeyFrameMs,
-                            (stage, progress) -> mainHandler.post(() -> {
+                            (stage, progress) -> postToUi(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
                             }));
                 }
 
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     if (vr != null && vr.outputPath != null) {
                         cardVideoResult.setVisibility(View.VISIBLE);
                         String resultInfo = getString(R.string.video_swap_done, vr.frameCount)
@@ -1512,7 +1525,7 @@ public class MainActivity extends AppCompatActivity {
                 });
             } catch (Exception e) {
                 Log.e(TAG, "视频换脸失败", e);
-                mainHandler.post(() -> {
+                postToUi(() -> {
                     setStatus(getString(R.string.video_swap_failed, e.getMessage()));
                     setProcessing(false);
                     progressBar.setVisibility(View.GONE);
@@ -1830,6 +1843,17 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        destroyed = true;
+        // 先停掉后台任务，等它结束后再释放引擎，避免推理中途 close OrtSession 导致崩溃
+        executor.shutdownNow();
+        try {
+            if (!executor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                Log.w(TAG, "后台任务 2s 内未结束，仍继续释放引擎（可能存在推理中断风险）");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            Log.w(TAG, "等待后台任务结束被中断，仍继续释放引擎");
+        }
         if (engine != null)
             engine.release();
         if (sourceBitmap != null && !sourceBitmap.isRecycled())
@@ -1848,6 +1872,5 @@ public class MainActivity extends AppCompatActivity {
             if (e.faceImage != null && !e.faceImage.isRecycled())
                 e.faceImage.recycle();
         }
-        executor.shutdown();
     }
 }

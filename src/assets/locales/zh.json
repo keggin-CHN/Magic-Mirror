@@ -4,6 +4,8 @@
   "*If the download is stuck or fails, please download and initialize manually. ": "*如果下载进度卡住或失败，请手动下载并初始化。",
   "View tutorial": "查看教程",
   "Starting... First load may take longer, please wait.": "启动中... 首次加载较慢，请耐心等待～",
+  "Failed to start the server. Please retry.": "服务启动失败，请重试。",
+  "Retry": "重试",
   "Face swapping... This may take a few seconds, please wait.": "换脸中... 这可能需要一些时间，请耐心等待",
   "Video swapping... This may take a while, please wait.": "视频换脸中... 这可能需要一些时间，请耐心等待",
   "Reload/Reset": "重载/重置",
