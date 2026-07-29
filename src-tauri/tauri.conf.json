@@ -38,7 +38,20 @@
         "enable": true,
         "scope": {
           "allow": [
-            "**"
+            "$HOME/**",
+            "$TEMP/**",
+            "$APPDATA/**"
+          ],
+          "deny": [
+            "$HOME/.ssh/**",
+            "$HOME/.gnupg/**",
+            "$HOME/.aws/**",
+            "$HOME/.config/**",
+            "$HOME/AppData/Roaming/Microsoft/**",
+            "$HOME/AppData/Local/Google/Chrome/User Data/**",
+            "$HOME/AppData/Local/Microsoft/Edge/User Data/**",
+            "$HOME/Library/Keychains/**",
+            "$HOME/Library/Application Support/Google/Chrome/**"
           ]
         }
       }

@@ -13,7 +13,7 @@ import {
   type Region,
   type VideoGpuProvider,
 } from "@/services/server";
-import { getFileExtension, isImageFile, isVideoFile } from "@/services/utils";
+import { getFileExtension, isFaceSourceFile, isImageFile, isVideoFile } from "@/services/utils";
 import {
   convertFileSrcSafe,
   exitAppSafe,
@@ -260,7 +260,7 @@ export function MirrorPage() {
         if (ext === ".heic" || ext === ".heif") {
           return false;
         }
-        return isImageFile(file.name);
+        return isFaceSourceFile(file.name);
       });
       if (!validFiles.length) {
         setNotice(t("Please use an image for your face photo."));
@@ -1254,7 +1254,7 @@ export function MirrorPage() {
     const additions = paths
       .filter((path: string) => {
         const ext = getFileExtension(path);
-        return isImageFile(path) && ext !== ".heic" && ext !== ".heif";
+        return isFaceSourceFile(path) && ext !== ".heic" && ext !== ".heif";
       })
       .map((path: string, idx: number) => ({
         id: `face-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,

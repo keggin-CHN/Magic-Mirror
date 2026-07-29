@@ -268,6 +268,7 @@ public class FaceSwapEngine {
             return swapFaceInRegionsMultiSource(src, bindings, cb);
         // 无区域：全局匹配
         List<FaceDetector.DetectedFace> allFaces = safeDetectFaces(src);
+        List<FaceDetector.DetectedFace> indexedFaces = new ArrayList<>(allFaces);
         Map<String, float[]> embs = extractEmbeddings(bindings);
         if (embs.isEmpty())
             throw new RuntimeException("无法提取任何人脸特征");
@@ -277,7 +278,16 @@ public class FaceSwapEngine {
             float[] emb = embs.get(b.sourceId);
             if (emb == null)
                 continue;
-            FaceDetector.DetectedFace matched = findBestFace(allFaces, result.getWidth(), result.getHeight());
+            FaceDetector.DetectedFace matched;
+            if (b.faceIndex >= 0) {
+                if (b.faceIndex >= indexedFaces.size()) {
+                    Log.w(TAG, "多人全局模式：faceIndex 越界，跳过 sourceId=" + b.sourceId + ", faceIndex=" + b.faceIndex);
+                    continue;
+                }
+                matched = indexedFaces.get(b.faceIndex);
+            } else {
+                matched = findBestFace(allFaces, result.getWidth(), result.getHeight());
+            }
             if (!isQualifiedForSwap(matched, result.getWidth(), result.getHeight(), MIN_SWAP_FACE_SCORE)) {
                 Log.w(TAG, "多人全局模式：未找到可用目标脸，跳过 sourceId=" + b.sourceId);
                 continue;

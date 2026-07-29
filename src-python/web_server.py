@@ -113,6 +113,12 @@ DIST_DIR = os.path.abspath(
 
 TOKEN_TTL_SECONDS = 7 * 24 * 3600
 AUTH_COOKIE_NAME = 'magic_mirror_token'
+AUTH_COOKIE_SECURE = os.environ.get('WEB_COOKIE_SECURE', '').strip().lower() in {
+    '1',
+    'true',
+    'yes',
+    'on',
+}
 PASSWORD_HASH_ITERATIONS = 600_000
 LOGIN_FAILURE_WINDOW_SECONDS = 15 * 60
 LOGIN_LOCKOUT_SECONDS = 60
@@ -304,6 +310,7 @@ def _set_auth_cookie(response_obj: Response, token: str) -> None:
         token,
         max_age=TOKEN_TTL_SECONDS,
         httponly=True,
+        secure=AUTH_COOKIE_SECURE,
         samesite='lax',
     )
 
@@ -812,6 +819,14 @@ def _cleanup_orphan_upload_files() -> None:
             for entry in UPLOADS.values()
             if entry.get('path')
         }
+    with RESULTS_LOCK:
+        for entry in RESULTS.values():
+            result_path = entry.get('path')
+            if isinstance(result_path, str) and result_path:
+                known_paths.add(_canonical_path(result_path))
+            for delete_path in entry.get('delete_paths') or []:
+                if isinstance(delete_path, str) and delete_path:
+                    known_paths.add(_canonical_path(delete_path))
     try:
         for name in os.listdir(UPLOADS_DIR):
             full = os.path.abspath(os.path.join(UPLOADS_DIR, name))

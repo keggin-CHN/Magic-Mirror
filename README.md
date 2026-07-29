@@ -97,8 +97,10 @@ Provider；检查失败时 Action 会直接失败，不再发布伪 GPU 包。
 
 ```bash
 docker build -t magic-mirror:latest .
-docker run -p 8023:8023 magic-mirror:latest            # 桌面后端
-docker run -p 8033:8033 -e WEB_PORT=8033 magic-mirror:latest python web_server.py  # Web 模式
+# Web 模式（默认，带密码鉴权），首次启动用 WEB_INITIAL_PASSWORD 初始化登录密码
+docker run -p 8033:8033 -e WEB_INITIAL_PASSWORD=changeme -v magic-mirror-data:/app/data/web magic-mirror:latest
+# 桌面后端（无鉴权！仅限本机使用，务必只绑定 127.0.0.1）
+docker run -p 127.0.0.1:8023:8023 -e MIRROR_HOST=0.0.0.0 magic-mirror:latest python server.py
 ```
 
 ### Makefile

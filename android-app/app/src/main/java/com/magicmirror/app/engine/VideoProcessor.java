@@ -3,6 +3,7 @@ package com.magicmirror.app.engine;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.media.MediaCodec;
@@ -77,8 +78,15 @@ public class VideoProcessor {
         int estFrames = info.estFrameCount;
         int rotation = getVideoRotation(ctx, uri);
 
+        // 解码帧未应用旋转，而 UI 检测/追踪（MediaMetadataRetriever.getFrameAtTime）
+        // 得到的是已旋转帧。这里在解码后立即旋转每一帧，使处理坐标系与检测一致，
+        // 并直接以旋转后的尺寸编码输出（不再依赖 orientation hint）。
+        boolean swapDims = rotation == 90 || rotation == 270;
+        int pw = swapDims ? vh : vw;
+        int ph = swapDims ? vw : vh;
+
         // 确保宽高为偶数（编码器要求）
-        int ew = (vw + 1) & ~1, eh = (vh + 1) & ~1;
+        int ew = (pw + 1) & ~1, eh = (ph + 1) & ~1;
 
         int queueSize = Math.max(5, nWorkers * 3);
         BlockingQueue<FrameItem> readQueue = new ArrayBlockingQueue<>(queueSize);
@@ -89,6 +97,7 @@ public class VideoProcessor {
         AtomicInteger processedCount = new AtomicInteger(0);
         AtomicInteger writtenCount = new AtomicInteger(0);
         AtomicInteger totalFrames = new AtomicInteger(0);
+        AtomicBoolean readerDone = new AtomicBoolean(false);
         int nextWriteIndex = 0;
 
         if (cb != null) cb.onProgress("开始处理视频...", 5);
@@ -151,6 +160,10 @@ public class VideoProcessor {
                             decoder.releaseOutputBuffer(outIdx, false);
 
                             if (frame != null) {
+                                // 应用容器旋转，使帧坐标系与 UI 检测（已旋转帧）一致
+                                if (rotation != 0) {
+                                    frame = rotateBitmap(frame, rotation);
+                                }
                                 readQueue.put(new FrameItem(frameIdx, frame, bufInfo.presentationTimeUs));
                                 frameIdx++;
                             }
@@ -167,8 +180,22 @@ public class VideoProcessor {
                 }
             } finally {
                 // 发送 nWorkers 个结束标记，确保每个 worker 都能收到（与桌面版一致）
+                readerDone.set(true);
+                synchronized (writeLock) {
+                    writeLock.notifyAll();
+                }
                 for (int i = 0; i < nWorkers; i++) {
-                    try { readQueue.put(FrameItem.end()); } catch (Exception ignored) {}
+                    while (!stopFlag.get()) {
+                        try {
+                            if (readQueue.offer(FrameItem.end(), 100, TimeUnit.MILLISECONDS)) {
+                                break;
+                            }
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            stopFlag.set(true);
+                            break;
+                        }
+                    }
                 }
                 if (decoder != null) { try { decoder.stop(); decoder.release(); } catch (Exception ignored) {} }
                 if (extractor != null) { try { extractor.release(); } catch (Exception ignored) {} }
@@ -196,12 +223,12 @@ public class VideoProcessor {
                 encoder.start();
 
                 muxer = new MediaMuxer(outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-                if (rotation != 0) {
-                    muxer.setOrientationHint(rotation);
-                }
+                // 注意：帧已在 reader 线程物理旋转，这里不再设置 orientation hint，
+                // 否则播放器会二次旋转。
 
                 MediaCodec.BufferInfo encInfo = new MediaCodec.BufferInfo();
                 boolean encodingDone = false;
+                boolean inputEosQueued = false;
                 NvConvertBuffers nvBuffers = new NvConvertBuffers();
 
                 while (!encodingDone && !stopFlag.get()) {
@@ -244,11 +271,14 @@ public class VideoProcessor {
                         // 检查是否所有帧都已处理完
                         int total = totalFrames.get();
                         int processed = processedCount.get();
-                        if (total > 0 && nextWrite >= total && processed >= total) {
-                            // 所有帧已写入且已处理完毕，发送 EOS
-                            int inIdx = encoder.dequeueInputBuffer(10000);
-                            if (inIdx >= 0) {
-                                encoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        if (readerDone.get() && nextWrite >= total && processed >= total) {
+                            if (!inputEosQueued) {
+                                // 所有帧已写入且已处理完毕（包括 0 有效帧），发送 EOS
+                                int inIdx = encoder.dequeueInputBuffer(10000);
+                                if (inIdx >= 0) {
+                                    encoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                                    inputEosQueued = true;
+                                }
                             }
                         } else {
                             // 等待帧到达
@@ -260,7 +290,7 @@ public class VideoProcessor {
                     }
 
                     // 从编码器取出编码数据
-                    encodingDone = drainEncoder(encoder, muxer, encInfo, muxerTrackIndexRef, muxerStartedRef, true);
+                    encodingDone = drainEncoder(encoder, muxer, encInfo, muxerTrackIndexRef, muxerStartedRef, !inputEosQueued);
                 }
             } catch (Exception e) {
                 if (!stopFlag.get()) {
@@ -322,15 +352,43 @@ public class VideoProcessor {
         for (Thread t : workers) t.start();
         writerThread.start();
 
-        // 等待完成
-        readerThread.join();
-        for (Thread t : workers) t.join();
-        writerThread.join();
+        // 等待完成。被中断（如 Activity 销毁时 shutdownNow）时必须先停掉
+        // 所有内部线程再返回，否则调用方随后 release 引擎会与仍在运行的
+        // ONNX 推理竞态导致 native 崩溃。
+        try {
+            readerThread.join();
+            for (Thread t : workers) t.join();
+            writerThread.join();
+        } catch (InterruptedException ie) {
+            stopFlag.set(true);
+            synchronized (writeLock) {
+                writeLock.notifyAll();
+            }
+            joinUninterruptibly(readerThread);
+            for (Thread t : workers) joinUninterruptibly(t);
+            joinUninterruptibly(writerThread);
+            Thread.currentThread().interrupt();
+            throw ie;
+        }
 
         if (error.get() != null) throw error.get();
         if (cb != null) cb.onProgress("视频处理完成", 100);
 
         return writtenCount.get();
+    }
+
+    /** 等待线程结束，忽略中断（保留中断标志），确保内部线程完全退出。 */
+    private static void joinUninterruptibly(Thread t) {
+        boolean interrupted = false;
+        while (true) {
+            try {
+                t.join();
+                break;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
     }
 
     // ========== 音频复制 ==========
@@ -360,16 +418,6 @@ public class VideoProcessor {
         int vidTrack = findVideoTrack(videoExtractor);
         videoExtractor.selectTrack(vidTrack);
         MediaFormat vidFormat = videoExtractor.getTrackFormat(vidTrack);
-        // 保留 process() 阶段写入的旋转信息（A4）
-        try {
-            if (vidFormat.containsKey(MediaFormat.KEY_ROTATION)) {
-                int rot = vidFormat.getInteger(MediaFormat.KEY_ROTATION);
-                if (rot != 0) {
-                    muxer.setOrientationHint(rot);
-                }
-            }
-        } catch (Exception ignored) {
-        }
         int muxVideoTrack = muxer.addTrack(vidFormat);
 
         // 添加音频轨道
@@ -433,6 +481,9 @@ public class VideoProcessor {
                 }
             } else if (outIdx >= 0) {
                 ByteBuffer outBuf = encoder.getOutputBuffer(outIdx);
+                if ((encInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                    encInfo.size = 0;
+                }
                 if (muxerStartedRef[0] && encInfo.size > 0) {
                     outBuf.position(encInfo.offset);
                     outBuf.limit(encInfo.offset + encInfo.size);
@@ -450,6 +501,16 @@ public class VideoProcessor {
                 return false;
             }
         }
+    }
+
+    /** 按容器旋转角度物理旋转 Bitmap，回收原图。 */
+    static Bitmap rotateBitmap(Bitmap src, int degrees) {
+        if (degrees == 0) return src;
+        Matrix m = new Matrix();
+        m.postRotate(degrees);
+        Bitmap rotated = Bitmap.createBitmap(src, 0, 0, src.getWidth(), src.getHeight(), m, true);
+        if (rotated != src) src.recycle();
+        return rotated;
     }
 
     /**

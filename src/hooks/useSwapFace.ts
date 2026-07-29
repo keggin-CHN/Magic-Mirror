@@ -85,10 +85,12 @@ export function useSwapFace() {
       const taskId = createTaskId();
       kSwapFaceRefs.activeTaskId = taskId;
       kSwapFaceRefs.cancel = async () => {
-        await client.cancelTask(taskId);
         if (isCurrentTask(taskId)) {
+          kSwapFaceRefs.activeTaskId = null;
+          kSwapFaceRefs.cancel = undefined;
           setIsSwapping(false);
         }
+        await client.cancelTask(taskId);
       };
 
       try {

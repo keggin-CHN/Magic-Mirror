@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useRef } from "react";
 import { useXState, XSta } from "xsta";
 import { Server, ServerStatus } from "../services/server";
 import { sleep } from "../services/utils";
@@ -74,10 +74,6 @@ export function useServer() {
     setStatus("idle");
     Server.kill();
   }, []);
-
-  useEffect(() => {
-    return () => kill();
-  }, [kill]);
 
   return { status, launch, kill };
 }

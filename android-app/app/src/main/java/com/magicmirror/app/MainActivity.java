@@ -815,6 +815,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadSourceImage(Uri uri) {
+        if (isProcessing) {
+            Toast.makeText(this, getString(R.string.status_processing), Toast.LENGTH_SHORT).show();
+            return;
+        }
         try {
             if (sourceBitmap != null && !sourceBitmap.isRecycled())
                 sourceBitmap.recycle();
@@ -846,9 +850,11 @@ public class MainActivity extends AppCompatActivity {
             return;
         setProcessing(true);
         setStatus(getString(R.string.status_detecting_faces));
+        final Bitmap taskSourceBitmap = sourceBitmap;
+        final FaceSwapEngine taskEngine = engine;
         executor.execute(() -> {
             try {
-                List<FaceDetector.DetectedFace> faces = engine.detectFaces(sourceBitmap);
+                List<FaceDetector.DetectedFace> faces = taskEngine.detectFaces(taskSourceBitmap);
                 postToUi(() -> {
                     detectedFaces = faces;
                     refreshImageFaceBoxes();
@@ -874,6 +880,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadTargetImage(Uri uri) {
+        if (isProcessing) {
+            Toast.makeText(this, getString(R.string.status_processing), Toast.LENGTH_SHORT).show();
+            return;
+        }
         try {
             if (targetBitmap != null && !targetBitmap.isRecycled())
                 targetBitmap.recycle();
@@ -947,12 +957,14 @@ public class MainActivity extends AppCompatActivity {
     private void updateKeyFrameThumb() {
         if (selectedVideoUri == null)
             return;
+        final Uri taskVideoUri = selectedVideoUri;
+        final long taskKeyFrameMs = videoKeyFrameMs;
         executor.execute(() -> {
             MediaMetadataRetriever ret = null;
             try {
                 ret = new MediaMetadataRetriever();
-                ret.setDataSource(this, selectedVideoUri);
-                Bitmap frame = ret.getFrameAtTime(videoKeyFrameMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST);
+                ret.setDataSource(this, taskVideoUri);
+                Bitmap frame = ret.getFrameAtTime(taskKeyFrameMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST);
                 if (frame != null) {
                     postToUi(() -> ivKeyFrameThumb.setImageBitmap(frame));
                 }
@@ -972,10 +984,13 @@ public class MainActivity extends AppCompatActivity {
         setProcessing(true);
         setStatus(getString(R.string.status_detecting_video_faces_at, videoKeyFrameMs / 1000.0));
 
+        final Uri taskVideoUri = selectedVideoUri;
+        final long taskKeyFrameMs = videoKeyFrameMs;
+        final FaceSwapEngine taskEngine = engine;
         executor.execute(() -> {
             try {
-                FaceSwapEngine.VideoFaceDetectionResult result = engine.detectFaceBoxesInVideo(this, selectedVideoUri,
-                        videoKeyFrameMs);
+                FaceSwapEngine.VideoFaceDetectionResult result = taskEngine.detectFaceBoxesInVideo(this, taskVideoUri,
+                        taskKeyFrameMs);
                 postToUi(() -> {
                     videoDetectedBoxes = result.regions;
                     videoFaceOverlay.setImageSize(result.frameWidth, result.frameHeight);
@@ -998,6 +1013,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadVideoTarget(Uri uri) {
+        if (isProcessing) {
+            Toast.makeText(this, getString(R.string.status_processing), Toast.LENGTH_SHORT).show();
+            return;
+        }
         try {
             if (videoTargetBitmap != null && !videoTargetBitmap.isRecycled())
                 videoTargetBitmap.recycle();
@@ -1395,23 +1414,26 @@ public class MainActivity extends AppCompatActivity {
         final boolean finalUseMultiSource = useMultiSource;
         final boolean finalUseRegionMode = useRegionMode;
         final int finalRegionCount = regionCount;
+        final Bitmap taskSourceBitmap = sourceBitmap;
+        final Bitmap taskTargetBitmap = targetBitmap;
+        final FaceSwapEngine taskEngine = engine;
         executor.execute(() -> {
             try {
                 Bitmap result;
                 if (finalUseMultiSource) {
-                    result = engine.swapFaceMultiSource(sourceBitmap, finalBindings, useEnhancer,
+                    result = taskEngine.swapFaceMultiSource(taskSourceBitmap, finalBindings, useEnhancer,
                             (stage, progress) -> postToUi(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
                             }));
                 } else if (finalUseRegionMode) {
-                    result = engine.swapFaceInRegions(sourceBitmap, targetBitmap, finalSelectedRegions, useEnhancer,
+                    result = taskEngine.swapFaceInRegions(taskSourceBitmap, taskTargetBitmap, finalSelectedRegions, useEnhancer,
                             (stage, progress) -> postToUi(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
                             }));
                 } else {
-                    result = engine.swapFace(sourceBitmap, targetBitmap, useEnhancer, false,
+                    result = taskEngine.swapFace(taskSourceBitmap, taskTargetBitmap, useEnhancer, false,
                             (stage, progress) -> postToUi(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
@@ -1484,19 +1506,22 @@ public class MainActivity extends AppCompatActivity {
 
         final List<FaceSwapEngine.FaceSourceBinding> finalBindings = bindings;
         final boolean finalUseMultiSource = useMultiSource;
+        final Uri taskVideoUri = selectedVideoUri;
+        final Bitmap taskVideoTargetBitmap = videoTargetBitmap;
+        final FaceSwapEngine taskEngine = engine;
         executor.execute(() -> {
             try {
                 FaceSwapEngine.VideoResult vr;
                 if (finalUseMultiSource) {
-                    vr = engine.processVideoMultiSource(
-                            this, selectedVideoUri, finalBindings, useEnhancer, videoKeyFrameMs,
+                    vr = taskEngine.processVideoMultiSource(
+                            this, taskVideoUri, finalBindings, useEnhancer, videoKeyFrameMs,
                             (stage, progress) -> postToUi(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
                             }));
                 } else {
-                    vr = engine.processVideo(
-                            this, selectedVideoUri, videoTargetBitmap, useEnhancer, multiMode, videoKeyFrameMs,
+                    vr = taskEngine.processVideo(
+                            this, taskVideoUri, taskVideoTargetBitmap, useEnhancer, multiMode, videoKeyFrameMs,
                             (stage, progress) -> postToUi(() -> {
                                 setStatus(stage);
                                 progressBar.setProgress(progress);
@@ -1840,37 +1865,62 @@ public class MainActivity extends AppCompatActivity {
         return scaled;
     }
 
+    private static void recycleBitmapSafe(Bitmap bitmap) {
+        if (bitmap != null && !bitmap.isRecycled()) {
+            bitmap.recycle();
+        }
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
         destroyed = true;
-        // 先停掉后台任务，等它结束后再释放引擎，避免推理中途 close OrtSession 导致崩溃
+        // 先停掉后台任务，等它结束后再释放引擎，避免推理中途 close OrtSession 导致崩溃。
+        // 等待与释放放到后台线程执行，避免阻塞主线程导致 ANR。
         executor.shutdownNow();
-        try {
-            if (!executor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)) {
-                Log.w(TAG, "后台任务 2s 内未结束，仍继续释放引擎（可能存在推理中断风险）");
+        final FaceSwapEngine engineToRelease = engine;
+        final Bitmap sourceToRecycle = sourceBitmap;
+        final Bitmap targetToRecycle = targetBitmap;
+        final Bitmap resultToRecycle = resultBitmap;
+        final Bitmap videoTargetToRecycle = videoTargetBitmap;
+        final java.util.List<FaceSourceEntry> faceSourcesToRecycle = new java.util.ArrayList<>(faceSourceEntries);
+        final java.util.List<FaceSourceEntry> videoFaceSourcesToRecycle = new java.util.ArrayList<>(videoFaceSourceEntries);
+        sourceBitmap = null;
+        targetBitmap = null;
+        resultBitmap = null;
+        videoTargetBitmap = null;
+        Thread releaseThread = new Thread(() -> {
+            boolean terminated = false;
+            try {
+                // 中断后 VideoProcessor 会等当前帧推理完成再退出，给足时间
+                terminated = executor.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            Log.w(TAG, "等待后台任务结束被中断，仍继续释放引擎");
-        }
-        if (engine != null)
-            engine.release();
-        if (sourceBitmap != null && !sourceBitmap.isRecycled())
-            sourceBitmap.recycle();
-        if (targetBitmap != null && !targetBitmap.isRecycled())
-            targetBitmap.recycle();
-        if (resultBitmap != null && !resultBitmap.isRecycled())
-            resultBitmap.recycle();
-        if (videoTargetBitmap != null && !videoTargetBitmap.isRecycled())
-            videoTargetBitmap.recycle();
-        for (FaceSourceEntry e : faceSourceEntries) {
-            if (e.faceImage != null && !e.faceImage.isRecycled())
-                e.faceImage.recycle();
-        }
-        for (FaceSourceEntry e : videoFaceSourceEntries) {
-            if (e.faceImage != null && !e.faceImage.isRecycled())
-                e.faceImage.recycle();
-        }
+            if (terminated) {
+                if (engineToRelease != null) {
+                    engineToRelease.release();
+                    if (engine == engineToRelease) {
+                        engine = null;
+                    }
+                }
+                recycleBitmapSafe(sourceToRecycle);
+                recycleBitmapSafe(targetToRecycle);
+                recycleBitmapSafe(resultToRecycle);
+                recycleBitmapSafe(videoTargetToRecycle);
+                for (FaceSourceEntry e : faceSourcesToRecycle) {
+                    recycleBitmapSafe(e.faceImage);
+                }
+                for (FaceSourceEntry e : videoFaceSourcesToRecycle) {
+                    recycleBitmapSafe(e.faceImage);
+                }
+            } else if (!terminated) {
+                // 后台任务仍在运行，不能 release 或 recycle 位图：会与运行中的
+                // ONNX 推理/Bitmap 访问竞态导致 native 崩溃。进程退出时资源由系统回收。
+                Log.w(TAG, "后台任务未在 30s 内结束，跳过引擎与位图释放以避免崩溃");
+            }
+        }, "engine-release");
+        releaseThread.setDaemon(true);
+        releaseThread.start();
     }
 }

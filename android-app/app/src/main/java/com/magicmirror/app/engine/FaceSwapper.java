@@ -671,9 +671,9 @@ public class FaceSwapper {
         Bitmap swappedFace = decodeSwapOutput(output, stats);
         if (swappedFace == null) {
             Log.w(TAG, "SWAP_SKIPPED_INVALID_OUTPUT: decodeSwapOutput returned null, skip paste-back");
-            Log.w(TAG, "SWAP_NOOP_FALLBACK: return original source image without paste-back");
+            Log.w(TAG, "SWAP_NOOP_FALLBACK: return a copy of source image without paste-back");
             alignedTarget.recycle();
-            return sourceImage;
+            return sourceImage.copy(Bitmap.Config.ARGB_8888, true);
         }
 
         // 5. 颜色校正 + 贴回原图

@@ -140,10 +140,13 @@ class PyAVWriter:
         normalized_fps = Fraction(float(fps or 25.0)).limit_denominator(65535)
         if normalized_fps <= 0:
             normalized_fps = Fraction(25)
+        # libx264 + yuv420p 要求宽高为偶数，奇数分辨率向下取偶
+        self._width = max(int(size[0]) & ~1, 2)
+        self._height = max(int(size[1]) & ~1, 2)
         self.container = av.open(path, mode='w')
         self.stream = self.container.add_stream('h264', rate=normalized_fps)
-        self.stream.width = int(size[0])
-        self.stream.height = int(size[1])
+        self.stream.width = self._width
+        self.stream.height = self._height
         self.stream.pix_fmt = 'yuv420p'
         self.stream.options = {'preset': 'fast', 'crf': '18'}
 
@@ -151,6 +154,8 @@ class PyAVWriter:
         return self.container is not None
 
     def write(self, frame):
+        if frame.shape[1] != self._width or frame.shape[0] != self._height:
+            frame = cv2.resize(frame, (self._width, self._height))
         av_frame = av.VideoFrame.from_ndarray(frame, format='bgr24')
         for packet in self.stream.encode(av_frame):
             self.container.mux(packet)
@@ -1297,21 +1302,38 @@ def _swap_face(input_path, face_path):
 def _get_one_face(face_path: str):
     """Detect and return the first face in an image or load from json."""
     if face_path.endswith('.json'):
-        with open(face_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        try:
+            with open(face_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            embedding = np.asarray(data.get('embedding'), dtype=np.float32)
+            if embedding.ndim != 1 or embedding.size == 0 or not np.all(np.isfinite(embedding)):
+                raise ValueError('invalid embedding')
+            bbox = np.asarray(data.get('bbox', [0, 0, 0, 0]), dtype=np.float32)
+            if bbox.shape != (4,) or not np.all(np.isfinite(bbox)):
+                raise ValueError('invalid bbox')
+            kps = None
+            if data.get('kps') is not None:
+                kps = np.asarray(data.get('kps'), dtype=np.float32)
+                if kps.shape != (5, 2) or not np.all(np.isfinite(kps)):
+                    raise ValueError('invalid kps')
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise RuntimeError('invalid-face-json') from exc
 
         class FaceMock:
             pass
         face = FaceMock()
-        face.bbox = np.array(data['bbox'], dtype=np.float32) if 'bbox' in data else np.zeros(4, dtype=np.float32)
-        face.kps = np.array(data['kps'], dtype=np.float32) if 'kps' in data else None
+        face.bbox = bbox
+        face.kps = kps
         face.det_score = data.get('det_score', 1.0)
         face.score = face.det_score
         face.bounding_box = face.bbox
         face.landmark_5 = face.kps
-        face.embedding = np.array(data['embedding'], dtype=np.float32)
+        face.embedding = embedding
         if 'normed_embedding' in data:
-            face.normed_embedding = np.array(data['normed_embedding'], dtype=np.float32)
+            normed_embedding = np.asarray(data['normed_embedding'], dtype=np.float32)
+            if normed_embedding.shape != embedding.shape or not np.all(np.isfinite(normed_embedding)):
+                raise RuntimeError('invalid-face-json')
+            face.normed_embedding = normed_embedding
         else:
             norm = np.linalg.norm(face.embedding)
             face.normed_embedding = face.embedding / norm if norm > 0 else face.embedding
@@ -1475,25 +1497,25 @@ def _get_face_with_retry(tf_instance, tf_lock, image, low_score=0.25):
     if face is not None:
         return face
 
-    # 降低阈值重试
-    original_score = tf_instance.config.face_detector_score
-    if original_score <= low_score:
-        return None  # 已经足够低了
-    try:
-        _debug_log(
-            f'[RETRY] 未检测到人脸，降低阈值从 {original_score} 到 {low_score} 重试'
-        )
-        with tf_lock:
+    # 降低阈值重试。配置读写与检测必须在同一把锁内，避免并发任务
+    # 读到其他线程的临时低阈值后误判为原始配置。
+    with tf_lock:
+        original_score = tf_instance.config.face_detector_score
+        if original_score <= low_score:
+            return None  # 已经足够低了
+        try:
+            _debug_log(
+                f'[RETRY] 未检测到人脸，降低阈值从 {original_score} 到 {low_score} 重试'
+            )
             tf_instance.config.face_detector_score = low_score
             face = tf_instance.get_one_face(image)
+        except Exception:
+            return None
+        finally:
             tf_instance.config.face_detector_score = original_score
-        if face is not None:
-            _debug_log('[RETRY] 低阈值重试成功，检测到人脸')
-        return face
-    except Exception:
-        with tf_lock:
-            tf_instance.config.face_detector_score = original_score
-        return None
+    if face is not None:
+        _debug_log('[RETRY] 低阈值重试成功，检测到人脸')
+    return face
 
 
 @contextmanager

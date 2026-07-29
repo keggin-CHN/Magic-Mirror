@@ -124,11 +124,8 @@ class _Server {
         return await invoke<boolean>("file_exists", { path: markerPath });
       }
       if (osType === "macos") {
-        const output = await Command.create("chmod", [
-          "755",
-          binaryPath,
-        ]).execute();
-        return output.code === 0;
+        await invoke("chmod_server_binary", { path: binaryPath });
+        return true;
       }
       return true;
     } catch (error) {

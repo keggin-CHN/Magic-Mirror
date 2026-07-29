@@ -30,7 +30,7 @@ export async function fetchWithTimeout(
 }
 
 const kVideoExtensions = [".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"];
-const kImageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".json"];
+const kImageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"];
 
 export function getFileExtension(filePath: string) {
   const index = filePath.lastIndexOf(".");
@@ -48,4 +48,9 @@ export function isVideoFile(filePath: string) {
 export function isImageFile(filePath: string) {
   const ext = getFileExtension(filePath);
   return kImageExtensions.includes(ext);
+}
+
+/** 人脸源支持图片以及包含人脸 embedding 的 .json 特征文件 */
+export function isFaceSourceFile(filePath: string) {
+  return isImageFile(filePath) || getFileExtension(filePath) === ".json";
 }

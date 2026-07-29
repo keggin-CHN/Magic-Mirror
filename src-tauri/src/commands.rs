@@ -3,6 +3,36 @@ use tauri::AppHandle;
 
 use crate::utils::{download_file, unzip_file};
 
+fn magic_mirror_root_dir() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .ok_or_else(|| "home-dir-not-found".to_string())?;
+    Ok(PathBuf::from(home).join("MagicMirror"))
+}
+
+fn ensure_target_is_magic_mirror_dir(target_dir: &str) -> Result<PathBuf, String> {
+    let target = PathBuf::from(target_dir);
+    let expected = magic_mirror_root_dir()?;
+    if target != expected {
+        return Err("invalid-target-dir".to_string());
+    }
+    Ok(target)
+}
+
+fn ensure_server_download_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| "invalid-download-url".to_string())?;
+    let host = parsed.host_str().unwrap_or_default();
+    let path = parsed.path();
+    if parsed.scheme() != "https"
+        || host != "github.com"
+        || !path.starts_with("/keggin-CHN/Magic-Mirror/releases/download/server-v")
+        || !path.ends_with(".zip")
+    {
+        return Err("download-url-not-allowed".to_string());
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -191,11 +221,34 @@ pub fn file_exists(path: String) -> bool {
 }
 
 #[tauri::command]
+pub fn chmod_server_binary(path: String) -> Result<(), String> {
+    let expected = magic_mirror_root_dir()?.join("server.bin");
+    let target = PathBuf::from(&path);
+    if target != expected {
+        return Err("invalid-server-binary-path".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&target)
+            .map_err(|e| format!("metadata-failed: {}", e))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&target, perms)
+            .map_err(|e| format!("chmod-failed: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn download_and_unzip(
     app: AppHandle,
     url: String,
     target_dir: String,
 ) -> Result<(), String> {
+    ensure_server_download_url(&url)?;
+    let target_dir = ensure_target_is_magic_mirror_dir(&target_dir)?;
+    let target_dir = target_dir.to_string_lossy().to_string();
     let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
 
     let temp_path = download_file(&app, &url, &temp_dir).await?;
@@ -217,7 +270,7 @@ pub async fn download_and_unzip(
 pub fn repair_server_runtime(target_dir: String) -> Result<Vec<String>, String> {
     #[cfg(target_os = "windows")]
     {
-        let target = PathBuf::from(target_dir);
+        let target = ensure_target_is_magic_mirror_dir(&target_dir)?;
         if !target.exists() {
             return Ok(vec![]);
         }

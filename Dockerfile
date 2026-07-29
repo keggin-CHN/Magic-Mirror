@@ -28,14 +28,18 @@ RUN useradd --create-home --shell /usr/sbin/nologin appuser \
 
 USER appuser
 
-EXPOSE 8023
+EXPOSE 8033
 
-ENV MIRROR_HOST=0.0.0.0
-ENV MIRROR_PORT=8023
+ENV WEB_HOST=0.0.0.0
+ENV WEB_PORT=8033
 ENV WEB_DATA_DIR=/app/data/web
 ENV WEB_DIST_DIR=/app/dist-web
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD wget -q -O /dev/null http://127.0.0.1:8023/status || exit 1
+    CMD wget -q -O /dev/null http://127.0.0.1:8033/api/status || exit 1
 
-CMD ["python", "server.py"]
+# Default to the authenticated web server. The desktop API (server.py) has no
+# authentication and must NOT be exposed to a network; if you really need it,
+# run it explicitly and only publish the port on 127.0.0.1.
+# Set WEB_INITIAL_PASSWORD to initialize the login password on first start.
+CMD ["sh", "-c", "if [ -n \"$WEB_INITIAL_PASSWORD\" ]; then python web_server.py --init-config; fi; exec python web_server.py"]
