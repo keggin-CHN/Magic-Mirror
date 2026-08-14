@@ -219,11 +219,9 @@ jobs:
           # legacy name the desktop client downloads), Windows CUDA (models
           # kept separate since the archive must stay under GitHub's 2 GiB
           # per-asset limit), and Linux x86_64 / aarch64 CPU builds.
-          pattern: |
-            server_windows_x86_64_directml
-            server_windows_x86_64_cuda
-            server_linux_x86_64_cpu
-            server_linux_aarch64_cpu
+          # Note: keep this a single-line glob; multiline patterns have been
+          # observed to match zero artifacts in download-artifact@v4.
+          pattern: server_*
           path: dist
           merge-multiple: true
       - name: Align asset names with client download template
