@@ -129,3 +129,37 @@ jobs:
           name: web_debian_ubuntu_x86_64
           path: dist/*.tar.gz
           if-no-files-found: error
+
+  release:
+    name: Release
+    if: github.event_name == 'workflow_dispatch'
+    needs: [build-web]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download web bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web_debian_ubuntu_x86_64
+          path: dist
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Release Web v${{ steps.version.outputs.version }}
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: web-v${{ steps.version.outputs.version }}
+          name: MagicMirror Web v${{ steps.version.outputs.version }}
+          body: MagicMirror Web (Debian/Ubuntu) v${{ steps.version.outputs.version }}
+          draft: true
+          prerelease: false
+          makeLatest: false
+          removeArtifacts: true
+          artifacts: dist/*.tar.gz
