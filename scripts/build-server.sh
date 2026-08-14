@@ -48,6 +48,36 @@ for file in check_gpu_support.bat check_gpu_support.py; do
   fi
 done
 
+log "Bundling static ffmpeg (for audio track muxing)..."
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64) FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" ;;
+  aarch64 | arm64) FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz" ;;
+  *)
+    echo "[ERROR] Unsupported architecture for static ffmpeg: $ARCH" >&2
+    exit 1
+    ;;
+esac
+if [ ! -x "$DIST_DIR/ffmpeg" ]; then
+  FFMPEG_TARBALL="${OUT_DIR}/ffmpeg-static.tar.xz"
+  curl -fL --retry 3 --retry-delay 10 -o "$FFMPEG_TARBALL" "$FFMPEG_URL"
+  tar -xJf "$FFMPEG_TARBALL" -C "$OUT_DIR"
+  FFMPEG_BIN="$(find "$OUT_DIR" -maxdepth 2 -name ffmpeg -type f | head -n 1)"
+  [ -n "$FFMPEG_BIN" ] || die "ffmpeg binary not found in downloaded archive"
+  cp "$FFMPEG_BIN" "$DIST_DIR/ffmpeg"
+  chmod +x "$DIST_DIR/ffmpeg"
+  FFPROBE_BIN="$(dirname "$FFMPEG_BIN")/ffprobe"
+  if [ -f "$FFPROBE_BIN" ]; then
+    cp "$FFPROBE_BIN" "$DIST_DIR/ffprobe"
+    chmod +x "$DIST_DIR/ffprobe"
+  fi
+  rm -f "$FFMPEG_TARBALL"
+  rm -rf "${OUT_DIR}"/ffmpeg-*-static
+  log "Bundled ffmpeg for $ARCH"
+else
+  log "ffmpeg already present in $DIST_DIR"
+fi
+
 log "Packaging server archive..."
 rm -f "$ARCHIVE_PATH"
 (

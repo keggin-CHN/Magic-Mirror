@@ -94,6 +94,36 @@ if (!(Test-Path -LiteralPath $dist -PathType Container)) {
     throw "Standalone distribution not found: $dist"
 }
 
+# Bundle a static ffmpeg so audio track muxing works out of the box: the
+# video swap pipeline reuses the source audio track via the ffmpeg CLI
+# (see _mux_audio_or_raise in src-python/magic/face.py).
+$ffmpegExePath = Join-Path $dist "ffmpeg.exe"
+if (!(Test-Path -LiteralPath $ffmpegExePath)) {
+    Write-Host "Downloading static ffmpeg (gyan.dev essentials)..."
+    $ffmpegZip = Join-Path $env:TEMP "ffmpeg-release-essentials.zip"
+    $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+    Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip
+    $ffmpegExtract = Join-Path $env:TEMP "ffmpeg-essentials"
+    if (Test-Path -LiteralPath $ffmpegExtract) {
+        Remove-Item -LiteralPath $ffmpegExtract -Recurse -Force
+    }
+    Expand-Archive -LiteralPath $ffmpegZip -DestinationPath $ffmpegExtract -Force
+    Remove-Item -LiteralPath $ffmpegZip -Force
+    $ffmpegBin = Get-ChildItem -Path $ffmpegExtract -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+    if (!$ffmpegBin) {
+        throw "ffmpeg.exe not found in downloaded archive"
+    }
+    Copy-Item -LiteralPath $ffmpegBin.FullName -Destination $ffmpegExePath -Force
+    $ffprobeBin = Get-ChildItem -Path $ffmpegExtract -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+    if ($ffprobeBin) {
+        Copy-Item -LiteralPath $ffprobeBin.FullName -Destination (Join-Path $dist "ffprobe.exe") -Force
+    }
+    Remove-Item -LiteralPath $ffmpegExtract -Recurse -Force
+    Write-Host "Bundled ffmpeg.exe into $dist"
+} else {
+    Write-Host "ffmpeg.exe already present in $dist"
+}
+
 # ONNX Runtime and OpenCV wheels are built with the MSVC runtime.
 $sys32 = Join-Path $env:WINDIR "System32"
 $crtDlls = @(

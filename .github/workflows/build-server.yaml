@@ -5,6 +5,7 @@ on:
     paths:
       - "src-python/**"
       - "scripts/build-windows-server.ps1"
+      - "scripts/build-server.sh"
       - "scripts/install-windows-ort.ps1"
       - "scripts/verify-onnxruntime.py"
       - ".github/workflows/build-server.yaml"
@@ -13,6 +14,7 @@ on:
     paths:
       - "src-python/**"
       - "scripts/build-windows-server.ps1"
+      - "scripts/build-server.sh"
       - "scripts/install-windows-ort.ps1"
       - "scripts/verify-onnxruntime.py"
       - ".github/workflows/build-server.yaml"

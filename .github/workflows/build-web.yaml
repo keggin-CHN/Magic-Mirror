@@ -112,6 +112,21 @@ jobs:
           test -d out-web/web_server.dist
           rm -rf web_server.dist
           cp -R out-web/web_server.dist web_server.dist
+      - name: Bundle static ffmpeg
+        run: |
+          # Audio track muxing in the video swap pipeline needs the ffmpeg CLI.
+          curl -fL --retry 3 --retry-delay 10 -o /tmp/ffmpeg-static.tar.xz \
+            https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+          tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
+          FFMPEG_BIN="$(find /tmp -maxdepth 2 -name ffmpeg -type f | head -n 1)"
+          test -n "$FFMPEG_BIN"
+          cp "$FFMPEG_BIN" web_server.dist/ffmpeg
+          chmod +x web_server.dist/ffmpeg
+          FFPROBE_BIN="$(dirname "$FFMPEG_BIN")/ffprobe"
+          if [ -f "$FFPROBE_BIN" ]; then
+            cp "$FFPROBE_BIN" web_server.dist/ffprobe
+            chmod +x web_server.dist/ffprobe
+          fi
       - name: Package web bundle
         run: |
           VERSION=$(node -p "require('./package.json').version")
