@@ -41,10 +41,17 @@ $nuitkaArgs = @(
     "--include-package=multipart",
     "--include-package=av",
     "--include-package-data=onnx",
-    "--include-data-files=src-python/models/*.onnx=models/",
     "--output-dir=$OutputDir",
     "src-python/server.py"
 )
+
+# The self-contained CUDA archive bundles CUDA/cuDNN runtime DLLs and would
+# exceed GitHub Release's 2 GiB per-asset limit if models were also embedded.
+# CUDA users fetch models separately (the desktop client auto-downloads the
+# models archive from the models-v* release when they are missing).
+if ($Runtime -ne "cuda") {
+    $nuitkaArgs += @("--include-data-files=src-python/models/*.onnx=models/")
+}
 
 # Nuitka 2.8.x/4.1.x can trip an internal timing assertion while optimizing
 # large standalone builds. Patch only that compiler timing assertion and run

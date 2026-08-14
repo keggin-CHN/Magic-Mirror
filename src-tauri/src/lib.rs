@@ -1,7 +1,10 @@
 mod commands;
 mod utils;
 
-use commands::{chmod_server_binary, download_and_unzip, file_exists, repair_server_runtime};
+use commands::{
+    chmod_server_binary, download_and_unzip, download_models_and_unzip, file_exists,
+    repair_server_runtime,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,6 +17,7 @@ pub fn run() {
             file_exists,
             chmod_server_binary,
             download_and_unzip,
+            download_models_and_unzip,
             repair_server_runtime
         ])
         .run(tauri::generate_context!())

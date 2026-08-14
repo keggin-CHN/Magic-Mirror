@@ -11,6 +11,15 @@ import {
 
 // Keep this in sync with src-python/pyproject.toml and the server release tag.
 const SERVER_PACKAGE_VERSION = "2.0.0";
+// Keep in sync with the models-v* release tag. The CUDA server archive keeps
+// models separate to stay under GitHub's 2 GiB per-asset limit.
+const MODELS_PACKAGE_VERSION = "1.0.0";
+const MODEL_FILES = [
+  "scrfd_2.5g.onnx",
+  "arcface_w600k_r50.onnx",
+  "inswapper_128_fp16.onnx",
+  "gfpgan_1.4.onnx",
+];
 
 export type ServerStatus = "idle" | "launching" | "running";
 
@@ -133,6 +142,29 @@ class _Server {
     }
   }
 
+  async ensureModels() {
+    const rootDir = await this.rootDir();
+    const modelsDir = await join(rootDir, "models");
+    const missing = [];
+    for (const name of MODEL_FILES) {
+      const modelPath = await join(modelsDir, name);
+      const exists = await invoke<boolean>("file_exists", { path: modelPath });
+      if (!exists) {
+        missing.push(name);
+      }
+    }
+    if (missing.length === 0) {
+      return;
+    }
+    console.warn(
+      `[Server] 缺少模型文件 (${missing.join(", ")})，从 models release 补下载`
+    );
+    await invoke("download_models_and_unzip", {
+      url: `https://github.com/keggin-CHN/Magic-Mirror/releases/download/models-${MODELS_PACKAGE_VERSION}/models.zip`,
+      targetDir: rootDir,
+    });
+  }
+
   async download() {
     if (await this.isDownloaded()) {
       return true;
@@ -144,6 +176,7 @@ class _Server {
     if (!(await this.isDownloaded())) {
       throw Error("Unknown error");
     }
+    await this.ensureModels();
     return true;
   }
 

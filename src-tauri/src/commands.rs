@@ -20,12 +20,20 @@ fn ensure_target_is_magic_mirror_dir(target_dir: &str) -> Result<PathBuf, String
 }
 
 fn ensure_server_download_url(url: &str) -> Result<(), String> {
+    ensure_release_download_url(url, "/keggin-CHN/Magic-Mirror/releases/download/server-v")
+}
+
+fn ensure_models_download_url(url: &str) -> Result<(), String> {
+    ensure_release_download_url(url, "/keggin-CHN/Magic-Mirror/releases/download/models-")
+}
+
+fn ensure_release_download_url(url: &str, prefix: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "invalid-download-url".to_string())?;
     let host = parsed.host_str().unwrap_or_default();
     let path = parsed.path();
     if parsed.scheme() != "https"
         || host != "github.com"
-        || !path.starts_with("/keggin-CHN/Magic-Mirror/releases/download/server-v")
+        || !path.starts_with(prefix)
         || !path.ends_with(".zip")
     {
         return Err("download-url-not-allowed".to_string());
@@ -247,6 +255,30 @@ pub async fn download_and_unzip(
     target_dir: String,
 ) -> Result<(), String> {
     ensure_server_download_url(&url)?;
+    let target_dir = ensure_target_is_magic_mirror_dir(&target_dir)?;
+    let target_dir = target_dir.to_string_lossy().to_string();
+    let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
+
+    let temp_path = download_file(&app, &url, &temp_dir).await?;
+
+    let result = unzip_file(&app, &temp_path, &target_dir).await;
+
+    // Best-effort cleanup: do not fail the whole operation (or leak the
+    // temp archive) just because the temp file could not be removed.
+    if let Err(e) = std::fs::remove_file(&temp_path) {
+        eprintln!("Failed to remove temp file {}: {}", temp_path, e);
+    }
+
+    result
+}
+
+#[tauri::command]
+pub async fn download_models_and_unzip(
+    app: AppHandle,
+    url: String,
+    target_dir: String,
+) -> Result<(), String> {
+    ensure_models_download_url(&url)?;
     let target_dir = ensure_target_is_magic_mirror_dir(&target_dir)?;
     let target_dir = target_dir.to_string_lossy().to_string();
     let temp_dir = std::env::temp_dir().to_string_lossy().to_string();

@@ -155,8 +155,16 @@ jobs:
             os: ubuntu-22.04
             arch: x86_64
             runtime: cpu
+            timeout: 120
+          - target: aarch64-unknown-linux-gnu
+            build: linux
+            os: ubuntu-24.04-arm
+            arch: aarch64
+            runtime: cpu
+            timeout: 180
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
     steps:
       - uses: actions/checkout@v4
       - name: Download Models
@@ -193,7 +201,9 @@ jobs:
 
   release:
     name: Release
-    if: github.event_name == 'workflow_dispatch'
+    # Publish on any main-branch build (push or manual dispatch) so releases
+    # stay current without double-building the whole matrix.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     needs: [models, build-for-windows, build-for-linux]
     runs-on: ubuntu-latest
     permissions:
@@ -204,15 +214,25 @@ jobs:
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
-          # The self-contained CUDA archive includes CUDA/cuDNN DLLs plus all
-          # models and can exceed GitHub Release's 2 GiB per-asset limit. Keep
-          # it available as an Actions artifact; publish the compact universal
-          # DirectML package as the stable client download.
+          # Publish every server flavor: Windows DirectML (also aliased to the
+          # legacy name the desktop client downloads), Windows CUDA (models
+          # kept separate since the archive must stay under GitHub's 2 GiB
+          # per-asset limit), and Linux x86_64 / aarch64 CPU builds.
           pattern: |
             server_windows_x86_64_directml
+            server_windows_x86_64_cuda
             server_linux_x86_64_cpu
+            server_linux_aarch64_cpu
           path: dist
           merge-multiple: true
+      - name: Align asset names with client download template
+        run: |
+          cd dist
+          # Desktop client resolves server_{{type}}_{{arch}}.zip
+          mv -f server_windows_x86_64_directml.zip server_windows_x86_64.zip
+          mv -f server_linux_x86_64_cpu.zip server_linux_x86_64.zip
+          mv -f server_linux_aarch64_cpu.zip server_linux_aarch64.zip
+          ls -lh
       - name: Release Server v${{ needs.models.outputs.version }}
         uses: ncipollo/release-action@v1
         with:
@@ -220,7 +240,13 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           name: Server v${{ needs.models.outputs.version }}
           tag: server-v${{ needs.models.outputs.version }}
-          body: MagicMirror Server v${{ needs.models.outputs.version }}
+          body: |
+            MagicMirror Server v${{ needs.models.outputs.version }}
+
+            - `server_windows_x86_64.zip` — Windows CPU + DirectML（桌面端默认自动下载）
+            - `server_windows_x86_64_cuda.zip` — Windows CUDA（NVIDIA 显卡手动安装；模型需从 models release 获取，桌面端会自动补下载）
+            - `server_linux_x86_64.zip` — Linux x86_64 CPU
+            - `server_linux_aarch64.zip` — Linux ARM64 CPU
           draft: true
           prerelease: false
           removeArtifacts: true

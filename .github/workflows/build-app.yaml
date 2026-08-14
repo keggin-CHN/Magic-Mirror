@@ -109,6 +109,10 @@ jobs:
             build: linux
             os: ubuntu-22.04
             arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            build: linux
+            os: ubuntu-24.04-arm
+            arch: arm64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -171,7 +175,9 @@ jobs:
 
   release:
     name: Release
-    if: github.event_name == 'workflow_dispatch'
+    # Publish on any main-branch build so the app draft stays current without
+    # double-building the whole matrix.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     needs: [build-for-windows, build-for-linux]
     runs-on: ubuntu-latest
     permissions:
