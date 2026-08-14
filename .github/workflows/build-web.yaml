@@ -121,15 +121,12 @@ jobs:
             https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
           file /tmp/ffmpeg-static.tar.xz | grep -q XZ || { echo "ffmpeg download failed: not an XZ archive"; exit 1; }
           tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
-          FFMPEG_BIN="$(find /tmp -maxdepth 2 -name ffmpeg -type f | head -n 1)"
-          test -n "$FFMPEG_BIN"
-          cp "$FFMPEG_BIN" web_server.dist/ffmpeg
+          # BtbN archives extract to a fixed directory name; avoid `find /tmp`
+          # (runner /tmp contains unreadable systemd dirs that make find exit 1).
+          cp /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg web_server.dist/ffmpeg
           chmod +x web_server.dist/ffmpeg
-          FFPROBE_BIN="$(dirname "$FFMPEG_BIN")/ffprobe"
-          if [ -f "$FFPROBE_BIN" ]; then
-            cp "$FFPROBE_BIN" web_server.dist/ffprobe
-            chmod +x web_server.dist/ffprobe
-          fi
+          cp /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffprobe web_server.dist/ffprobe
+          chmod +x web_server.dist/ffprobe
       - name: Package web bundle
         run: |
           VERSION=$(node -p "require('./package.json').version")

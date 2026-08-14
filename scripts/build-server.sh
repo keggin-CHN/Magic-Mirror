@@ -64,17 +64,21 @@ if [ ! -x "$DIST_DIR/ffmpeg" ]; then
   # Guard against CDN/WAF intercept pages being saved instead of the archive.
   file "$FFMPEG_TARBALL" | grep -q "XZ" || die "ffmpeg download failed: not an XZ archive ($(file -b "$FFMPEG_TARBALL"))"
   tar -xJf "$FFMPEG_TARBALL" -C "$OUT_DIR"
-  FFMPEG_BIN="$(find "$OUT_DIR" -maxdepth 2 -name ffmpeg -type f | head -n 1)"
-  [ -n "$FFMPEG_BIN" ] || die "ffmpeg binary not found in downloaded archive"
-  cp "$FFMPEG_BIN" "$DIST_DIR/ffmpeg"
+  # BtbN archives extract to a fixed directory name; avoid `find` here so a
+  # permission error on an unrelated dir cannot fail the build (bash -e).
+  case "$ARCH" in
+    x86_64) FFMPEG_DIR="${OUT_DIR}/ffmpeg-master-latest-linux64-gpl" ;;
+    *) FFMPEG_DIR="${OUT_DIR}/ffmpeg-master-latest-linuxarm64-gpl" ;;
+  esac
+  [ -x "$FFMPEG_DIR/bin/ffmpeg" ] || die "ffmpeg binary not found in downloaded archive"
+  cp "$FFMPEG_DIR/bin/ffmpeg" "$DIST_DIR/ffmpeg"
   chmod +x "$DIST_DIR/ffmpeg"
-  FFPROBE_BIN="$(dirname "$FFMPEG_BIN")/ffprobe"
-  if [ -f "$FFPROBE_BIN" ]; then
-    cp "$FFPROBE_BIN" "$DIST_DIR/ffprobe"
+  if [ -x "$FFMPEG_DIR/bin/ffprobe" ]; then
+    cp "$FFMPEG_DIR/bin/ffprobe" "$DIST_DIR/ffprobe"
     chmod +x "$DIST_DIR/ffprobe"
   fi
   rm -f "$FFMPEG_TARBALL"
-  rm -rf "${OUT_DIR}"/ffmpeg-*-static
+  rm -rf "$FFMPEG_DIR"
   log "Bundled ffmpeg for $ARCH"
 else
   log "ffmpeg already present in $DIST_DIR"
