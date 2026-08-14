@@ -143,7 +143,6 @@ jobs:
   build-for-linux:
     name: Linux
     needs: models
-    timeout-minutes: 120
     permissions:
       contents: read
     strategy:
