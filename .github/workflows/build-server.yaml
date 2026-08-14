@@ -82,14 +82,17 @@ jobs:
             arch: x86_64
             runtime: directml
             bundle_cuda: false
+            timeout: 180
           - target: x86_64-pc-windows-msvc
             build: windows
             os: windows-latest
             arch: x86_64
             runtime: cuda
             bundle_cuda: true
+            timeout: 150
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
     steps:
       - uses: actions/checkout@v4
       - name: Download Models
