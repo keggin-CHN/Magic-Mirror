@@ -115,8 +115,11 @@ jobs:
       - name: Bundle static ffmpeg
         run: |
           # Audio track muxing in the video swap pipeline needs the ffmpeg CLI.
+          # Use GitHub-hosted BtbN builds (johnvansickle is Cloudflare-gated and
+          # intermittently returns intercept pages to GitHub runner IPs).
           curl -fL --retry 3 --retry-delay 10 -o /tmp/ffmpeg-static.tar.xz \
-            https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+            https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          file /tmp/ffmpeg-static.tar.xz | grep -q XZ || { echo "ffmpeg download failed: not an XZ archive"; exit 1; }
           tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
           FFMPEG_BIN="$(find /tmp -maxdepth 2 -name ffmpeg -type f | head -n 1)"
           test -n "$FFMPEG_BIN"

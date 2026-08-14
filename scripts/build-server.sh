@@ -51,8 +51,8 @@ done
 log "Bundling static ffmpeg (for audio track muxing)..."
 ARCH="$(uname -m)"
 case "$ARCH" in
-  x86_64) FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" ;;
-  aarch64 | arm64) FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz" ;;
+  x86_64) FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" ;;
+  aarch64 | arm64) FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz" ;;
   *)
     echo "[ERROR] Unsupported architecture for static ffmpeg: $ARCH" >&2
     exit 1
@@ -61,6 +61,8 @@ esac
 if [ ! -x "$DIST_DIR/ffmpeg" ]; then
   FFMPEG_TARBALL="${OUT_DIR}/ffmpeg-static.tar.xz"
   curl -fL --retry 3 --retry-delay 10 -o "$FFMPEG_TARBALL" "$FFMPEG_URL"
+  # Guard against CDN/WAF intercept pages being saved instead of the archive.
+  file "$FFMPEG_TARBALL" | grep -q "XZ" || die "ffmpeg download failed: not an XZ archive ($(file -b "$FFMPEG_TARBALL"))"
   tar -xJf "$FFMPEG_TARBALL" -C "$OUT_DIR"
   FFMPEG_BIN="$(find "$OUT_DIR" -maxdepth 2 -name ffmpeg -type f | head -n 1)"
   [ -n "$FFMPEG_BIN" ] || die "ffmpeg binary not found in downloaded archive"
