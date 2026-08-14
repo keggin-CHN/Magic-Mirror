@@ -69,7 +69,6 @@ jobs:
   build-for-windows:
     name: Windows
     needs: models
-    timeout-minutes: 120
     permissions:
       contents: read
     strategy:
