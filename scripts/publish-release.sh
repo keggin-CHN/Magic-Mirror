@@ -18,6 +18,13 @@ TAG="${1:?usage: publish-release.sh <tag> <asset>...}"
 shift
 REPO="${GITHUB_REPOSITORY:-keggin-CHN/Magic-Mirror}"
 
+# gh CLI needs GH_TOKEN; GitHub Actions injects GITHUB_TOKEN instead.
+export GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+if [ -z "$GH_TOKEN" ]; then
+  echo "publish: GH_TOKEN/GITHUB_TOKEN is not set" >&2
+  exit 1
+fi
+
 BODY_FILE="$(mktemp)"
 trap 'rm -f "$BODY_FILE"' EXIT
 cat > "$BODY_FILE" <<'EOF'
