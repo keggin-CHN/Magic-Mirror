@@ -131,3 +131,5 @@ jobs:
           bash scripts/publish-release.sh "$RELEASE_TAG" dist/*
         env:
           RELEASE_TAG: ${{ vars.RELEASE_TAG || 'v2.0.0' }}
+          # gh CLI does not read GITHUB_TOKEN automatically; pass it explicitly.
+          GH_TOKEN: ${{ github.token }}
