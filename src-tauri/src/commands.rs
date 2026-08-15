@@ -20,11 +20,13 @@ fn ensure_target_is_magic_mirror_dir(target_dir: &str) -> Result<PathBuf, String
 }
 
 fn ensure_server_download_url(url: &str) -> Result<(), String> {
-    ensure_release_download_url(url, "/keggin-CHN/Magic-Mirror/releases/download/server-v")
+    // All artifacts live in one unified release (v2.0.0).
+    ensure_release_download_url(url, "/keggin-CHN/Magic-Mirror/releases/download/v")
 }
 
 fn ensure_models_download_url(url: &str) -> Result<(), String> {
-    ensure_release_download_url(url, "/keggin-CHN/Magic-Mirror/releases/download/models-")
+    // Models are published alongside server/app/web in the same release.
+    ensure_release_download_url(url, "/keggin-CHN/Magic-Mirror/releases/download/v")
 }
 
 fn ensure_release_download_url(url: &str, prefix: &str) -> Result<(), String> {

@@ -201,15 +201,7 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
       - name: Release MagicMirror v${{ steps.version.outputs.version }}
-        uses: ncipollo/release-action@v1
-        with:
-          allowUpdates: true
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: app-v${{ steps.version.outputs.version }}
-          name: MagicMirror v${{ steps.version.outputs.version }}
-          body: MagicMirror APP v${{ steps.version.outputs.version }}
-          draft: true
-          prerelease: false
-          makeLatest: latest
-          removeArtifacts: true
-          artifacts: dist/*
+        run: |
+          bash scripts/publish-release.sh "$RELEASE_TAG" dist/*
+        env:
+          RELEASE_TAG: ${{ vars.RELEASE_TAG || 'v2.0.0' }}

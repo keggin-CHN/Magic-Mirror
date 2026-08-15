@@ -6,6 +6,7 @@ on:
       - "src-python/**"
       - "scripts/build-windows-server.ps1"
       - "scripts/build-server.sh"
+      - "scripts/publish-release.sh"
       - "scripts/install-windows-ort.ps1"
       - "scripts/verify-onnxruntime.py"
       - ".github/workflows/build-server.yaml"
@@ -233,20 +234,7 @@ jobs:
           mv -f server_linux_aarch64_cpu.zip server_linux_aarch64.zip
           ls -lh
       - name: Release Server v${{ needs.models.outputs.version }}
-        uses: ncipollo/release-action@v1
-        with:
-          allowUpdates: true
-          token: ${{ secrets.GITHUB_TOKEN }}
-          name: Server v${{ needs.models.outputs.version }}
-          tag: server-v${{ needs.models.outputs.version }}
-          body: |
-            MagicMirror Server v${{ needs.models.outputs.version }}
-
-            - `server_windows_x86_64.zip` — Windows CPU + DirectML（桌面端默认自动下载）
-            - `server_windows_x86_64_cuda.zip` — Windows CUDA（NVIDIA 显卡手动安装；模型需从 models release 获取，桌面端会自动补下载）
-            - `server_linux_x86_64.zip` — Linux x86_64 CPU
-            - `server_linux_aarch64.zip` — Linux ARM64 CPU
-          draft: true
-          prerelease: false
-          removeArtifacts: true
-          artifacts: dist/*.zip
+        run: |
+          bash scripts/publish-release.sh "$RELEASE_TAG" dist/*.zip
+        env:
+          RELEASE_TAG: ${{ vars.RELEASE_TAG || 'v2.0.0' }}

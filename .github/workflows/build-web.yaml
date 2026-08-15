@@ -7,6 +7,7 @@ on:
       - "src-python/**"
       - "scripts/install-web.sh"
       - "scripts/install-server-linux.sh"
+      - "scripts/publish-release.sh"
       - "index.html"
       - "package.json"
       - "pnpm-lock.yaml"
@@ -166,15 +167,7 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
       - name: Release Web v${{ steps.version.outputs.version }}
-        uses: ncipollo/release-action@v1
-        with:
-          allowUpdates: true
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: web-v${{ steps.version.outputs.version }}
-          name: MagicMirror Web v${{ steps.version.outputs.version }}
-          body: MagicMirror Web (Debian/Ubuntu) v${{ steps.version.outputs.version }}
-          draft: true
-          prerelease: false
-          makeLatest: false
-          removeArtifacts: true
-          artifacts: dist/*.tar.gz
+        run: |
+          bash scripts/publish-release.sh "$RELEASE_TAG" dist/*.tar.gz
+        env:
+          RELEASE_TAG: ${{ vars.RELEASE_TAG || 'v2.0.0' }}

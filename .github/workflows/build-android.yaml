@@ -104,7 +104,8 @@ jobs:
 
   release:
     name: Release
-    if: github.event_name == 'workflow_dispatch'
+    # Publish on any main-branch build too, not just manual dispatch.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     needs: [build]
     runs-on: ubuntu-latest
     permissions:
@@ -126,19 +127,7 @@ jobs:
           path: dist
 
       - name: Release Android v${{ steps.version.outputs.version }}
-        uses: ncipollo/release-action@v1
-        with:
-          allowUpdates: true
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: android-v${{ steps.version.outputs.version }}
-          name: MagicMirror Android v${{ steps.version.outputs.version }}
-          body: |
-            MagicMirror Android APP v${{ steps.version.outputs.version }}
-
-            适配架构: arm64-v8a（华为麒麟9000S / 高通骁龙 等 64 位 ARM 处理器）
-            最低 Android 版本: 8.0 (API 26)
-          draft: true
-          prerelease: false
-          makeLatest: false
-          removeArtifacts: true
-          artifacts: dist/*
+        run: |
+          bash scripts/publish-release.sh "$RELEASE_TAG" dist/*
+        env:
+          RELEASE_TAG: ${{ vars.RELEASE_TAG || 'v2.0.0' }}

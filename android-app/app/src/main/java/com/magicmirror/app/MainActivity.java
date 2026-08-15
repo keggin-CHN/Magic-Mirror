@@ -600,7 +600,7 @@ public class MainActivity extends AppCompatActivity {
             "scrfd_2.5g.onnx", "arcface_w600k_r50.onnx", "inswapper_128_fp16.onnx"
     };
     private static final String[] OPTIONAL_MODELS = { "gfpgan_1.4.onnx" };
-    private static final String MODEL_BASE_URL = "https://github.com/keggin-CHN/Magic-Mirror/releases/download/models-1.0.0/";
+    private static final String MODEL_BASE_URL = "https://github.com/keggin-CHN/Magic-Mirror/releases/download/v2.0.0/";
 
     private static class ModelCheckResult {
         final boolean exists;
