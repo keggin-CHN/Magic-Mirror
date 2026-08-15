@@ -194,11 +194,19 @@ jobs:
           OUT_DIR: out
         run: |
           bash scripts/build-server.sh
+      - name: Prepare Upload
+        # build-server.sh always writes out/server.zip; both Linux jobs would
+        # otherwise upload an identically-named file and download-artifact's
+        # merge would silently overwrite one arch. Give each arch a unique
+        # template name (server_linux_<arch>_cpu.zip) before uploading.
+        run: |
+          mkdir -p upload
+          mv out/server.zip upload/server_${{ matrix.build }}_${{ matrix.arch }}_${{ matrix.runtime }}.zip
       - name: Upload Server
         uses: actions/upload-artifact@v4
         with:
           name: server_${{ matrix.build }}_${{ matrix.arch }}_${{ matrix.runtime }}
-          path: out/server.zip
+          path: upload/*.zip
           if-no-files-found: error
 
   release:
@@ -229,14 +237,24 @@ jobs:
         run: |
           cd dist
           ls -lh
-          # download-artifact@v4 saves single-file artifacts under the
-          # artifact name (no .zip suffix); multi-file artifacts keep their
-          # original filenames. Use globs so both shapes work.
+          # Builds already produce template names (server_windows_x86_64_cuda.zip,
+          # server_linux_<arch>_cpu.zip), and the DirectML job also emits a
+          # legacy-named compatibility archive the desktop client actually
+          # downloads. Every move below is guarded so already-correct names are
+          # left alone (a same-file `mv` aborts the job under set -e).
           # Desktop client resolves server_{{type}}_{{arch}}.zip
-          mv -f server_windows_x86_64_directml* server_windows_x86_64.zip
-          mv -f server_windows_x86_64_cuda* server_windows_x86_64_cuda.zip
-          mv -f server_linux_x86_64_cpu* server_linux_x86_64.zip
-          mv -f server_linux_aarch64_cpu* server_linux_aarch64.zip
+          alias_if_missing() {
+            local src="$1" dst="$2"
+            if [ -f "$src" ] && [ ! -f "$dst" ]; then
+              mv -f "$src" "$dst"
+            elif [ -f "$src" ] && [ -f "$dst" ] && [ "$src" != "$dst" ]; then
+              # Same build already published under the canonical name: drop dup.
+              rm -f "$src"
+            fi
+          }
+          alias_if_missing server_windows_x86_64_directml.zip server_windows_x86_64.zip
+          alias_if_missing server_linux_x86_64_cpu.zip server_linux_x86_64.zip
+          alias_if_missing server_linux_aarch64_cpu.zip server_linux_aarch64.zip
           ls -lh
       - name: Release Server v${{ needs.models.outputs.version }}
         run: |
