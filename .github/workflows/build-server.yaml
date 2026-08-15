@@ -228,14 +228,19 @@ jobs:
       - name: Align asset names with client download template
         run: |
           cd dist
+          ls -lh
+          # download-artifact@v4 saves single-file artifacts under the
+          # artifact name (no .zip suffix); multi-file artifacts keep their
+          # original filenames. Use globs so both shapes work.
           # Desktop client resolves server_{{type}}_{{arch}}.zip
-          mv -f server_windows_x86_64_directml.zip server_windows_x86_64.zip
-          mv -f server_linux_x86_64_cpu.zip server_linux_x86_64.zip
-          mv -f server_linux_aarch64_cpu.zip server_linux_aarch64.zip
+          mv -f server_windows_x86_64_directml* server_windows_x86_64.zip
+          mv -f server_windows_x86_64_cuda* server_windows_x86_64_cuda.zip
+          mv -f server_linux_x86_64_cpu* server_linux_x86_64.zip
+          mv -f server_linux_aarch64_cpu* server_linux_aarch64.zip
           ls -lh
       - name: Release Server v${{ needs.models.outputs.version }}
         run: |
-          bash scripts/publish-release.sh "$RELEASE_TAG" dist/*.zip
+          bash scripts/publish-release.sh "$RELEASE_TAG" dist/*
         env:
           RELEASE_TAG: ${{ vars.RELEASE_TAG || 'v2.0.0' }}
           # gh CLI does not read GITHUB_TOKEN automatically; pass it explicitly.
