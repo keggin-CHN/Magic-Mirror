@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src-python'))
 def _install_missing_av_stub() -> None:
     """Allow non-codec unit tests to import modules when PyAV is unavailable."""
     try:
-        import av  # noqa: F401
+        import av  # noqa: F401 # type: ignore
 
         return
     except ModuleNotFoundError:
@@ -35,8 +35,8 @@ def _install_missing_av_stub() -> None:
 def _install_missing_multipart_stub() -> None:
     """Satisfy FastAPI route registration in lean test environments."""
     try:
-        import multipart  # noqa: F401
-        import multipart.multipart  # noqa: F401
+        import multipart  # noqa: F401 # type: ignore
+        import multipart.multipart  # noqa: F401 # type: ignore
 
         return
     except ModuleNotFoundError:

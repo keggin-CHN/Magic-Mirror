@@ -1,4 +1,5 @@
 import json
+from collections import deque
 import multiprocessing
 import os
 import queue
@@ -86,7 +87,7 @@ class PyAVReader:
         if prop_id == cv2.CAP_PROP_POS_MSEC:
             fps = self.fps if self.fps > 0 else 25.0
             return self._seek_frame(
-                int(round(max(0.0, float(value)) / 1000.0 * fps))
+                round(max(0.0, float(value)) / 1000.0 * fps)
             )
         return False
 
@@ -313,14 +314,16 @@ def _is_execution_provider_ready(provider: str) -> bool:
                 f'active={active_providers}'
             )
             return False
-        output = session.run(
-            None,
-            {
-                'x': np.array([1, 2], dtype=np.float32),
-                'y': np.array([3, 4], dtype=np.float32),
-            },
-        )[0]
-        ready = bool(np.allclose(output, [4, 6]))
+        output = np.asarray(
+            session.run(
+                None,
+                {
+                    'x': np.array([1, 2], dtype=np.float32),
+                    'y': np.array([3, 4], dtype=np.float32),
+                },
+            )[0]
+        )
+        ready = np.allclose(output, [4, 6])
         if not ready:
             print(f'[WARN] GPU Provider 推理结果异常: {provider}, output={output}')
         return ready
@@ -401,7 +404,7 @@ def _resolve_gpu_pool_size(num_workers: int) -> int:
         except Exception:
             print(f'[WARN] 无效 MAGIC_GPU_POOL_SIZE={env_val}，将使用自动策略')
     # 默认最多 4 个实例，避免显存占用过高
-    return max(1, min(int(num_workers or 1), 4))
+    return max(1, min(num_workers or 1, 4))
 
 
 def _prepare_tinyface_with_provider(tf_instance, selected_provider: str):
@@ -445,7 +448,7 @@ def _init_gpu_models(gpu_provider: str = 'auto', pool_size: int = 1):
     if selected_provider is None:
         return False, None
 
-    target_pool_size = max(1, int(pool_size or 1))
+    target_pool_size = max(1, pool_size or 1)
 
     with _tf_gpu_lock:
         cache = _tf_gpu_instances.get(selected_provider)
@@ -459,13 +462,10 @@ def _init_gpu_models(gpu_provider: str = 'auto', pool_size: int = 1):
             cache = {'instances': [], 'locks': []}
             _tf_gpu_instances[selected_provider] = cache
 
-        instances = cache.get('instances')
-        locks = cache.get('locks')
-        if not isinstance(instances, list) or not isinstance(locks, list):
-            cache['instances'] = []
-            cache['locks'] = []
-            instances = cache['instances']
-            locks = cache['locks']
+        instances: list = list(cache.get('instances') or [])
+        locks: list = list(cache.get('locks') or [])
+        cache['instances'] = instances
+        cache['locks'] = locks
 
         if len(instances) >= target_pool_size:
             return True, selected_provider
@@ -1320,7 +1320,14 @@ def _get_one_face(face_path: str):
             raise RuntimeError('invalid-face-json') from exc
 
         class FaceMock:
-            pass
+            bbox: np.ndarray
+            kps: np.ndarray | None
+            det_score: float
+            score: float
+            bounding_box: np.ndarray
+            landmark_5: np.ndarray | None
+            embedding: np.ndarray
+            normed_embedding: np.ndarray
         face = FaceMock()
         face.bbox = bbox
         face.kps = kps
@@ -1353,7 +1360,8 @@ def _read_image(img_path: str):
 
     # 兼容 16-bit PNG/TIFF 等：统一转换成 uint8
     if img.dtype != np.uint8:
-        img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)  # type: ignore
+        img = np.asarray(img, dtype=np.uint8)
 
     # PNG 可能带 Alpha 或灰度通道，TinyFace 通常期望 BGR 3 通道
     if len(img.shape) == 2:
@@ -1748,7 +1756,7 @@ def _get_process_timeout(env_name: str, default_seconds: float) -> float:
 def _resolve_total_frames(input_video_path: str, fps: float, current_total: int) -> int:
     """优先使用 OpenCV 帧数；若为 0，则尝试用 ffprobe 回退估算。"""
     if current_total and current_total > 0:
-        return int(current_total)
+        return current_total
 
     ffprobe = _resolve_ffprobe_binary()
     if not ffprobe:
@@ -1808,7 +1816,7 @@ def _resolve_total_frames(input_video_path: str, fps: float, current_total: int)
             except Exception:
                 duration = 0.0
             if duration > 0 and fps and fps > 0:
-                estimated = max(1, int(round(duration * fps)))
+                estimated = max(1, round(duration * fps))
                 print(f'[INFO] ffprobe 通过时长估算总帧数: {estimated}')
                 return estimated
 
@@ -2363,19 +2371,22 @@ def _swap_face_video_by_sources(
                     # 人脸检测
                     detections = _get_faces_with_boxes(frame, worker_tf, worker_lock)
 
-                    # 匹配轨迹（需要锁保护）
+                    # 级联匹配轨迹（需要锁保护）
                     with tracks_lock:
-                        matches = _match_tracks_to_detections(tracks, detections)
+                        matches = _cascade_match_tracks(tracks, detections)
                         matched_track_ids = set()
 
-                        # 更新轨迹
+                        # 更新轨迹状态
                         for track_id, det_idx in matches:
                             track = tracks.get(track_id)
                             if track is None:
                                 continue
                             detection = detections[det_idx]
-                            track['box'] = detection['box']
-                            track['missed'] = 0
+                            _update_track_state(
+                                track,
+                                detection['box'],
+                                detection.get('embedding'),
+                            )
                             matched_track_ids.add(track_id)
 
                         # 清理过期轨迹
@@ -2561,7 +2572,8 @@ def _normalize_output_frame(frame, width, height):
     if out.shape[1] != width or out.shape[0] != height:
         out = cv2.resize(out, (width, height), interpolation=cv2.INTER_LINEAR)
     if out.dtype != np.uint8:
-        out = cv2.normalize(out, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        out = cv2.normalize(out, None, 0, 255, cv2.NORM_MINMAX)  # type: ignore
+        out = np.asarray(out, dtype=np.uint8)
     return out
 
 
@@ -2617,7 +2629,8 @@ def _get_faces_with_boxes(frame, tf_instance=None, tf_lock=None):
         box = _extract_face_box(face, frame_w, frame_h)
         if box is None:
             continue
-        out.append({'face': face, 'box': box})
+        emb = _extract_embedding(face)
+        out.append({'face': face, 'box': box, 'embedding': emb})
     return out
 
 
@@ -2716,7 +2729,7 @@ def _clamp_box(x, y, w, h, frame_w, frame_h):
 def _to_int(value):
     """Convert value to int safely."""
     try:
-        return int(round(float(value)))
+        return round(float(value))
     except Exception:
         return 0
 
@@ -2810,6 +2823,394 @@ def _center_distance(box_a, box_b):
     return float(((acx - bcx) ** 2 + (acy - bcy) ** 2) ** 0.5)
 
 
+# ---------------------------------------------------------------------------
+# Cascaded Face Tracker helpers
+# ---------------------------------------------------------------------------
+
+# 轨迹历史滑动窗口大小
+_TRACK_HISTORY_LEN = 5
+
+# Stage 1: 最大位移门限（占人脸框对角线的倍数）
+_DISPLACEMENT_GATE_SCALE = 1.5
+
+# Stage 2: 最低特征相似度阈值
+_REID_SIMILARITY_THRESHOLD = 0.40
+
+# 单人脸大位移场景的相似度阈值（更宽松）
+_SINGLE_FACE_SIMILARITY_THRESHOLD = 0.35
+
+# EMA 平滑系数（较大值 = 更偏向保持历史）
+_EMA_DECAY = 0.9
+
+
+def _extract_embedding(face_obj):
+    """Safely extract normed_embedding from a TinyFace Face object.
+
+    Returns a 1-D float32 numpy array, or None if extraction fails.
+    """
+    emb = getattr(face_obj, 'normed_embedding', None)
+    if emb is not None:
+        if isinstance(emb, np.ndarray) and emb.ndim == 1 and emb.size > 0:
+            if np.all(np.isfinite(emb)):
+                return emb.astype(np.float32, copy=False)
+    # 回退：尝试 embedding 然后自行归一化
+    raw = getattr(face_obj, 'embedding', None)
+    if raw is not None and isinstance(raw, np.ndarray) and raw.ndim == 1 and raw.size > 0:
+        norm = np.linalg.norm(raw)
+        if norm > 0 and np.all(np.isfinite(raw)):
+            return (raw / norm).astype(np.float32)
+    return None
+
+
+def _cosine_similarity(emb_a, emb_b):
+    """Compute cosine similarity between two embedding vectors.
+
+    Both inputs must be 1-D numpy arrays of the same length (already L2-normed).
+    Returns a float in [-1, 1].
+    """
+    if emb_a is None or emb_b is None:
+        return 0.0
+    dot = float(np.dot(emb_a, emb_b))
+    return max(-1.0, min(1.0, dot))
+
+
+def _box_center(box):
+    """Return (cx, cy) center of an (x, y, w, h) box."""
+    x, y, w, h = box
+    return (x + w / 2.0, y + h / 2.0)
+
+
+def _box_diagonal(box):
+    """Return diagonal length of an (x, y, w, h) box."""
+    _, _, w, h = box
+    return float((w * w + h * h) ** 0.5)
+
+
+def _predict_track_position(track):
+    """Predict the center position for the current frame based on history.
+
+    Uses a simple linear velocity extrapolation from the last few frames.
+    Falls back to the last known center if history is insufficient.
+    """
+    box = track.get('box')
+    if box is None:
+        return None
+    current_center = _box_center(box)
+
+    history = track.get('box_history')
+    if not history or len(history) < 2:
+        return current_center
+
+    # 使用最近两个历史位置计算加权平均速度
+    positions = list(history)
+    # 越近的帧权重越大
+    vx_sum, vy_sum, weight_sum = 0.0, 0.0, 0.0
+    for i in range(1, len(positions)):
+        weight = float(i)  # 1, 2, 3, ...
+        vx_sum += (positions[i][0] - positions[i - 1][0]) * weight
+        vy_sum += (positions[i][1] - positions[i - 1][1]) * weight
+        weight_sum += weight
+
+    if weight_sum > 0:
+        vx = vx_sum / weight_sum
+        vy = vy_sum / weight_sum
+    else:
+        vx, vy = 0.0, 0.0
+
+    # 预测 = 最新位置 + 速度
+    last_pos = positions[-1]
+    pred_cx = last_pos[0] + vx
+    pred_cy = last_pos[1] + vy
+    return (pred_cx, pred_cy)
+
+
+def _update_track_state(track, detection_box, detection_embedding):
+    """Update a track's state after a successful match.
+
+    - Push new center into box_history
+    - Update velocity
+    - EMA update ema_embedding
+    - Reset missed counter
+    """
+    old_box = track.get('box')
+    track['box'] = detection_box
+    track['missed'] = 0
+
+    # 更新位置历史
+    new_center = _box_center(detection_box)
+    history = track.get('box_history')
+    if history is None:
+        history = deque(maxlen=_TRACK_HISTORY_LEN)
+        track['box_history'] = history
+    history.append(new_center)
+
+    # 更新速度
+    if old_box is not None:
+        old_center = _box_center(old_box)
+        track['velocity'] = (
+            new_center[0] - old_center[0],
+            new_center[1] - old_center[1],
+        )
+    else:
+        track['velocity'] = (0.0, 0.0)
+
+    # EMA 更新特征模板
+    if detection_embedding is not None:
+        ema = track.get('ema_embedding')
+        if ema is not None and isinstance(ema, np.ndarray):
+            updated = _EMA_DECAY * ema + (1.0 - _EMA_DECAY) * detection_embedding
+            norm = np.linalg.norm(updated)
+            track['ema_embedding'] = (updated / norm).astype(np.float32) if norm > 0 else updated
+        else:
+            track['ema_embedding'] = detection_embedding.copy()
+
+        # 如果还没有 seed_embedding，设置它
+        if track.get('seed_embedding') is None:
+            track['seed_embedding'] = detection_embedding.copy()
+
+
+def _greedy_assignment(cost_matrix, forbidden_mask=None):
+    """Simple greedy assignment for a cost matrix.
+
+    cost_matrix: (num_tracks, num_detections) – lower is better.
+    forbidden_mask: optional boolean matrix – True means "cannot assign".
+
+    Returns list of (row, col) assignments.
+    """
+    if cost_matrix.size == 0:
+        return []
+
+    n_rows, n_cols = cost_matrix.shape
+    work = cost_matrix.copy()
+    if forbidden_mask is not None:
+        work[forbidden_mask] = 1e9
+
+    assigned_rows = set()
+    assigned_cols = set()
+    assignments = []
+
+    # 按代价从低到高贪心分配
+    flat_indices = np.argsort(work.ravel())
+    for flat_idx in flat_indices:
+        r = int(flat_idx // n_cols)
+        c = int(flat_idx % n_cols)
+        if r in assigned_rows or c in assigned_cols:
+            continue
+        if work[r, c] >= 1e8:
+            continue
+        assigned_rows.add(r)
+        assigned_cols.add(c)
+        assignments.append((r, c))
+        if len(assigned_rows) >= n_rows or len(assigned_cols) >= n_cols:
+            break
+
+    return assignments
+
+
+def _optimal_assignment(cost_matrix, forbidden_mask=None):
+    """Optimal assignment using scipy if available, else greedy fallback.
+
+    cost_matrix: (num_tracks, num_detections) – lower is better.
+    forbidden_mask: optional boolean matrix – True means "cannot assign".
+
+    Returns list of (row, col) assignments where cost < threshold.
+    """
+    if cost_matrix.size == 0:
+        return []
+
+    work = cost_matrix.copy()
+    if forbidden_mask is not None:
+        work[forbidden_mask] = 1e9
+
+    try:
+        from scipy.optimize import linear_sum_assignment
+        row_ind, col_ind = linear_sum_assignment(work)
+        assignments = []
+        for r, c in zip(row_ind, col_ind):
+            if work[r, c] < 1e8:
+                assignments.append((int(r), int(c)))
+        return assignments
+    except ImportError:
+        return _greedy_assignment(cost_matrix, forbidden_mask)
+
+
+def _cascade_match_tracks(tracks, detections):
+    """Two-stage cascaded track-to-detection matching.
+
+    Stage 1: Spatial-temporal matching with motion prediction and displacement gate.
+    Stage 2: Feature Re-ID for unmatched tracks/detections using ArcFace cosine similarity.
+
+    Returns list of (track_id, detection_index) tuples.
+    """
+    if not tracks or not detections:
+        return []
+
+    track_ids = list(tracks.keys())
+
+    # ---------------------------------------------------------------
+    # Stage 1: 时空局部匹配
+    # ---------------------------------------------------------------
+    n_tracks = len(track_ids)
+    n_dets = len(detections)
+    cost_matrix = np.full((n_tracks, n_dets), 1e9, dtype=np.float64)
+    forbidden = np.ones((n_tracks, n_dets), dtype=bool)
+
+    for ti, tid in enumerate(track_ids):
+        track = tracks[tid]
+        tbox = track['box']
+        track_emb = track.get('ema_embedding')
+        if track_emb is None:
+            track_emb = track.get('seed_embedding')
+
+        predicted_center = _predict_track_position(track)
+        if predicted_center is None:
+            predicted_center = _box_center(tbox)
+        diag = _box_diagonal(tbox)
+        max_displacement = max(diag * _DISPLACEMENT_GATE_SCALE, 50.0)
+
+        for di, det in enumerate(detections):
+            dbox = det['box']
+            det_center = _box_center(dbox)
+
+            # 计算到预测位置的距离
+            dist_to_pred = float(
+                ((det_center[0] - predicted_center[0]) ** 2
+                 + (det_center[1] - predicted_center[1]) ** 2) ** 0.5
+            )
+
+            # 位移门限：超出则不可匹配
+            if dist_to_pred > max_displacement:
+                continue
+
+            # IoU 代价 (IoU 越大越好 → 1 - IoU 作为代价)
+            iou = _iou(tbox, dbox)
+            iou_cost = 1.0 - iou
+
+            # 距离代价（归一化到 [0, 1]）
+            dist_cost = dist_to_pred / max_displacement if max_displacement > 0 else 1.0
+
+            # 特征相似度（当双方都有特征时校验身份一致性）
+            det_emb = det.get('embedding')
+            if track_emb is not None and det_emb is not None:
+                sim = _cosine_similarity(track_emb, det_emb)
+                # 明确是不同人物（相似度过低）时，禁止空间误配（防止相向而行交叉时串脸）
+                if sim < 0.25:
+                    continue
+                feat_cost = max(0.0, min(1.0, (1.0 - sim) / 2.0))
+                cost = 0.3 * iou_cost + 0.3 * dist_cost + 0.4 * feat_cost
+            else:
+                # 综合代价：IoU 权重 0.6，距离权重 0.4
+                cost = 0.6 * iou_cost + 0.4 * dist_cost
+
+            cost_matrix[ti, di] = cost
+            forbidden[ti, di] = False
+
+    stage1_assignments = _optimal_assignment(cost_matrix, forbidden)
+
+    matched_track_indices = set()
+    matched_det_indices = set()
+    final_matches = []
+
+    for ti, di in stage1_assignments:
+        tid = track_ids[ti]
+        matched_track_indices.add(ti)
+        matched_det_indices.add(di)
+        final_matches.append((tid, di))
+
+    # ---------------------------------------------------------------
+    # Stage 2: 特征 Re-ID（仅处理 Stage 1 未匹配的）
+    # ---------------------------------------------------------------
+    unmatched_track_indices = [
+        i for i in range(n_tracks) if i not in matched_track_indices
+    ]
+    unmatched_det_indices = [
+        i for i in range(n_dets) if i not in matched_det_indices
+    ]
+
+    if unmatched_track_indices and unmatched_det_indices:
+        n_ut = len(unmatched_track_indices)
+        n_ud = len(unmatched_det_indices)
+        sim_cost = np.full((n_ut, n_ud), 1e9, dtype=np.float64)
+        sim_forbidden = np.ones((n_ut, n_ud), dtype=bool)
+
+        for uti, ti in enumerate(unmatched_track_indices):
+            tid = track_ids[ti]
+            track = tracks[tid]
+
+            # 获取轨迹特征：优先 EMA，其次 seed
+            track_emb = track.get('ema_embedding')
+            if track_emb is None:
+                track_emb = track.get('seed_embedding')
+
+            if track_emb is None:
+                continue
+
+            for udi, di in enumerate(unmatched_det_indices):
+                det_emb = detections[di].get('embedding')
+                if det_emb is None:
+                    continue
+
+                sim = _cosine_similarity(track_emb, det_emb)
+                if sim < _REID_SIMILARITY_THRESHOLD:
+                    continue
+
+                # 相似度越高越好 → 1 - sim 作为代价
+                sim_cost[uti, udi] = 1.0 - sim
+                sim_forbidden[uti, udi] = False
+
+        stage2_assignments = _optimal_assignment(sim_cost, sim_forbidden)
+
+        for uti, udi in stage2_assignments:
+            ti = unmatched_track_indices[uti]
+            di = unmatched_det_indices[udi]
+            tid = track_ids[ti]
+            final_matches.append((tid, di))
+            matched_track_indices.add(ti)
+            matched_det_indices.add(di)
+
+    # ---------------------------------------------------------------
+    # 单人脸大位移特殊处理
+    # ---------------------------------------------------------------
+    # 如果画面中只有 1 个 detection 且仍未匹配，并且只有 1 条活跃 track 也未匹配，
+    # 尝试用更宽松的特征阈值或"唯一继承"策略来挽救匹配
+    remaining_tracks = [
+        i for i in range(n_tracks) if i not in matched_track_indices
+    ]
+    remaining_dets = [
+        i for i in range(n_dets) if i not in matched_det_indices
+    ]
+
+    if len(remaining_dets) == 1 and len(remaining_tracks) >= 1:
+        di = remaining_dets[0]
+        det_emb = detections[di].get('embedding')
+
+        best_ti = None
+        best_sim = -1.0
+
+        for ti in remaining_tracks:
+            tid = track_ids[ti]
+            track = tracks[tid]
+            track_emb = track.get('ema_embedding')
+            if track_emb is None:
+                track_emb = track.get('seed_embedding')
+
+            if track_emb is not None and det_emb is not None:
+                sim = _cosine_similarity(track_emb, det_emb)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_ti = ti
+
+        if best_ti is not None and best_sim >= _SINGLE_FACE_SIMILARITY_THRESHOLD:
+            tid = track_ids[best_ti]
+            final_matches.append((tid, di))
+        elif best_ti is not None and len(remaining_tracks) == 1:
+            # 只有一条 track 且画面只有一张脸 → 强制继承（合理回退）
+            tid = track_ids[best_ti]
+            final_matches.append((tid, di))
+
+    return final_matches
+
+
 def _build_tracks_from_seed_regions(seed_regions, detections):
     """Build face tracks from seed regions."""
     if not seed_regions:
@@ -2851,14 +3252,21 @@ def _build_tracks_from_seed_regions(seed_regions, detections):
         if best_idx >= 0:
             used_det.add(best_idx)
             init_box = detections[best_idx]['box']
+            init_emb = detections[best_idx].get('embedding')
         else:
             init_box = region_box
+            init_emb = None
 
+        init_center = _box_center(init_box)
         tracks[track_id] = {
             'trackId': track_id,
             'faceSourceId': str(region['faceSourceId']),
             'box': init_box,
             'missed': 0,
+            'box_history': deque([init_center], maxlen=_TRACK_HISTORY_LEN),
+            'velocity': (0.0, 0.0),
+            'seed_embedding': init_emb.copy() if init_emb is not None else None,
+            'ema_embedding': init_emb.copy() if init_emb is not None else None,
         }
         track_id += 1
 
@@ -2866,58 +3274,8 @@ def _build_tracks_from_seed_regions(seed_regions, detections):
 
 
 def _match_tracks_to_detections(tracks, detections):
-    """Match existing tracks to new detections."""
-    if not tracks or not detections:
-        return []
-
-    track_ids = list(tracks.keys())
-    candidate_pairs = []
-
-    for tid in track_ids:
-        tbox = tracks[tid]['box']
-        for didx, det in enumerate(detections):
-            iou = _iou(tbox, det['box'])
-            if iou > 0.05:
-                candidate_pairs.append((iou, tid, didx))
-
-    candidate_pairs.sort(reverse=True, key=lambda item: item[0])
-
-    matched_tracks = set()
-    matched_dets = set()
-    matches = []
-
-    for score, tid, didx in candidate_pairs:
-        if tid in matched_tracks or didx in matched_dets:
-            continue
-        matched_tracks.add(tid)
-        matched_dets.add(didx)
-        matches.append((tid, didx))
-
-    # 对未匹配轨迹做一次基于中心点的兜底匹配
-    for tid in track_ids:
-        if tid in matched_tracks:
-            continue
-        tbox = tracks[tid]['box']
-        best_idx = -1
-        best_dist = None
-        for didx, det in enumerate(detections):
-            if didx in matched_dets:
-                continue
-            dist = _center_distance(tbox, det['box'])
-            if best_dist is None or dist < best_dist:
-                best_dist = dist
-                best_idx = didx
-
-        if best_idx >= 0:
-            tw = max(1, tbox[2])
-            th = max(1, tbox[3])
-            max_dist = ((tw * tw + th * th) ** 0.5) * 0.65
-            if best_dist is not None and best_dist <= max_dist:
-                matched_tracks.add(tid)
-                matched_dets.add(best_idx)
-                matches.append((tid, best_idx))
-
-    return matches
+    """Match existing tracks to new detections (delegates to _cascade_match_tracks)."""
+    return _cascade_match_tracks(tracks, detections)
 
 
 def swap_face_deep(input_path, face_paths, regions=None):
@@ -3304,14 +3662,21 @@ def _build_deep_tracks_from_seed_regions(seed_regions, detections, target_count)
         if best_idx >= 0:
             used_det.add(best_idx)
             init_box = detections[best_idx]['box']
+            init_emb = detections[best_idx].get('embedding')
         else:
             init_box = region_box
+            init_emb = None
 
+        init_center = _box_center(init_box)
         tracks[track_id] = {
             'trackId': track_id,
             'targetIndex': index % max(1, int(target_count or 1)),
             'box': init_box,
             'missed': 0,
+            'box_history': deque([init_center], maxlen=_TRACK_HISTORY_LEN),
+            'velocity': (0.0, 0.0),
+            'seed_embedding': init_emb.copy() if init_emb is not None else None,
+            'ema_embedding': init_emb.copy() if init_emb is not None else None,
         }
         track_id += 1
 
@@ -3323,11 +3688,18 @@ def _build_deep_tracks_from_detections(detections, target_count):
     tracks = {}
     sorted_detections = _sort_detections_by_position(detections)
     for index, det in enumerate(sorted_detections, start=1):
+        init_box = det['box']
+        init_emb = det.get('embedding')
+        init_center = _box_center(init_box)
         tracks[index] = {
             'trackId': index,
             'targetIndex': (index - 1) % max(1, int(target_count or 1)),
-            'box': det['box'],
+            'box': init_box,
             'missed': 0,
+            'box_history': deque([init_center], maxlen=_TRACK_HISTORY_LEN),
+            'velocity': (0.0, 0.0),
+            'seed_embedding': init_emb.copy() if init_emb is not None else None,
+            'ema_embedding': init_emb.copy() if init_emb is not None else None,
         }
     return tracks
 
@@ -3432,7 +3804,7 @@ def _process_deep_video_segment(
                     )
                 next_track_id = max(tracks.keys(), default=0) + 1
 
-            matches = _match_tracks_to_detections(tracks, detections) if tracks else []
+            matches = _cascade_match_tracks(tracks, detections) if tracks else []
             matched_track_ids = set()
             matched_detection_ids = set()
 
@@ -3440,8 +3812,12 @@ def _process_deep_video_segment(
                 track = tracks.get(track_id)
                 if track is None:
                     continue
-                track['box'] = detections[detection_index]['box']
-                track['missed'] = 0
+                detection = detections[detection_index]
+                _update_track_state(
+                    track,
+                    detection['box'],
+                    detection.get('embedding'),
+                )
                 matched_track_ids.add(track_id)
                 matched_detection_ids.add(detection_index)
 
@@ -3450,7 +3826,7 @@ def _process_deep_video_segment(
                 if track_id in matched_track_ids:
                     continue
                 track['missed'] = int(track.get('missed', 0)) + 1
-                if int(track['missed']) > track_missed_limit:
+                if track['missed'] > track_missed_limit:
                     stale_track_ids.append(track_id)
 
             for track_id in stale_track_ids:
@@ -3463,11 +3839,18 @@ def _process_deep_video_segment(
                         continue
                     track_id = next_track_id
                     next_track_id += 1
+                    init_box = detection['box']
+                    init_emb = detection.get('embedding')
+                    init_center = _box_center(init_box)
                     tracks[track_id] = {
                         'trackId': track_id,
                         'targetIndex': (track_id - 1) % max(1, len(destination_faces)),
-                        'box': detection['box'],
+                        'box': init_box,
                         'missed': 0,
+                        'box_history': deque([init_center], maxlen=_TRACK_HISTORY_LEN),
+                        'velocity': (0.0, 0.0),
+                        'seed_embedding': init_emb.copy() if init_emb is not None else None,
+                        'ema_embedding': init_emb.copy() if init_emb is not None else None,
                     }
                     new_matches.append((track_id, detection_index))
 
